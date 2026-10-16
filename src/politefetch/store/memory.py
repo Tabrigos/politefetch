@@ -22,10 +22,12 @@ from politefetch.store.base import (
     Outcome,
     RequestRow,
     RowState,
+    Unfreeze,
     apply_close,
     check_admission,
     check_cautious,
     check_threshold,
+    check_unfreezer,
 )
 
 __all__ = ["MemoryData", "MemoryStore"]
@@ -39,6 +41,7 @@ class MemoryData:
     counts: dict[tuple[str, date], int] = field(default_factory=dict)
     rows: dict[int, RequestRow] = field(default_factory=dict)
     next_id: int = 1
+    unfreezes: list[Unfreeze] = field(default_factory=list)
     lock: threading.RLock = field(default_factory=threading.RLock)
 
 
@@ -163,6 +166,31 @@ class MemoryStore:
                 self.data.hosts[row.host] = replace(state, failures=state.failures + 1)
                 reconciled.append(closed)
             return reconciled
+
+    def unfreeze(
+        self, host: str, *, now: datetime, by: str, note: str = ""
+    ) -> Unfreeze | None:
+        now = as_utc(now, "now")
+        check_unfreezer(by)
+        with self.data.lock:
+            stored = self.data.hosts.get(host)
+            if stored is None or stored.freeze is None:
+                return None
+            trace = Unfreeze(
+                id=len(self.data.unfreezes) + 1,
+                host=host,
+                at=now,
+                by=by,
+                note=note,
+                freeze=stored.freeze,
+            )
+            self.data.unfreezes.append(trace)
+            self.data.hosts[host] = replace(stored, freeze=None)
+            return trace
+
+    def unfreezes(self, *, host: str | None = None) -> list[Unfreeze]:
+        with self.data.lock:
+            return [u for u in self.data.unfreezes if host is None or u.host == host]
 
     # --- lifecycle ----------------------------------------------------------
 

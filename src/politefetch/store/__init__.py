@@ -15,6 +15,7 @@ from politefetch.store.base import (
     RequestRow,
     RowState,
     Store,
+    Unfreeze,
 )
 from politefetch.store.memory import MemoryData, MemoryStore
 from politefetch.store.sqlite import SqliteStore
@@ -30,4 +31,5 @@ __all__ = [
     "RowState",
     "SqliteStore",
     "Store",
+    "Unfreeze",
 ]

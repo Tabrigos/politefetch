@@ -28,6 +28,7 @@ __all__ = [
     "RequestRow",
     "RowState",
     "Store",
+    "Unfreeze",
     "apply_close",
     "check_admission",
     "next_utc_midnight",
@@ -109,7 +110,7 @@ class HostState:
 
     `requests_today` counts the requests opened on `day`, the UTC day of the
     moment the state was read for. `failures` counts consecutive failures,
-    reset by a good answer.
+    and `throttled` the 429 answers, since the last good answer.
     """
 
     host: str
@@ -120,6 +121,19 @@ class HostState:
     failures: int = 0
     freeze: Freeze | None = None
     in_flight: int = 0
+    throttled: int = 0
+
+
+@dataclass(frozen=True, slots=True)
+class Unfreeze:
+    """The trace left when a person lifts a freeze."""
+
+    id: int
+    host: str
+    at: datetime
+    by: str
+    note: str
+    freeze: Freeze
 
 
 @dataclass(frozen=True, slots=True)
@@ -193,6 +207,20 @@ class Store(Protocol):
         """Close as failed every row in flight since `now - older_than` or
         earlier, and return them. The cautious promise written when they
         opened stays."""
+        ...
+
+    def unfreeze(
+        self, host: str, *, now: datetime, by: str, note: str = ""
+    ) -> Unfreeze | None:
+        """Lift the freeze of `host`, active or expired, and leave a trace.
+
+        `by` says who did it. Failures, 429 count and promise stay as they
+        are. Returns `None`, writing nothing, if the host has no freeze.
+        """
+        ...
+
+    def unfreezes(self, *, host: str | None = None) -> list[Unfreeze]:
+        """Return the unfreeze traces, oldest first."""
         ...
 
     def row(self, row_id: int) -> RequestRow:
@@ -275,6 +303,7 @@ def apply_close(state: HostState, outcome: Outcome, update: HostUpdate) -> HostS
             not_before=update.not_before,
             not_before_reason=update.reason,
             failures=0,
+            throttled=0,
             in_flight=max(state.in_flight - 1, 0),
         )
     not_before, reason = state.not_before, state.not_before_reason
@@ -285,9 +314,16 @@ def apply_close(state: HostState, outcome: Outcome, update: HostUpdate) -> HostS
         not_before=not_before,
         not_before_reason=reason,
         failures=state.failures + 1,
+        throttled=state.throttled + (1 if outcome.status == 429 else 0),
         freeze=update.freeze if update.freeze is not None else state.freeze,
         in_flight=max(state.in_flight - 1, 0),
     )
+
+
+def check_unfreezer(by: str) -> str:
+    if not by.strip():
+        raise ValueError("unfreeze needs `by`: who lifts the freeze")
+    return by
 
 
 def check_threshold(older_than: timedelta) -> None:
