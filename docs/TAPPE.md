@@ -67,6 +67,11 @@ T5 dopo T2, T4 e T6 (i suoi test usano il simulatore); T7 dopo T3 e T4
 - Test basati su proprietà: con crash simulati fra apertura e chiusura e
   riavvii dello store, il conteggio non perde richieste e nessuna riga resta
   aperta dopo la riconciliazione. Test con due processi sullo stesso file.
+- **Processi figli sotto la barriera** (D-012): una sola funzione in
+  `politefetch.testing` avvia un processo figlio e vi attiva la barriera prima
+  di eseguire il codice; i test con due processi la usano. Un test di guardia
+  (controllo sull'AST, come `tests/test_layout.py`) fallisce se un test usa
+  `subprocess` o `multiprocessing` senza passare da quella funzione.
 
 ## T2 — Gate e politiche
 
@@ -75,6 +80,14 @@ T5 dopo T2, T4 e T6 (i suoi test usano il simulatore); T7 dopo T3 e T4
 - `HostPolicy`: tetto giornaliero, intervallo minimo, pausa dopo errore
   (esponenziale con tetto), comportamento per 403/429/451 (congelamento fino
   a sblocco manuale o a una scadenza), `Retry-After` come minimo.
+- **403, 429 e 451** (D-013):
+  - per default congelano l'host, anche un 429 con `Retry-After`; se c'è una
+    scadenza configurata, non è mai più corta di `Retry-After`;
+  - un'opzione per host, spenta per default, fa rispettare `Retry-After` al
+    primo 429: pausa pari al massimo fra `Retry-After` e la pausa crescente,
+    senza congelare. Un secondo 429 consecutivo (cioè senza una risposta
+    buona in mezzo) congela comunque;
+  - 403 e 451 congelano sempre.
 - `Gate`: `may_fetch(url)` → consentito, o `Refused` con motivo e "dopo";
   contesto `with gate.attempt(url) as a:` (e `async with`) che apre la riga,
   e la chiude nel `finally` con l'esito che chi chiama registra.
@@ -130,7 +143,9 @@ delle richieste partite per scenario.
 - **Il contatore conta dal lato della fonte**: le richieste arrivate al
   server, cioè quello che vedrebbe il firewall. Lo scenario "processo ucciso a
   richiesta partita" esegue il client in un sottoprocesso e lo uccide con
-  `SIGKILL` mentre il server tiene aperta la richiesta.
+  `SIGKILL` mentre il server tiene aperta la richiesta. Il sottoprocesso parte
+  dalla funzione di T1 che attiva la barriera nel figlio (D-012), estesa
+  quanto serve per poterlo uccidere.
 - I timeout dei socket usano il tempo vero: tenerli brevi (decimi di secondo)
   e confinati agli scenari "non risponde". L'orologio di `Gate` resta finto.
 - I trasporti finti in memoria restano per i test unitari di `Gate`.

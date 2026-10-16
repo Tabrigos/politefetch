@@ -168,6 +168,7 @@ alla vecchia e la vecchia prende la riga "Superata da".
 
 ## D-008 — Come si comporta la barriera
 
+- **Superata da**: D-012, solo per la parte sui processi figli
 - **Data e tappa**: 2026-10-16, T0
 - **Decisione**:
   - `NetworkBlockedError` deriva da `RuntimeError`, non da `OSError`: il
@@ -228,3 +229,45 @@ alla vecchia e la vecchia prende la riga "Superata da".
   supportata da hatchling ≥ 1.27). Titolare del copyright: Sidereus Team, il nome
   usato nel primo commit.
 - **Conseguenze**: chiude il punto aperto di D-009.
+
+## D-012 — La barriera nei processi figli si attiva in modo esplicito
+
+- **Data e tappa**: 2026-10-16, T0 (per T1 e T6)
+- **Contesto**: la barriera agisce solo nel processo del test (D-008). I
+  test con due processi di T1 e il client ucciso di T6 lanciano processi
+  figli che partirebbero senza barriera.
+- **Decisione**: una sola funzione in `politefetch.testing` avvia un processo
+  figlio e vi attiva la barriera prima di eseguire il codice. Un test di
+  guardia, con un controllo sull'AST come `tests/test_layout.py`, fallisce se
+  un test usa `subprocess` o `multiprocessing` senza passare da quella
+  funzione. La scrive T1; T6 la estende per poter uccidere il figlio con
+  `SIGKILL`.
+- **Alternative scartate**: attivazione automatica in ogni interprete con un
+  file `.pth` o `sitecustomize` (copre tutto, ma è un meccanismo nascosto
+  che gira all'avvio di ogni Python e, nel pacchetto pubblicato, toccherebbe
+  anche gli utenti); attivazione esplicita senza guardia (chi se ne dimentica
+  resta scoperto senza saperlo).
+- **Conseguenze**: anche gli utenti della libreria possono usare la stessa
+  funzione nei loro test.
+
+## D-013 — 429 con `Retry-After`: per default si congela
+
+- **Data e tappa**: 2026-10-16, T0 (per T2)
+- **Contesto**: la regola 3 di `SPEC.md` dice sia che `Retry-After` è un
+  minimo sia che 429 congela l'host fino allo sblocco manuale; su un 429 con
+  `Retry-After` le due frasi si contraddicono.
+- **Decisione**:
+  - per default un 429 congela l'host anche se porta `Retry-After`; se c'è
+    una scadenza configurata, non è mai più corta di `Retry-After`;
+  - un'opzione per host, spenta per default, fa rispettare `Retry-After` al
+    primo 429: pausa pari al massimo fra `Retry-After` e la pausa crescente,
+    senza congelare. Un secondo 429 consecutivo, senza una risposta buona in
+    mezzo, congela comunque;
+  - 403 e 451 congelano sempre: per loro `Retry-After` non ha un significato
+    utile.
+- **Alternative scartate**: congelare sempre senza opzione (un'API con 429
+  brevi e regolari fermerebbe il flusso finché una persona non interviene);
+  rispettare sempre `Retry-After` (alcune fonti bannano chi torna puntuale
+  allo scadere, o rispondono 429 in ciclo: un falso "puoi").
+- **Conseguenze**: T2 implementa l'opzione in `HostPolicy` e i test di
+  scenario della scalata al secondo 429.
