@@ -4,20 +4,19 @@
 
 Riscritto da capo a ogni fine sessione, mai accodato.
 
-- **Stato**: T0 e T1 fatte. Lo store esiste in due versioni, memoria e
-  SQLite, con la suite di contratto, i test basati su proprietà (crash,
-  riavvii, orologio che salta indietro) e i test con più processi sullo
-  stesso file. I processi figli dei test partono da
-  `politefetch.testing.processes.spawn`, con la barriera attiva.
-- **Prossimo passo**: T2 (Gate e politiche). Da sapere prima di cominciare:
-  - il Gate passa allo store funzioni pure (`cautious`, `update`) che girano
-    dentro la transazione (D-014); `update` riceve lo stato prima della
-    chiusura, quindi la pausa si calcola con `state.failures + 1` (D-017);
-  - una richiesta appesa blocca l'host finché la riconciliazione non la
-    chiude (D-015): il Gate deve farla girare, con una soglia larga;
-  - 429 con `Retry-After` è deciso in D-013;
-  - resta da scegliere se avvolgere `sqlite3.OperationalError` (attesa sul
-    blocco scaduta) in un errore di politefetch (D-018).
+- **Stato**: T0, T1 e T2 fatte. Esistono il Gate (`attempt` sincrono e
+  asincrono, `may_fetch`, `unfreeze`), le politiche per host (pausa
+  crescente, `Retry-After` come minimo, congelamenti di D-013) e lo store in
+  memoria e SQLite, con lo sblocco manuale tracciato.
+- **Prossimo passo**: T3, T4 e T6 si possono fare in qualunque ordine (anche
+  in parallelo); poi T5 (dopo T4 e T6) e T7 (dopo T3 e T4). Da sapere:
+  - T3 e T4 aggiungono metodi allo store: i test vanno nella suite di
+    contratto, le colonne nuove di tabelle esistenti in `_ADDED_COLUMNS`
+    (D-021);
+  - il budget di byte di T4 si controlla in `check_admission` e si consuma
+    in `open_request`, nella stessa transazione (D-002);
+  - T6 riscrive i test di scenario di `tests/test_gate.py` con il
+    simulatore.
 - **Dubbi aperti**:
   - il repository GitHub si chiama ancora `fetchguard` (D-010);
   - lo stato di httpx (vedi T5): il 2026-10-16 `httpx` è a 0.28.1 e `httpx2`
@@ -58,3 +57,9 @@ Una riga per sessione: data, tappa, cosa è entrato, cosa resta.
   scoprano quattro difetti introdotti apposta (transazione `DEFERRED`,
   promessa accorciata da un fallimento, controllo "in corso" tolto, conteggio
   che non cresce). Resta: T2.
+- 2026-10-16 — T2. Entrati: `HostPolicy` (D-020), `Gate` con `attempt`
+  sincrono e asincrono e `may_fetch` (D-022), contatore dei 429 nello store
+  (D-021), sblocco manuale con traccia (D-023), test di scenario con
+  l'orologio finto e un test basato su proprietà su sequenze casuali di
+  risposte. Controllato che i test scoprano sei difetti introdotti apposta.
+  Resta: T3, T4, T6.

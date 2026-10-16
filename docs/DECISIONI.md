@@ -388,3 +388,83 @@ alla vecchia e la vecchia prende la riga "Superata da".
 - **Alternative scartate**: il metodo `fork` (copia anche la barriera del
   padre, ma con i thread è fragile e Python lo sta abbandonando come
   default).
+
+## D-020 — Le politiche per host
+
+- **Data e tappa**: 2026-10-16, T2
+- **Decisione**:
+  - le durate si scrivono con l'unità (`"90s"`, `"15m"`, `"2h"`, `"1d"`,
+    `"1h30m"`, `"500ms"`) o come `timedelta`. I numeri nudi sono rifiutati:
+    `"60"` potrebbe voler dire secondi o minuti, e sbagliare può voler dire
+    sessanta volte più richieste;
+  - pausa dopo l'n-esimo fallimento consecutivo: `base * fattore**(n-1)`, al
+    massimo `backoff_max`. Default 1 minuto, fattore 2, tetto 6 ore;
+  - l'intervallo minimo si conta dalla **fine** della richiesta, non
+    dall'inizio;
+  - la promessa prudente è `adesso + max(intervallo minimo, pausa del
+    prossimo fallimento)`;
+  - `Retry-After` è un minimo su qualunque risposta, anche buona. Si leggono
+    entrambe le forme (secondi e data HTTP); un valore illeggibile si ignora;
+    oltre un anno si tratta come un anno, perché un valore assurdo non deve
+    far traboccare i calcoli sulle date;
+  - 2xx e 3xx (compreso 304) sono risposte buone; tutto il resto è un
+    fallimento.
+- **Alternative scartate**: intervallo minimo contato dall'inizio della
+  richiesta (con richieste lente, più richieste); durate in secondi nudi.
+
+## D-021 — Lo store conta i 429 dall'ultima risposta buona
+
+- **Data e tappa**: 2026-10-16, T2
+- **Contesto**: D-013 congela al secondo 429 "senza una risposta buona in
+  mezzo"; con il solo numero di fallimenti consecutivi non si distingue un
+  429 da un timeout.
+- **Decisione**: `HostState.throttled` conta i 429 dall'ultima risposta
+  buona; lo aggiorna lo store alla chiusura (si azzera con una risposta
+  buona; la riconciliazione non lo tocca). Le colonne aggiunte a una tabella
+  già esistente si creano all'apertura se mancano (`_ADDED_COLUMNS` in
+  `store/sqlite.py`): un file creato da una tappa precedente continua a
+  funzionare, senza migrazioni numerate (D-002).
+- **Alternative scartate**: ricavarlo dalle righe del registro (una lettura
+  che cresce senza limite, fuori dalla transazione); tenere "l'ultimo stato
+  HTTP" (non basta: 429, timeout, 429 sono due 429 senza una risposta buona
+  in mezzo).
+
+## D-022 — Il Gate
+
+- **Data e tappa**: 2026-10-16, T2
+- **Decisione**:
+  - un host senza politica è rifiutato con `ValueError`, a meno di una
+    politica `default` esplicita;
+  - l'host si ricava dall'URL, minuscolo e senza porta: porte diverse dello
+    stesso host condividono promessa e tetto;
+  - `may_fetch(url)` è un consiglio: restituisce un `Verdict` (vero se si può
+    partire, altrimenti con il `Refused`), non apre righe, ma chiude le righe
+    abbandonate. È `attempt` che decide davvero, in modo atomico;
+  - prima di ogni decisione il Gate riconcilia le righe aperte da più di
+    `reconcile_after` (default 1 ora);
+  - un tentativo senza esito registrato conta come fallito (`unrecorded`); un
+    tentativo finito con un'eccezione conta come fallito
+    (`exception:<Classe>`) e l'eccezione risale; l'esito si registra una sola
+    volta. Se il corpo solleva dopo aver registrato una risposta buona, conta
+    la risposta della fonte;
+  - `async with` chiama lo store in un thread; se il task viene cancellato
+    la riga resta aperta e la chiude la riconciliazione, come dice `SPEC.md`;
+  - gli errori dello store, per esempio `sqlite3.OperationalError` quando
+    l'attesa sul blocco scade, non vengono avvolti: risalgono dall'ingresso
+    nel tentativo e nessuna richiesta parte. Chiude il punto aperto di D-018.
+- **Alternative scartate**: una politica di default implicita (un host
+  dimenticato nella configurazione partirebbe con limiti scelti da nessuno);
+  chiudere la riga anche durante una cancellazione asincrona (bloccherebbe il
+  loop degli eventi, o fingerebbe un'attesa sicura che non c'è).
+
+## D-023 — Lo sblocco manuale
+
+- **Data e tappa**: 2026-10-16, T2
+- **Decisione**: `unfreeze(host, by=..., note=...)` toglie il congelamento,
+  attivo o scaduto, e scrive una traccia (`unfreezes`) con chi, quando,
+  perché e il congelamento tolto. `by` è obbligatorio. Fallimenti consecutivi,
+  conteggio dei 429 e promessa restano: dopo lo sblocco la pausa riprende da
+  dove era, e con l'opzione di D-013 un nuovo 429 congela subito. Su un host
+  senza congelamento non fa nulla e non lascia tracce.
+- **Alternative scartate**: azzerare i fallimenti allo sblocco (la persona
+  dice "puoi riprovare", non "la fonte sta bene").
