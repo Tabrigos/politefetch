@@ -1,0 +1,70 @@
+[build-system]
+requires = ["hatchling>=1.27"]
+build-backend = "hatchling.build"
+
+[project]
+name = "fetchguard"
+version = "0.0.0"
+description = "A polite, crash-safe gate between an ingest service and the external sources it polls."
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = []
+classifiers = [
+    "Development Status :: 2 - Pre-Alpha",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3 :: Only",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Typing :: Typed",
+]
+
+[project.optional-dependencies]
+# Filled in by the adapter and Postgres stages; the core never imports them.
+httpx = []
+requests = []
+postgres = []
+
+[dependency-groups]
+dev = [
+    "hypothesis>=6.170",
+    "mypy>=2.4",
+    "pytest>=9.1",
+    "ruff>=0.17",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/fetchguard"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = ["-ra", "--strict-markers", "--strict-config"]
+xfail_strict = true
+filterwarnings = ["error"]
+
+[tool.mypy]
+python_version = "3.12"
+strict = true
+files = ["src", "tests"]
+warn_unreachable = true
+
+[tool.ruff]
+line-length = 88
+target-version = "py312"
+src = ["src", "tests"]
+# Ruff also formats code blocks in Markdown; the docs are written by hand.
+extend-exclude = ["*.md"]
+
+[tool.ruff.lint]
+select = [
+    "E", "W", "F", "I", "B", "UP", "SIM", "RUF", "PT", "C4", "PIE", "RET",
+    "DTZ",  # no naive datetimes
+    "TID",  # banned APIs below
+]
+
+[tool.ruff.lint.flake8-tidy-imports.banned-api]
+"time.time".msg = "Read time from an injected fetchguard.clock.Clock."
+"time.time_ns".msg = "Read time from an injected fetchguard.clock.Clock."
+"datetime.datetime.now".msg = "Read time from an injected fetchguard.clock.Clock."
+"datetime.datetime.utcnow".msg = "Read time from an injected fetchguard.clock.Clock."
+"datetime.datetime.today".msg = "Read time from an injected fetchguard.clock.Clock."
+"datetime.date.today".msg = "Read time from an injected fetchguard.clock.Clock."
