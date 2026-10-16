@@ -20,14 +20,14 @@ T5 dopo T2, T4 e T6 (i suoi test usano il simulatore); T7 dopo T3 e T4
 - [x] Fatta
 
 - `pyproject.toml` con `uv` e `hatchling`, Python ≥ 3.12, layout
-  `src/fetchguard/`, extra vuoti `httpx`, `requests`, `postgres`; ruff, mypy
+  `src/politefetch/`, extra vuoti `httpx`, `requests`, `postgres`; ruff, mypy
   strict (su `src` e `tests`), pytest, `hypothesis` fra le dipendenze di
   sviluppo.
 - Moduli vuoti con docstring secondo l'architettura di `SPEC.md`; gerarchia
-  degli errori (`FetchGuardError`, `Refused` con motivo e "riprova dopo",
+  degli errori (`PoliteFetchError`, `Refused` con motivo e "riprova dopo",
   `SourceNotReady`, `UnexpectedContent`, `StaleData`, `StuckSource`) completa
   e testata; interfaccia `Clock` con un orologio vero e uno finto.
-- **Barriera sul socket, versione minima**, in `fetchguard.testing`: intercetta
+- **Barriera sul socket, versione minima**, in `politefetch.testing`: intercetta
   `socket.connect`, `connect_ex` e `getaddrinfo` e lascia passare solo il
   loopback (127.0.0.1, ::1) e i socket Unix. Attiva in ogni test con una
   fixture automatica in `tests/conftest.py`. Con la sua prova: una connessione
@@ -118,7 +118,7 @@ connessione, reset, rifiuto, TLS, codice HTTP) si registra in modo uniforme.
 
 - [ ] Fatta
 
-`fetchguard.testing`: completa la barriera di T0 e la rende un plugin pytest
+`politefetch.testing`: completa la barriera di T0 e la rende un plugin pytest
 installabile; simulatore di fonte con gli scenari di `SPEC.md`; contatore
 delle richieste partite per scenario.
 

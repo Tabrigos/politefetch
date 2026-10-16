@@ -4,7 +4,7 @@ from collections.abc import Iterator
 
 import pytest
 
-from fetchguard.testing.barrier import NetworkBarrier
+from politefetch.testing.barrier import NetworkBarrier
 
 
 @pytest.fixture(autouse=True)

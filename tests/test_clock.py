@@ -6,7 +6,7 @@ import pytest
 from hypothesis import given
 from hypothesis import strategies as st
 
-from fetchguard.clock import Clock, FakeClock, SystemClock, as_utc
+from politefetch.clock import Clock, FakeClock, SystemClock, as_utc
 
 T = datetime(2026, 10, 16, 12, 0, tzinfo=UTC)
 

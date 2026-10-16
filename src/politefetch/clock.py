@@ -1,6 +1,6 @@
 """Injectable time.
 
-Nothing in fetchguard reads the wall clock directly: every component that
+Nothing in politefetch reads the wall clock directly: every component that
 needs the time receives a `Clock`. Production code uses `SystemClock`; tests
 use `FakeClock` and move time by hand. All times are timezone-aware UTC.
 """

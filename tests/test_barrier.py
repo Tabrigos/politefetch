@@ -17,7 +17,7 @@ import pytest
 from hypothesis import given
 from hypothesis import strategies as st
 
-from fetchguard.testing.barrier import (
+from politefetch.testing.barrier import (
     NetworkBarrier,
     NetworkBlockedError,
     is_allowed_address,

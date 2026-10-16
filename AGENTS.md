@@ -1,4 +1,4 @@
-# fetchguard — regole per gli agenti
+# politefetch — regole per gli agenti
 
 Libreria Python che protegge le fonti esterne da chi le interroga (promesse
 persistenti, un solo tentativo, tetti per host) e chi le interroga dai dati

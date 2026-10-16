@@ -7,29 +7,29 @@ from pathlib import Path
 
 import pytest
 
-SRC = Path(__file__).resolve().parent.parent / "src" / "fetchguard"
+SRC = Path(__file__).resolve().parent.parent / "src" / "politefetch"
 
 MODULES = [
-    "fetchguard",
-    "fetchguard.errors",
-    "fetchguard.clock",
-    "fetchguard.policy",
-    "fetchguard.gate",
-    "fetchguard.checks",
-    "fetchguard.traffic",
-    "fetchguard.status",
-    "fetchguard.store",
-    "fetchguard.store.memory",
-    "fetchguard.store.sqlite",
-    "fetchguard.store.postgres",
-    "fetchguard.adapters",
-    "fetchguard.adapters.urllib",
-    "fetchguard.adapters.httpx",
-    "fetchguard.adapters.requests",
-    "fetchguard.testing",
-    "fetchguard.testing.barrier",
-    "fetchguard.testing.simulator",
-    "fetchguard.testing.counter",
+    "politefetch",
+    "politefetch.errors",
+    "politefetch.clock",
+    "politefetch.policy",
+    "politefetch.gate",
+    "politefetch.checks",
+    "politefetch.traffic",
+    "politefetch.status",
+    "politefetch.store",
+    "politefetch.store.memory",
+    "politefetch.store.sqlite",
+    "politefetch.store.postgres",
+    "politefetch.adapters",
+    "politefetch.adapters.urllib",
+    "politefetch.adapters.httpx",
+    "politefetch.adapters.requests",
+    "politefetch.testing",
+    "politefetch.testing.barrier",
+    "politefetch.testing.simulator",
+    "politefetch.testing.counter",
 ]
 
 # Third-party imports allowed per file; everything else must be stdlib.
@@ -73,6 +73,6 @@ def test_core_uses_only_the_standard_library(path: Path) -> None:
     foreign = {
         name
         for name in imported_top_levels(path)
-        if name not in sys.stdlib_module_names and name != "fetchguard"
+        if name not in sys.stdlib_module_names and name != "politefetch"
     }
     assert foreign <= allowed, f"{path.name} imports {sorted(foreign - allowed)}"

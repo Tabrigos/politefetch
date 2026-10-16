@@ -3,10 +3,12 @@ requires = ["hatchling>=1.27"]
 build-backend = "hatchling.build"
 
 [project]
-name = "fetchguard"
+name = "politefetch"
 version = "0.0.0"
 description = "A polite, crash-safe gate between an ingest service and the external sources it polls."
 readme = "README.md"
+license = "MIT"
+license-files = ["LICENSE"]
 requires-python = ">=3.12"
 dependencies = []
 classifiers = [
@@ -33,7 +35,7 @@ dev = [
 ]
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/fetchguard"]
+packages = ["src/politefetch"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
@@ -62,9 +64,9 @@ select = [
 ]
 
 [tool.ruff.lint.flake8-tidy-imports.banned-api]
-"time.time".msg = "Read time from an injected fetchguard.clock.Clock."
-"time.time_ns".msg = "Read time from an injected fetchguard.clock.Clock."
-"datetime.datetime.now".msg = "Read time from an injected fetchguard.clock.Clock."
-"datetime.datetime.utcnow".msg = "Read time from an injected fetchguard.clock.Clock."
-"datetime.datetime.today".msg = "Read time from an injected fetchguard.clock.Clock."
-"datetime.date.today".msg = "Read time from an injected fetchguard.clock.Clock."
+"time.time".msg = "Read time from an injected politefetch.clock.Clock."
+"time.time_ns".msg = "Read time from an injected politefetch.clock.Clock."
+"datetime.datetime.now".msg = "Read time from an injected politefetch.clock.Clock."
+"datetime.datetime.utcnow".msg = "Read time from an injected politefetch.clock.Clock."
+"datetime.datetime.today".msg = "Read time from an injected politefetch.clock.Clock."
+"datetime.date.today".msg = "Read time from an injected politefetch.clock.Clock."

@@ -1,4 +1,4 @@
-# fetchguard — specifica
+# politefetch — specifica
 
 ## Obiettivo
 
@@ -80,7 +80,7 @@ promesso deve sopravvivere al processo**.
 - **Adattatori di trasporto**: `urllib` (libreria standard, nel core), `httpx`
   e `requests` (extra). Il core non importa nessun client HTTP: cambiare
   libreria tocca solo l'adattatore.
-- **Kit di test** (`fetchguard.testing`): barriera sul socket, simulatore di
+- **Kit di test** (`politefetch.testing`): barriera sul socket, simulatore di
   fonte, contatore del caso peggiore.
 - **Stato leggibile**: per ogni host, prossima richiesta consentita, motivo
   dell'eventuale blocco, conteggi e byte di oggi, ultime righe; serializzabile
@@ -91,9 +91,9 @@ asincrona non si può attendere in sicurezza: la chiusura della riga in quel
 caso la fa la riconciliazione, e la specifica lo dichiara invece di fingere.
 
 ```python
-from fetchguard import Gate, HostPolicy
-from fetchguard.store import SqliteStore
-from fetchguard.adapters.httpx import HttpxFetcher
+from politefetch import Gate, HostPolicy
+from politefetch.store import SqliteStore
+from politefetch.adapters.httpx import HttpxFetcher
 
 gate = Gate(SqliteStore("ingest.db"), policies={
     "services.swpc.noaa.gov": HostPolicy(daily_cap=2000, min_interval="60s"),

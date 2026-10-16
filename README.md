@@ -1,4 +1,4 @@
-# fetchguard
+# politefetch
 
 A polite, crash-safe gate between an ingest service and the external sources
 it polls. It keeps the source safe from you (one attempt per call, persistent
@@ -14,7 +14,7 @@ and `docs/TAPPE.md` for the plan.
 ## Why another library
 
 Retry, rate-limit and circuit-breaker libraries assume that trying again is
-good and keep their state in memory. fetchguard assumes the opposite, because
+good and keep their state in memory. politefetch assumes the opposite, because
 it was born from sources that put the caller's address in their firewall:
 **every request has a cost, and the memory of what was promised must outlive
 the process.**
@@ -33,9 +33,9 @@ the process.**
 Not implemented yet; names may change.
 
 ```python
-from fetchguard import Gate, HostPolicy
-from fetchguard.store import SqliteStore
-from fetchguard.adapters.httpx import HttpxFetcher
+from politefetch import Gate, HostPolicy
+from politefetch.store import SqliteStore
+from politefetch.adapters.httpx import HttpxFetcher
 
 gate = Gate(
     SqliteStore("ingest.db"),
@@ -50,18 +50,18 @@ result = fetch.get(url, expect="json", data_time=lambda body: ..., max_age="3h")
 
 ## What is there today
 
-- `fetchguard.errors`: `FetchGuardError`, `Refused` (with a reason and a
+- `politefetch.errors`: `PoliteFetchError`, `Refused` (with a reason and a
   retry-after time), and the content errors `SourceNotReady`,
   `UnexpectedContent`, `StaleData`, `StuckSource`.
-- `fetchguard.clock`: the `Clock` protocol, `SystemClock` and `FakeClock`.
+- `politefetch.clock`: the `Clock` protocol, `SystemClock` and `FakeClock`.
   Nothing in the library reads the wall clock directly.
-- `fetchguard.testing.barrier`: `NetworkBarrier`, which makes every attempt
+- `politefetch.testing.barrier`: `NetworkBarrier`, which makes every attempt
   to leave the machine raise `NetworkBlockedError` before a packet is sent,
   while loopback and Unix sockets keep working:
 
   ```python
   import pytest
-  from fetchguard.testing.barrier import NetworkBarrier
+  from politefetch.testing.barrier import NetworkBarrier
 
   @pytest.fixture(autouse=True)
   def network_barrier():

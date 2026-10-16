@@ -5,10 +5,10 @@ from datetime import UTC, datetime, timedelta, timezone
 
 import pytest
 
-from fetchguard import errors
-from fetchguard.errors import (
+from politefetch import errors
+from politefetch.errors import (
     ContentError,
-    FetchGuardError,
+    PoliteFetchError,
     RefusalReason,
     Refused,
     SourceNotReady,
@@ -20,7 +20,7 @@ from fetchguard.errors import (
 T = datetime(2026, 10, 16, 12, 0, tzinfo=UTC)
 
 
-def sample_errors() -> list[FetchGuardError]:
+def sample_errors() -> list[PoliteFetchError]:
     return [
         Refused("example.org", RefusalReason.DAILY_CAP, T),
         Refused("example.org", RefusalReason.FROZEN, None),
@@ -31,9 +31,9 @@ def sample_errors() -> list[FetchGuardError]:
     ]
 
 
-def test_every_error_is_a_fetchguard_error() -> None:
+def test_every_error_is_a_politefetch_error() -> None:
     for exc in sample_errors():
-        assert isinstance(exc, FetchGuardError)
+        assert isinstance(exc, PoliteFetchError)
         assert isinstance(exc, Exception)
 
 
@@ -49,10 +49,10 @@ def test_public_names_cover_the_hierarchy() -> None:
         name
         for name in errors.__all__
         if isinstance(getattr(errors, name), type)
-        and issubclass(getattr(errors, name), FetchGuardError)
+        and issubclass(getattr(errors, name), PoliteFetchError)
     }
     assert exported == {
-        "FetchGuardError",
+        "PoliteFetchError",
         "Refused",
         "ContentError",
         "SourceNotReady",
@@ -152,7 +152,7 @@ def test_content_errors_carry_url_and_detail() -> None:
 
 
 @pytest.mark.parametrize("exc", sample_errors(), ids=lambda e: type(e).__name__)
-def test_errors_survive_pickling(exc: FetchGuardError) -> None:
+def test_errors_survive_pickling(exc: PoliteFetchError) -> None:
     # Errors cross process boundaries (multiprocessing, worker pools).
     copy = pickle.loads(pickle.dumps(exc))
     assert type(copy) is type(exc)

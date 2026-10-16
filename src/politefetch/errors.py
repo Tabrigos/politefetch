@@ -1,6 +1,6 @@
-"""The exceptions fetchguard raises.
+"""The exceptions politefetch raises.
 
-    FetchGuardError
+    PoliteFetchError
     ├── Refused              the gate said no: no request was sent
     └── ContentError         a request was sent, but its response is unusable
         ├── SourceNotReady   truncated or empty body; transient
@@ -15,11 +15,11 @@ pickling across process boundaries.
 from datetime import datetime, timedelta
 from enum import StrEnum
 
-from fetchguard.clock import as_utc
+from politefetch.clock import as_utc
 
 __all__ = [
     "ContentError",
-    "FetchGuardError",
+    "PoliteFetchError",
     "RefusalReason",
     "Refused",
     "SourceNotReady",
@@ -29,8 +29,8 @@ __all__ = [
 ]
 
 
-class FetchGuardError(Exception):
-    """Base class for every error raised by fetchguard."""
+class PoliteFetchError(Exception):
+    """Base class for every error raised by politefetch."""
 
 
 class RefusalReason(StrEnum):
@@ -51,7 +51,7 @@ class RefusalReason(StrEnum):
     """Today's byte budget for the host is used up."""
 
 
-class Refused(FetchGuardError):
+class Refused(PoliteFetchError):
     """The gate refused the request; nothing was sent to the host.
 
     `retry_after` is the earliest time at which asking again may succeed. It
@@ -85,7 +85,7 @@ class Refused(FetchGuardError):
         return f"{self.host}: refused ({self.reason.value}), {when}"
 
 
-class ContentError(FetchGuardError):
+class ContentError(PoliteFetchError):
     """A request was sent and answered, but the answer cannot be used."""
 
     url: str | None
@@ -188,5 +188,7 @@ class StuckSource(ContentError):
         )
 
 
-def _rebuild(cls: type[FetchGuardError], fields: dict[str, object]) -> FetchGuardError:
+def _rebuild(
+    cls: type[PoliteFetchError], fields: dict[str, object]
+) -> PoliteFetchError:
     return cls(**fields)
