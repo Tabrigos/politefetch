@@ -4,16 +4,25 @@
 
 Riscritto da capo a ogni fine sessione, mai accodato.
 
-- **Stato**: specifica e tappe scritte, nessun codice. Tappe riviste: barriera
-  in T0, suite di contratto dello store in T1, simulatore come server locale
-  in T6, nuovo ordine (T5 dopo T6, T7 dopo T3 e T4).
-- **Prossimo passo**: T0, che trascrive in `docs/DECISIONI.md` le tre decisioni
-  del Log del 2026-10-15.
-- **Dubbi aperti**: il nome (`fetchguard` non risultava su PyPI il
-  2026-10-15, da riverificare in T0); lo stato di httpx (vedi T5); 429 con
-  `Retry-After` (la regola 3 dice sia "minimo" sia "congela": la lettura
-  prudente è congelare, da scrivere in T2); il push di `.github/workflows/`
-  potrebbe essere rifiutato dalle credenziali dell'ambiente (T0 lo scopre).
+- **Stato**: T0 fatta. Impianto (`uv`, `hatchling`, ruff, mypy strict,
+  pytest, `hypothesis`, CI su 3.12 e 3.13), moduli vuoti con docstring,
+  gerarchia degli errori, `Clock` con `SystemClock` e `FakeClock`, barriera
+  sul socket attiva in ogni test, `docs/DECISIONI.md` (D-001…D-009).
+- **Prossimo passo**: T1 (store e registro), che crea anche la suite di
+  contratto (D-002).
+- **Dubbi aperti**:
+  - il nome: `fetch-guard` esiste già su PyPI, quindi `fetchguard` rischia il
+    rifiuto (D-005); alternative `fetchwarden`, `politefetch`, `pollwarden`.
+    Meglio decidere prima di T1;
+  - la licenza, non ancora scelta (D-009);
+  - 429 con `Retry-After`: la lettura prudente è congelare, da scrivere in T2;
+  - la barriera non raggiunge i processi figli: i test con due processi di T1
+    devono attivarla anche nel figlio (D-008);
+  - il push del workflow in `.github/workflows/` non è ancora stato provato
+    con le credenziali dell'ambiente: se viene rifiutato, il file va aggiunto
+    a mano;
+  - lo stato di httpx (vedi T5): il 2026-10-16 `httpx` è a 0.28.1 e `httpx2`
+    a 2.13.1.
 
 ## Log
 
@@ -34,3 +43,9 @@ Una riga per sessione: data, tappa, cosa è entrato, cosa resta.
   (romperebbe l'atomicità: il budget di byte si consuma nella transazione di
   apertura); (3) il simulatore è un server HTTP locale, così T6 non dipende
   da T5 e gli adattatori si provano sul codice reale.
+- 2026-10-16 — T0. Entrati: impianto, errori, orologio, barriera con la prova
+  sulla regola 5 (1.1.1.1 bloccato, loopback e socket Unix passano, test
+  basati su proprietà su tutti gli indirizzi), test che il core usi solo la
+  libreria standard, CI, README, `docs/DECISIONI.md`. Ricognizione: nessuna
+  delle cinque librerie copre gran parte di `SPEC.md` (D-004). Resta: nome e
+  licenza da decidere.

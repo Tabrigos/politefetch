@@ -17,7 +17,7 @@ T5 dopo T2, T4 e T6 (i suoi test usano il simulatore); T7 dopo T3 e T4
 
 ## T0 — Impianto e ricognizione
 
-- [ ] Fatta
+- [x] Fatta
 
 - `pyproject.toml` con `uv` e `hatchling`, Python ≥ 3.12, layout
   `src/fetchguard/`, extra vuoti `httpx`, `requests`, `postgres`; ruff, mypy
