@@ -94,6 +94,7 @@ def test_refusal_reasons_are_stable_strings() -> None:
     # These strings end up in the store and in JSON status: renaming one is a
     # breaking change.
     assert {r.value for r in RefusalReason} == {
+        "in_flight",
         "min_interval",
         "backoff",
         "frozen",

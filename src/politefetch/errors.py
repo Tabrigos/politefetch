@@ -39,6 +39,8 @@ class RefusalReason(StrEnum):
     The values are stored and serialised: renaming one is a breaking change.
     """
 
+    IN_FLIGHT = "in_flight"
+    """Another request to the host is still open: one at a time per host."""
     MIN_INTERVAL = "min_interval"
     """The minimum interval since the previous request has not elapsed."""
     BACKOFF = "backoff"
