@@ -6,10 +6,10 @@ per-host promises and daily caps that survive restarts, freezing on 403/429/451)
 and keeps you safe from the source (truncated bodies, HTML instead of JSON,
 data that stopped advancing even though every request "succeeds").
 
-**Status: in development, not released.** Only the foundations exist so far:
-the error hierarchy, the injectable clock and the test socket barrier. The
-gate, the stores and the adapters are coming; see `SPEC.md` for the design
-and `docs/TAPPE.md` for the plan.
+**Status: in development, not released.** The gate, the host policies and
+the stores (memory and SQLite) exist; content checks, conditional requests,
+the HTTP adapters and the source simulator are coming. See `SPEC.md` for the
+design and `docs/TAPPE.md` for the plan.
 
 ## Why another library
 
@@ -50,6 +50,29 @@ result = fetch.get(url, expect="json", data_time=lambda body: ..., max_age="3h")
 
 ## What is there today
 
+- `politefetch.Gate` and `politefetch.HostPolicy`: the gate every request
+  goes through, sync or async, with the client of your choice:
+
+  ```python
+  from politefetch import Gate, HostPolicy
+  from politefetch.store import SqliteStore
+
+  gate = Gate(
+      SqliteStore("ingest.db"),
+      {"celestrak.org": HostPolicy(daily_cap=40, min_interval="2h")},
+  )
+  with gate.attempt(url) as attempt:  # raises Refused: nothing is sent
+      response = client.get(url)
+      attempt.response(
+          response.status_code, retry_after=response.headers.get("Retry-After")
+      )
+  ```
+
+  `gate.may_fetch(url)` says whether a request may start now and, if not,
+  why and until when; `gate.unfreeze(host, by="you")` lifts a freeze and
+  leaves a trace.
+- `politefetch.store`: `SqliteStore` (the default, safe to share between
+  processes) and `MemoryStore` (tests).
 - `politefetch.errors`: `PoliteFetchError`, `Refused` (with a reason and a
   retry-after time), and the content errors `SourceNotReady`,
   `UnexpectedContent`, `StaleData`, `StuckSource`.
