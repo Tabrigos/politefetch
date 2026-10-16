@@ -18,9 +18,6 @@ Riscritto da capo a ogni fine sessione, mai accodato.
   - 429 con `Retry-After`: la lettura prudente è congelare, da scrivere in T2;
   - la barriera non raggiunge i processi figli: i test con due processi di T1
     devono attivarla anche nel figlio (D-008);
-  - il push del workflow in `.github/workflows/` non è ancora stato provato
-    con le credenziali dell'ambiente: se viene rifiutato, il file va aggiunto
-    a mano;
   - lo stato di httpx (vedi T5): il 2026-10-16 `httpx` è a 0.28.1 e `httpx2`
     a 2.13.1.
 
