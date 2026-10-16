@@ -1,4 +1,4 @@
-# fetchguard — regole per gli agenti
+# politefetch — regole per gli agenti
 
 Libreria Python che protegge le fonti esterne da chi le interroga (promesse
 persistenti, un solo tentativo, tetti per host) e chi le interroga dai dati
@@ -41,8 +41,9 @@ uv run mypy
 - **Il principio guida**: nel dubbio, la libreria fa partire **meno**
   richieste. Un falso "non puoi" costa un dato in ritardo; un falso "puoi"
   può costare un ban.
-- **I test non usano la rete.** La barriera sul socket è attiva in ogni test;
-  le risposte vengono dal simulatore o da trasporti finti.
+- **I test non usano la rete.** La barriera sul socket è attiva in ogni test e
+  lascia passare solo il loopback e i socket Unix (simulatore locale,
+  Postgres); le risposte vengono dal simulatore o da trasporti finti.
 - **Il core usa solo la libreria standard.** Client HTTP, Postgres e
   `hypothesis` stanno negli extra o nelle dipendenze di sviluppo.
 - **Lo stato critico sta nello store**, mai solo in memoria: promesse,
