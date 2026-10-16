@@ -1,0 +1,223 @@
+"""Store invariants under random operations, crashes and restarts.
+
+The machine drives a store the way processes would: it opens requests, closes
+some, crashes (forgetting every request it had open), restarts the store,
+reconciles abandoned rows, and moves the clock, sometimes backwards. After
+every step it checks the invariants of SPEC.md that belong to the store:
+
+- the daily count never loses a request and never exceeds the cap;
+- a host never has two requests in flight;
+- a promise is never shortened except by a good answer;
+- after a reconciliation no row older than the threshold is left open;
+- a refused or failed operation writes nothing;
+- a restart changes nothing.
+"""
+
+import contextlib
+from datetime import UTC, date, datetime, timedelta
+
+from hypothesis import settings
+from hypothesis import strategies as st
+from hypothesis.stateful import (
+    Bundle,
+    RuleBasedStateMachine,
+    consumes,
+    invariant,
+    multiple,
+    precondition,
+    rule,
+)
+
+from politefetch.errors import RefusalReason, Refused
+from politefetch.store import (
+    HostState,
+    HostUpdate,
+    Outcome,
+    RequestRow,
+    RowState,
+    Store,
+)
+
+from .stores import Harness
+
+HOSTS = ["a.example", "b.example"]
+CAP = 3
+START = datetime(2026, 10, 16, 22, 0, tzinfo=UTC)  # near midnight: days change
+
+hosts = st.sampled_from(HOSTS)
+pauses = st.timedeltas(
+    min_value=timedelta(microseconds=1), max_value=timedelta(hours=3)
+)
+steps = st.timedeltas(min_value=timedelta(0), max_value=timedelta(hours=2))
+
+
+class StoreMachine(RuleBasedStateMachine):
+    kind = ""
+
+    open_rows = Bundle("open_rows")
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.harness = Harness(self.kind)
+        self.now = START
+        self.admitted: dict[tuple[str, date], int] = {}
+        self.promise: dict[str, datetime | None] = dict.fromkeys(HOSTS)
+        self.forgotten: set[int] = set()
+
+    def teardown(self) -> None:
+        self.harness.close()
+
+    @property
+    def store(self) -> Store:
+        return self.harness.store
+
+    def everything(self) -> object:
+        return ([self.store.host_state(h, self.now) for h in HOSTS], self.store.rows())
+
+    def check_promise_not_shortened(self, host: str) -> None:
+        before = self.promise[host]
+        after = self.store.host_state(host, self.now).not_before
+        if before is not None:
+            assert after is not None
+            assert after >= before
+        self.promise[host] = after
+
+    # --- operations ---------------------------------------------------------
+
+    @rule(target=open_rows, host=hosts, pause=pauses)
+    def open(self, host: str, pause: timedelta) -> object:
+        before = self.everything()
+        now = self.now
+        try:
+            row = self.store.open_request(
+                host,
+                f"https://{host}/x",
+                now=now,
+                daily_cap=CAP,
+                cautious=lambda _s: now + pause,
+            )
+        except Refused:
+            assert self.everything() == before
+            return multiple()
+        key = (host, now.date())
+        self.admitted[key] = self.admitted.get(key, 0) + 1
+        self.check_promise_not_shortened(host)
+        return row
+
+    @rule(host=hosts)
+    def open_with_a_broken_policy(self, host: str) -> None:
+        before = self.everything()
+
+        def broken(_state: HostState) -> datetime:
+            raise RuntimeError("crash inside the transaction")
+
+        with contextlib.suppress(RuntimeError, Refused):
+            self.store.open_request(
+                host, "https://x/", now=self.now, daily_cap=CAP, cautious=broken
+            )
+        assert self.everything() == before
+
+    @rule(row=consumes(open_rows), ok=st.booleans(), pause=pauses)
+    def close(self, row: RequestRow, ok: bool, pause: timedelta) -> None:
+        if row.id in self.forgotten:
+            return  # the process that opened it is dead
+        now = self.now
+        reason = RefusalReason.MIN_INTERVAL if ok else RefusalReason.BACKOFF
+        outcome = (
+            Outcome(ok=True, status=200) if ok else Outcome(ok=False, failure="reset")
+        )
+        closed = self.store.close_request(
+            row.id,
+            now=now,
+            outcome=outcome,
+            update=lambda _s: HostUpdate(now + pause, reason),
+        )
+        assert closed.state is not RowState.IN_FLIGHT
+        if ok and closed.state is RowState.CLOSED:
+            # A good answer may shorten the promise: start tracking afresh.
+            self.promise[row.host] = self.store.host_state(row.host, now).not_before
+        else:
+            self.check_promise_not_shortened(row.host)
+
+    @rule()
+    def crash(self) -> None:
+        # The process dies: nobody will close the requests it had open, and
+        # the next process reopens the store.
+        self.forgotten |= {r.id for r in self.store.rows(state=RowState.IN_FLIGHT)}
+        self.harness.restart()
+
+    @rule()
+    def restart(self) -> None:
+        before = self.everything()
+        self.harness.restart()
+        assert self.everything() == before
+
+    @rule(
+        older_than=st.timedeltas(
+            min_value=timedelta(seconds=1), max_value=timedelta(hours=4)
+        )
+    )
+    def reconcile(self, older_than: timedelta) -> None:
+        self.store.reconcile(now=self.now, older_than=older_than)
+        cutoff = self.now - older_than
+        for row in self.store.rows(state=RowState.IN_FLIGHT):
+            assert row.opened_at > cutoff
+        for host in HOSTS:
+            self.check_promise_not_shortened(host)
+
+    @rule(step=steps)
+    def tick(self, step: timedelta) -> None:
+        self.now += step
+
+    @precondition(lambda self: self.now > START)
+    @rule(
+        step=st.timedeltas(min_value=timedelta(seconds=1), max_value=timedelta(hours=1))
+    )
+    def clock_jumps_back(self, step: timedelta) -> None:
+        self.now -= step
+
+    # --- invariants ---------------------------------------------------------
+
+    @invariant()
+    def counts_lose_nothing_and_respect_the_cap(self) -> None:
+        for (host, day), admitted in self.admitted.items():
+            assert self.store.requests_on(host, day) == admitted
+            assert admitted <= CAP
+
+    @invariant()
+    def every_admitted_request_has_a_row(self) -> None:
+        assert len(self.store.rows()) == sum(self.admitted.values())
+
+    @invariant()
+    def at_most_one_request_in_flight_per_host(self) -> None:
+        for host in HOSTS:
+            in_flight = self.store.rows(host=host, state=RowState.IN_FLIGHT)
+            assert len(in_flight) <= 1
+            assert self.store.host_state(host, self.now).in_flight == len(in_flight)
+
+    @invariant()
+    def closed_rows_carry_an_outcome(self) -> None:
+        for row in self.store.rows():
+            if row.state is RowState.IN_FLIGHT:
+                assert row.outcome is None
+                assert row.closed_at is None
+            else:
+                assert row.outcome is not None
+                assert row.closed_at is not None
+            if row.state is RowState.RECONCILED:
+                assert row.outcome is not None
+                assert not row.outcome.ok
+
+
+class MemoryStoreMachine(StoreMachine):
+    kind = "memory"
+
+
+class SqliteStoreMachine(StoreMachine):
+    kind = "sqlite"
+
+
+TestMemoryStore = MemoryStoreMachine.TestCase
+TestSqliteStore = SqliteStoreMachine.TestCase
+TestSqliteStore.settings = settings(max_examples=50, deadline=None)
+TestMemoryStore.settings = settings(deadline=None)

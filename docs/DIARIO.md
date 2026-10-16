@@ -4,14 +4,20 @@
 
 Riscritto da capo a ogni fine sessione, mai accodato.
 
-- **Stato**: T0 fatta. Il progetto si chiama `politefetch` (D-010), licenza
-  MIT (D-011). Impianto (`uv`, `hatchling`, ruff, mypy strict, pytest,
-  `hypothesis`, CI su 3.12 e 3.13), moduli vuoti con docstring, gerarchia
-  degli errori, `Clock` con `SystemClock` e `FakeClock`, barriera sul socket
-  attiva in ogni test, `docs/DECISIONI.md` (D-001…D-013).
-- **Prossimo passo**: T1 (store e registro), che crea anche la suite di
-  contratto (D-002) e la funzione che avvia i processi figli sotto la
-  barriera (D-012). Prima: merge della PR di T0 su `main`.
+- **Stato**: T0 e T1 fatte. Lo store esiste in due versioni, memoria e
+  SQLite, con la suite di contratto, i test basati su proprietà (crash,
+  riavvii, orologio che salta indietro) e i test con più processi sullo
+  stesso file. I processi figli dei test partono da
+  `politefetch.testing.processes.spawn`, con la barriera attiva.
+- **Prossimo passo**: T2 (Gate e politiche). Da sapere prima di cominciare:
+  - il Gate passa allo store funzioni pure (`cautious`, `update`) che girano
+    dentro la transazione (D-014); `update` riceve lo stato prima della
+    chiusura, quindi la pausa si calcola con `state.failures + 1` (D-017);
+  - una richiesta appesa blocca l'host finché la riconciliazione non la
+    chiude (D-015): il Gate deve farla girare, con una soglia larga;
+  - 429 con `Retry-After` è deciso in D-013;
+  - resta da scegliere se avvolgere `sqlite3.OperationalError` (attesa sul
+    blocco scaduta) in un errore di politefetch (D-018).
 - **Dubbi aperti**:
   - il repository GitHub si chiama ancora `fetchguard` (D-010);
   - lo stato di httpx (vedi T5): il 2026-10-16 `httpx` è a 0.28.1 e `httpx2`
@@ -44,3 +50,11 @@ Una riga per sessione: data, tappa, cosa è entrato, cosa resta.
   esiste già su PyPI: il progetto diventa `politefetch` (D-010), licenza MIT
   (D-011). Decisi anche i processi figli sotto la barriera (D-012) e il 429
   con `Retry-After` (D-013).
+- 2026-10-16 — T1. Entrati: interfaccia `Store` con i controlli duri dentro
+  la transazione (D-014), `MemoryStore`, `SqliteStore`, una richiesta alla
+  volta per host con il nuovo motivo `in_flight` (D-015), rifiuto con il
+  vincolo che finisce per ultimo (D-016), riconciliazione (D-017), `spawn`
+  per i processi figli con la guardia (D-019). Controllato che i test
+  scoprano quattro difetti introdotti apposta (transazione `DEFERRED`,
+  promessa accorciata da un fallimento, controllo "in corso" tolto, conteggio
+  che non cresce). Resta: T2.
