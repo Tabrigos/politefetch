@@ -1,0 +1,295 @@
+"""The store interface, its records, and the rules every store applies.
+
+The hard checks live here, inside the store's own transaction, and do not
+depend on any other logic (rule 4 of SPEC.md): a frozen host, a request
+already in flight, a promise not yet expired and a used-up daily cap all
+refuse the request, whatever the caller computed. The caller only supplies
+the times it is responsible for (the cautious promise before a request, the
+next promise after it) as pure functions of the host state, which the store
+calls inside the transaction so they always see the current state.
+"""
+
+from collections.abc import Callable
+from dataclasses import dataclass, field, replace
+from datetime import UTC, date, datetime, timedelta
+from enum import StrEnum
+from types import TracebackType
+from typing import Protocol, Self
+
+from politefetch.clock import as_utc
+from politefetch.errors import RefusalReason, Refused
+
+__all__ = [
+    "ABANDONED",
+    "Freeze",
+    "HostState",
+    "HostUpdate",
+    "Outcome",
+    "RequestRow",
+    "RowState",
+    "Store",
+    "apply_close",
+    "check_admission",
+    "next_utc_midnight",
+]
+
+ABANDONED = "abandoned"
+"""Failure shape recorded on rows closed by reconciliation."""
+
+
+class RowState(StrEnum):
+    """Where a request row is in its life. Stored: do not rename."""
+
+    IN_FLIGHT = "in_flight"
+    CLOSED = "closed"
+    RECONCILED = "reconciled"
+
+
+@dataclass(frozen=True, slots=True)
+class Outcome:
+    """How a request ended, as the caller records it.
+
+    `failure` is the shape of the failure (connect timeout, reset, refusal,
+    TLS, HTTP status...); the adapters stage fixes its vocabulary.
+    """
+
+    ok: bool
+    status: int | None = None
+    failure: str | None = None
+
+    def __post_init__(self) -> None:
+        if self.ok and self.failure is not None:
+            raise ValueError("a successful outcome has no failure shape")
+
+
+@dataclass(frozen=True, slots=True)
+class Freeze:
+    """A host frozen after 403, 429 or 451.
+
+    `until` is `None` for a freeze that lasts until a person unlocks the host.
+    """
+
+    since: datetime
+    until: datetime | None = None
+    status: int | None = None
+    note: str = ""
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "since", as_utc(self.since, "since"))
+        if self.until is not None:
+            until = as_utc(self.until, "until")
+            if until <= self.since:
+                raise ValueError("a freeze must end after it starts")
+            object.__setattr__(self, "until", until)
+
+    def active(self, now: datetime) -> bool:
+        return self.until is None or now < self.until
+
+
+@dataclass(frozen=True, slots=True)
+class HostUpdate:
+    """What the caller wants written after a request: the next promise, and a
+    freeze if the answer calls for one."""
+
+    not_before: datetime
+    reason: RefusalReason
+    freeze: Freeze | None = None
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "not_before", as_utc(self.not_before, "not_before"))
+        if self.reason not in (RefusalReason.MIN_INTERVAL, RefusalReason.BACKOFF):
+            raise ValueError(
+                f"a promise is kept for min_interval or backoff, not {self.reason}"
+            )
+
+
+@dataclass(frozen=True, slots=True)
+class HostState:
+    """Everything the store knows about one host, as of one moment.
+
+    `requests_today` counts the requests opened on `day`, the UTC day of the
+    moment the state was read for. `failures` counts consecutive failures,
+    reset by a good answer.
+    """
+
+    host: str
+    day: date
+    requests_today: int = 0
+    not_before: datetime | None = None
+    not_before_reason: RefusalReason | None = None
+    failures: int = 0
+    freeze: Freeze | None = None
+    in_flight: int = 0
+
+
+@dataclass(frozen=True, slots=True)
+class RequestRow:
+    """One request in the log."""
+
+    id: int
+    host: str
+    url: str
+    opened_at: datetime
+    state: RowState
+    closed_at: datetime | None = None
+    outcome: Outcome | None = field(default=None)
+
+
+class Store(Protocol):
+    """Persistent state behind the gate.
+
+    `open_request`, `close_request` and `reconcile` are atomic, across
+    processes too for stores that can be shared.
+
+    The `cautious` and `update` functions run inside the store's transaction,
+    with the store locked: they must be pure and fast, and must not call the
+    store. If one raises, the operation writes nothing.
+    """
+
+    def host_state(self, host: str, now: datetime) -> HostState:
+        """Return the state of `host`, with today's count for `now`'s UTC day."""
+        ...
+
+    def requests_on(self, host: str, day: date) -> int:
+        """Return how many requests to `host` were opened on the UTC `day`."""
+        ...
+
+    def open_request(
+        self,
+        host: str,
+        url: str,
+        *,
+        now: datetime,
+        daily_cap: int,
+        cautious: Callable[[HostState], datetime],
+    ) -> RequestRow:
+        """Admit a request, or raise `Refused` having written nothing.
+
+        On admission, in one transaction: the cautious promise returned by
+        `cautious(state)` is written (it must be later than `now`), today's
+        count grows by one, and a row is opened in flight.
+        """
+        ...
+
+    def close_request(
+        self,
+        row_id: int,
+        *,
+        now: datetime,
+        outcome: Outcome,
+        update: Callable[[HostState], HostUpdate],
+    ) -> RequestRow:
+        """Close an in-flight row with its outcome and update the host.
+
+        `update` receives the host state before this close. A good outcome
+        may shorten the promise; a failure only lengthens it. Closing a row
+        that is no longer in flight (closed, or reconciled as failed) changes
+        nothing and returns the row as it is. Raises `KeyError` for an unknown
+        row.
+        """
+        ...
+
+    def reconcile(self, *, now: datetime, older_than: timedelta) -> list[RequestRow]:
+        """Close as failed every row in flight since `now - older_than` or
+        earlier, and return them. The cautious promise written when they
+        opened stays."""
+        ...
+
+    def row(self, row_id: int) -> RequestRow:
+        """Return one row; raise `KeyError` if it does not exist."""
+        ...
+
+    def rows(
+        self, *, host: str | None = None, state: RowState | None = None
+    ) -> list[RequestRow]:
+        """Return the rows matching the filters, oldest first."""
+        ...
+
+    def close(self) -> None:
+        """Release the store's resources. The persistent state stays."""
+        ...
+
+    def __enter__(self) -> Self: ...
+
+    def __exit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc: BaseException | None,
+        tb: TracebackType | None,
+    ) -> None: ...
+
+
+# --- the rules, shared by every store -------------------------------------------
+
+
+def next_utc_midnight(now: datetime) -> datetime:
+    return datetime.combine(now.date(), datetime.min.time(), UTC) + timedelta(days=1)
+
+
+def check_admission(state: HostState, now: datetime, daily_cap: int) -> Refused | None:
+    """Return why a request to the host must be refused now, or `None`.
+
+    When several constraints apply, the one that ends last is reported, so a
+    caller that waits for `retry_after` does not run into the next one.
+    """
+    if daily_cap < 0:
+        raise ValueError(f"daily_cap must not be negative, got {daily_cap}")
+    blocks: list[tuple[RefusalReason, datetime | None]] = []
+    if state.freeze is not None and state.freeze.active(now):
+        blocks.append((RefusalReason.FROZEN, state.freeze.until))
+    if state.in_flight > 0:
+        promise = state.not_before if state.not_before is not None else now
+        blocks.append((RefusalReason.IN_FLIGHT, max(promise, now)))
+    if state.not_before is not None and now < state.not_before:
+        reason = state.not_before_reason or RefusalReason.BACKOFF
+        blocks.append((reason, state.not_before))
+    if state.requests_today >= daily_cap:
+        blocks.append((RefusalReason.DAILY_CAP, next_utc_midnight(now)))
+    if not blocks:
+        return None
+    # A freeze without end beats everything; otherwise the latest end wins,
+    # and on a tie the earlier entry (the more specific reason).
+    reason, until = max(
+        blocks,
+        key=lambda b: (b[1] is None, b[1] or now, -blocks.index(b)),
+    )
+    return Refused(state.host, reason, until)
+
+
+def check_cautious(now: datetime, cautious: datetime) -> datetime:
+    cautious = as_utc(cautious, "cautious promise")
+    if cautious <= now:
+        raise ValueError(
+            "the cautious promise must be later than now: it assumes the request fails"
+        )
+    return cautious
+
+
+def apply_close(state: HostState, outcome: Outcome, update: HostUpdate) -> HostState:
+    """Return the host state after closing one of its requests."""
+    if outcome.ok:
+        if update.freeze is not None:
+            raise ValueError("a successful outcome cannot freeze the host")
+        return replace(
+            state,
+            not_before=update.not_before,
+            not_before_reason=update.reason,
+            failures=0,
+            in_flight=max(state.in_flight - 1, 0),
+        )
+    not_before, reason = state.not_before, state.not_before_reason
+    if not_before is None or update.not_before > not_before:
+        not_before, reason = update.not_before, update.reason
+    return replace(
+        state,
+        not_before=not_before,
+        not_before_reason=reason,
+        failures=state.failures + 1,
+        freeze=update.freeze if update.freeze is not None else state.freeze,
+        in_flight=max(state.in_flight - 1, 0),
+    )
+
+
+def check_threshold(older_than: timedelta) -> None:
+    if older_than <= timedelta(0):
+        raise ValueError(f"older_than must be positive, got {older_than}")
