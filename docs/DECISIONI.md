@@ -271,3 +271,120 @@ alla vecchia e la vecchia prende la riga "Superata da".
   allo scadere, o rispondono 429 in ciclo: un falso "puoi").
 - **Conseguenze**: T2 implementa l'opzione in `HostPolicy` e i test di
   scenario della scalata al secondo 429.
+
+## D-014 — I controlli duri stanno nello store; il Gate passa funzioni pure
+
+- **Data e tappa**: 2026-10-16, T1
+- **Contesto**: la decisione "può partire?" e la scrittura della promessa
+  prudente devono essere un'unica operazione atomica, anche fra processi; e
+  il tetto giornaliero deve reggere da solo, senza dipendere da altra logica
+  (regola 4).
+- **Decisione**:
+  - `open_request` controlla dentro la propria transazione congelamento,
+    richiesta già in corso, promessa non scaduta e tetto, e rifiuta con
+    `Refused` senza scrivere nulla, qualunque cosa abbia calcolato chi chiama;
+  - il Gate fornisce solo i tempi di cui è responsabile, come funzioni pure
+    dello stato dell'host: `cautious(state)` per la promessa prudente,
+    `update(state)` per la promessa dopo l'esito. Lo store le chiama dentro
+    la transazione, così vedono sempre lo stato corrente;
+  - le regole sono in `politefetch.store.base` (`check_admission`,
+    `apply_close`), condivise da tutti gli store: T7 le riusa per Postgres.
+- **Alternative scartate**:
+  - valori calcolati prima dal Gate su uno stato letto a parte: fra lettura e
+    scrittura un processo fermo (GC, VM sospesa) userebbe uno stato vecchio e
+    scriverebbe una promessa prudente più corta del dovuto;
+  - numeri di versione con conflitto e nuovo tentativo: corretto, ma sposta
+    un ciclo di ritentativi nel Gate per ottenere la stessa cosa;
+  - una sola funzione del Gate che decide tutto: il tetto dipenderebbe dalla
+    logica del Gate, contro la regola 4.
+- **Conseguenze**: le funzioni girano con lo store bloccato, quindi devono
+  essere pure e veloci e non devono chiamare lo store. Se sollevano
+  un'eccezione, l'operazione non scrive nulla.
+
+## D-015 — Una richiesta alla volta per host
+
+- **Data e tappa**: 2026-10-16, T1
+- **Contesto**: la promessa prudente può scadere mentre la richiesta è
+  ancora aperta (fonte che non risponde, processo appeso). Con la sola
+  promessa, a quel punto partirebbe una seconda richiesta verso un host che
+  già non risponde.
+- **Decisione**: finché un host ha una riga in corso, ogni nuova richiesta è
+  rifiutata con il nuovo motivo `RefusalReason.IN_FLIGHT`, fino alla
+  chiusura o alla riconciliazione della riga. `retry_after` è la promessa
+  prudente, se è nel futuro, altrimenti adesso. La promessa prudente deve
+  essere successiva ad adesso: un fallimento implica sempre una pausa.
+- **Alternative scartate**: affidarsi alla sola promessa prudente (permette
+  richieste concorrenti verso un host appeso).
+- **Conseguenze**: una richiesta appesa blocca l'host fino alla soglia di
+  riconciliazione. Per questo T2 deve far girare la riconciliazione, con una
+  soglia larga ma non infinita.
+
+## D-016 — Un rifiuto riporta il vincolo che finisce per ultimo
+
+- **Data e tappa**: 2026-10-16, T1
+- **Decisione**: se più vincoli bloccano insieme (per esempio tetto esaurito
+  fino a mezzanotte e promessa fino alle 8 del giorno dopo), `Refused` riporta
+  quello che finisce più tardi. Un congelamento senza scadenza vince su
+  tutto; a parità vale l'ordine congelamento, in corso, promessa, tetto.
+- **Alternative scartate**: un ordine fisso di priorità (chi aspetta
+  `retry_after` andrebbe a sbattere contro il vincolo successivo, con un
+  altro rifiuto e un altro giro).
+
+## D-017 — Chiusura e riconciliazione
+
+- **Data e tappa**: 2026-10-16, T1
+- **Decisione**:
+  - una chiusura con esito buono può accorciare la promessa e azzera i
+    fallimenti consecutivi; un fallimento la allunga soltanto (si tiene la
+    più lontana) e incrementa i fallimenti;
+  - un esito buono non può congelare l'host;
+  - `update(state)` riceve lo stato prima della chiusura: il Gate calcola la
+    pausa con `state.failures + 1`;
+  - la riconciliazione chiude come fallite le righe aperte da più della
+    soglia (stato `reconciled`, forma del fallimento `abandoned`), incrementa
+    i fallimenti e lascia la promessa prudente scritta all'apertura;
+  - una chiusura arrivata dopo la riconciliazione non cambia nulla: il
+    verdetto prudente resta, e la riga resta contata come fallita;
+  - un congelamento con scadenza smette di bloccare da solo alla scadenza;
+    il record resta nello store finché T2 non introduce lo sblocco.
+- **Alternative scartate**: lasciare che una chiusura tardiva con esito
+  buono accorci la promessa (la riconciliazione ha già detto "fallita", e
+  cambiare idea dopo sarebbe un falso "puoi").
+
+## D-018 — Lo store SQLite e lo store in memoria
+
+- **Data e tappa**: 2026-10-16, T1
+- **Decisione**:
+  - SQLite: ogni operazione critica è una transazione `BEGIN IMMEDIATE`, che
+    prende il blocco di scrittura prima di leggere. Giornale WAL,
+    `synchronous=FULL` (una promessa scritta sopravvive anche a un'interruzione
+    di corrente, non solo a un crash), attesa sul blocco di 30 secondi
+    configurabile; se l'attesa scade l'operazione solleva
+    `sqlite3.OperationalError` e nessuna richiesta parte. Tempi salvati come
+    testo UTC a larghezza fissa, che si ordina come i tempi. Tre tabelle:
+    `hosts`, `daily_counts`, `requests`;
+  - memoria: lo stato sta in un oggetto `MemoryData`. Passarlo a un nuovo
+    `MemoryStore` simula un riavvio; è atomico fra thread, non fra processi.
+- **Alternative scartate**: transazioni `DEFERRED` (due processi leggono
+  insieme "resta una richiesta" e la spendono entrambi: un test lo prova);
+  `synchronous=NORMAL` (più veloce, ma a questi volumi l'`fsync` non costa
+  nulla e la prudenza sì).
+- **Conseguenze**: T2 decide se avvolgere `sqlite3.OperationalError` in un
+  errore di politefetch.
+
+## D-019 — I processi figli dei test
+
+- **Data e tappa**: 2026-10-16, T1
+- **Decisione**: `politefetch.testing.processes.spawn(target, *args)` avvia
+  il figlio con il metodo `spawn` (un interprete nuovo, senza eredità
+  accidentali dal padre), vi attiva la barriera e restituisce il risultato o
+  rilancia l'eccezione del figlio. `join(timeout)` uccide il figlio se è
+  ancora vivo allo scadere; un figlio che muore senza risultato solleva
+  `ChildFailed` con il codice di uscita; `kill()` lo uccide con `SIGKILL`. Le
+  funzioni eseguite nei figli stanno in `tests/children.py`, e `tests/` è
+  ora un pacchetto. La guardia in `tests/test_layout.py` vieta nei test
+  `subprocess`, `multiprocessing`, `os.fork`, `os.exec*`, `os.spawn*`,
+  `os.system`, `os.popen`, `os.posix_spawn*` e `ProcessPoolExecutor`.
+- **Alternative scartate**: il metodo `fork` (copia anche la barriera del
+  padre, ma con i thread è fragile e Python lo sta abbandonando come
+  default).

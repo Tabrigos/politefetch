@@ -49,7 +49,7 @@ T5 dopo T2, T4 e T6 (i suoi test usano il simulatore); T7 dopo T3 e T4
 
 ## T1 — Store e registro
 
-- [ ] Fatta
+- [x] Fatta
 
 - Interfaccia `Store` e due implementazioni: memoria e SQLite (WAL, una
   transazione per operazione critica, sicura fra processi).
