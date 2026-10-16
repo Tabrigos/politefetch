@@ -4,20 +4,18 @@
 
 Riscritto da capo a ogni fine sessione, mai accodato.
 
-- **Stato**: T0 fatta. Impianto (`uv`, `hatchling`, ruff, mypy strict,
-  pytest, `hypothesis`, CI su 3.12 e 3.13), moduli vuoti con docstring,
-  gerarchia degli errori, `Clock` con `SystemClock` e `FakeClock`, barriera
-  sul socket attiva in ogni test, `docs/DECISIONI.md` (D-001…D-009).
+- **Stato**: T0 fatta. Il progetto si chiama `politefetch` (D-010), licenza
+  MIT (D-011). Impianto (`uv`, `hatchling`, ruff, mypy strict, pytest,
+  `hypothesis`, CI su 3.12 e 3.13), moduli vuoti con docstring, gerarchia
+  degli errori, `Clock` con `SystemClock` e `FakeClock`, barriera sul socket
+  attiva in ogni test, `docs/DECISIONI.md` (D-001…D-011).
 - **Prossimo passo**: T1 (store e registro), che crea anche la suite di
   contratto (D-002).
 - **Dubbi aperti**:
-  - il nome: `fetch-guard` esiste già su PyPI, quindi `fetchguard` rischia il
-    rifiuto (D-005); alternative `fetchwarden`, `politefetch`, `pollwarden`.
-    Meglio decidere prima di T1;
-  - la licenza, non ancora scelta (D-009);
-  - 429 con `Retry-After`: la lettura prudente è congelare, da scrivere in T2;
   - la barriera non raggiunge i processi figli: i test con due processi di T1
     devono attivarla anche nel figlio (D-008);
+  - 429 con `Retry-After`: la lettura prudente è congelare, da scrivere in T2;
+  - il repository GitHub si chiama ancora `fetchguard` (D-010);
   - lo stato di httpx (vedi T5): il 2026-10-16 `httpx` è a 0.28.1 e `httpx2`
     a 2.13.1.
 
@@ -44,5 +42,6 @@ Una riga per sessione: data, tappa, cosa è entrato, cosa resta.
   sulla regola 5 (1.1.1.1 bloccato, loopback e socket Unix passano, test
   basati su proprietà su tutti gli indirizzi), test che il core usi solo la
   libreria standard, CI, README, `docs/DECISIONI.md`. Ricognizione: nessuna
-  delle cinque librerie copre gran parte di `SPEC.md` (D-004). Resta: nome e
-  licenza da decidere.
+  delle cinque librerie copre gran parte di `SPEC.md` (D-004). `fetch-guard`
+  esiste già su PyPI: il progetto diventa `politefetch` (D-010), licenza MIT
+  (D-011).

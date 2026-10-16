@@ -111,6 +111,7 @@ alla vecchia e la vecchia prende la riga "Superata da".
 
 ## D-005 — Il nome `fetchguard` rischia di non essere registrabile
 
+- **Superata da**: D-010
 - **Data e tappa**: 2026-10-16, T0
 - **Contesto**: `fetchguard` non esiste su PyPI (404), ma `fetch-guard`
   esiste: un server MCP che scarica URL e li restituisce in markdown, ultima
@@ -204,3 +205,26 @@ alla vecchia e la vecchia prende la riga "Superata da".
     `uv sync` installa da solo.
 - **Conseguenze**: nessuna licenza è dichiarata in `pyproject.toml`: va
   scelta prima della pubblicazione (T8).
+
+## D-010 — Il nome è `politefetch`
+
+- **Data e tappa**: 2026-10-16, T0
+- **Contesto**: D-005; la persona che guida il progetto ha scelto fra le tre
+  alternative.
+- **Decisione**: pacchetto, modulo e distribuzione si chiamano
+  `politefetch`; l'errore base diventa `PoliteFetchError`. `politefetch` e
+  `polite-fetch` erano liberi su PyPI il 2026-10-16.
+- **Alternative scartate**: `fetchwarden`, `pollwarden`.
+- **Conseguenze**: le voci precedenti e il Log di `docs/DIARIO.md` citano
+  ancora `fetchguard` e `fetchguard.testing`: sono storia e non si
+  riscrivono. Il repository GitHub si chiama ancora `fetchguard`; il nome si
+  cambia dalle impostazioni del repo (GitHub reindirizza i vecchi URL).
+
+## D-011 — Licenza MIT
+
+- **Data e tappa**: 2026-10-16, T0
+- **Decisione**: licenza MIT, file `LICENSE` nella radice, dichiarata in
+  `pyproject.toml` con `license = "MIT"` e `license-files` (PEP 639, già
+  supportata da hatchling ≥ 1.27). Titolare del copyright: Sidereus Team, il nome
+  usato nel primo commit.
+- **Conseguenze**: chiude il punto aperto di D-009.
