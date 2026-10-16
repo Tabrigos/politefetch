@@ -23,6 +23,7 @@ import sqlite3
 import threading
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
+from dataclasses import replace
 from datetime import UTC, date, datetime, timedelta
 from types import TracebackType
 from typing import Any, Self
@@ -37,10 +38,12 @@ from politefetch.store.base import (
     Outcome,
     RequestRow,
     RowState,
+    Unfreeze,
     apply_close,
     check_admission,
     check_cautious,
     check_threshold,
+    check_unfreezer,
 )
 
 __all__ = ["SqliteStore"]
@@ -54,6 +57,7 @@ _SCHEMA = (
         not_before TEXT,
         not_before_reason TEXT,
         failures INTEGER NOT NULL DEFAULT 0,
+        throttled INTEGER NOT NULL DEFAULT 0,
         freeze_since TEXT,
         freeze_until TEXT,
         freeze_status INTEGER,
@@ -81,9 +85,27 @@ _SCHEMA = (
         failure TEXT
     )
     """,
+    """
+    CREATE TABLE IF NOT EXISTS unfreezes (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        host TEXT NOT NULL,
+        at TEXT NOT NULL,
+        by_whom TEXT NOT NULL,
+        note TEXT NOT NULL,
+        freeze_since TEXT NOT NULL,
+        freeze_until TEXT,
+        freeze_status INTEGER,
+        freeze_note TEXT NOT NULL
+    )
+    """,
     "CREATE INDEX IF NOT EXISTS requests_by_state ON requests (state, opened_at)",
     "CREATE INDEX IF NOT EXISTS requests_by_host ON requests (host, state)",
 )
+
+# Columns added after a table first shipped: created on databases that lack
+# them, so a file written by an earlier stage keeps working (no numbered
+# migrations before the first release, D-002).
+_ADDED_COLUMNS = (("hosts", "throttled", "INTEGER NOT NULL DEFAULT 0"),)
 
 _ROW_COLUMNS = "id, host, url, opened_at, state, closed_at, ok, status, failure"
 
@@ -98,6 +120,19 @@ def _from_text(value: str) -> datetime:
 
 def _maybe_time(value: str | None) -> datetime | None:
     return None if value is None else _from_text(value)
+
+
+def _freeze(
+    since: str | None, until: str | None, status: int | None, note: str | None
+) -> Freeze | None:
+    if since is None:
+        return None
+    return Freeze(
+        since=_from_text(since),
+        until=_maybe_time(until),
+        status=status,
+        note=note or "",
+    )
 
 
 def _row(record: tuple[Any, ...]) -> RequestRow:
@@ -136,6 +171,14 @@ class SqliteStore:
             with self._transaction(immediate=True) as conn:
                 for statement in _SCHEMA:
                     conn.execute(statement)
+                for table, column, declaration in _ADDED_COLUMNS:
+                    existing = {
+                        r[1] for r in conn.execute(f"PRAGMA table_info({table})")
+                    }
+                    if column not in existing:
+                        conn.execute(
+                            f"ALTER TABLE {table} ADD COLUMN {column} {declaration}"
+                        )
         except BaseException:
             self._conn.close()
             raise
@@ -160,8 +203,9 @@ class SqliteStore:
     def _state(conn: sqlite3.Connection, host: str, now: datetime) -> HostState:
         day = now.date()
         record = conn.execute(
-            "SELECT not_before, not_before_reason, failures, freeze_since,"
-            " freeze_until, freeze_status, freeze_note FROM hosts WHERE host = ?",
+            "SELECT not_before, not_before_reason, failures, throttled,"
+            " freeze_since, freeze_until, freeze_status, freeze_note"
+            " FROM hosts WHERE host = ?",
             (host,),
         ).fetchone()
         (count,) = conn.execute(
@@ -176,15 +220,8 @@ class SqliteStore:
         state = HostState(host=host, day=day, requests_today=count, in_flight=in_flight)
         if record is None:
             return state
-        not_before, reason, failures, f_since, f_until, f_status, f_note = record
-        freeze = None
-        if f_since is not None:
-            freeze = Freeze(
-                since=_from_text(f_since),
-                until=_maybe_time(f_until),
-                status=f_status,
-                note=f_note or "",
-            )
+        not_before, reason, failures, throttled = record[:4]
+        freeze = _freeze(*record[4:])
         return HostState(
             host=host,
             day=day,
@@ -194,6 +231,7 @@ class SqliteStore:
             failures=failures,
             freeze=freeze,
             in_flight=in_flight,
+            throttled=throttled,
         )
 
     @staticmethod
@@ -201,12 +239,13 @@ class SqliteStore:
         freeze = state.freeze
         conn.execute(
             "INSERT INTO hosts (host, not_before, not_before_reason, failures,"
-            " freeze_since, freeze_until, freeze_status, freeze_note)"
-            " VALUES (?, ?, ?, ?, ?, ?, ?, ?)"
+            " throttled, freeze_since, freeze_until, freeze_status, freeze_note)"
+            " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)"
             " ON CONFLICT (host) DO UPDATE SET"
             " not_before = excluded.not_before,"
             " not_before_reason = excluded.not_before_reason,"
             " failures = excluded.failures,"
+            " throttled = excluded.throttled,"
             " freeze_since = excluded.freeze_since,"
             " freeze_until = excluded.freeze_until,"
             " freeze_status = excluded.freeze_status,"
@@ -218,6 +257,7 @@ class SqliteStore:
                 if state.not_before_reason is None
                 else state.not_before_reason.value,
                 state.failures,
+                state.throttled,
                 None if freeze is None else _to_text(freeze.since),
                 None
                 if freeze is None or freeze.until is None
@@ -304,13 +344,8 @@ class SqliteStore:
             )
             self._write_host(
                 conn,
-                HostState(
-                    host=host,
-                    day=state.day,
-                    not_before=promise,
-                    not_before_reason=RefusalReason.BACKOFF,
-                    failures=state.failures,
-                    freeze=state.freeze,
+                replace(
+                    state, not_before=promise, not_before_reason=RefusalReason.BACKOFF
                 ),
             )
             row_id = cursor.lastrowid
@@ -392,6 +427,59 @@ class SqliteStore:
                     )
                 )
         return reconciled
+
+    def unfreeze(
+        self, host: str, *, now: datetime, by: str, note: str = ""
+    ) -> Unfreeze | None:
+        now = as_utc(now, "now")
+        check_unfreezer(by)
+        with self._transaction(immediate=True) as conn:
+            record = conn.execute(
+                "SELECT freeze_since, freeze_until, freeze_status, freeze_note"
+                " FROM hosts WHERE host = ?",
+                (host,),
+            ).fetchone()
+            freeze = None if record is None else _freeze(*record)
+            if freeze is None:
+                return None
+            cursor = conn.execute(
+                "INSERT INTO unfreezes (host, at, by_whom, note, freeze_since,"
+                " freeze_until, freeze_status, freeze_note)"
+                " VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                (host, _to_text(now), by, note, *record[:3], freeze.note),
+            )
+            conn.execute(
+                "UPDATE hosts SET freeze_since = NULL, freeze_until = NULL,"
+                " freeze_status = NULL, freeze_note = NULL WHERE host = ?",
+                (host,),
+            )
+            trace_id = cursor.lastrowid
+            assert trace_id is not None
+        return Unfreeze(id=trace_id, host=host, at=now, by=by, note=note, freeze=freeze)
+
+    def unfreezes(self, *, host: str | None = None) -> list[Unfreeze]:
+        where, params = ("", ()) if host is None else (" WHERE host = ?", (host,))
+        with self._transaction(immediate=False) as conn:
+            records = conn.execute(
+                "SELECT id, host, at, by_whom, note, freeze_since, freeze_until,"
+                f" freeze_status, freeze_note FROM unfreezes{where} ORDER BY id",
+                params,
+            ).fetchall()
+        traces = []
+        for row_id, h, at, by, note, *frozen in records:
+            freeze = _freeze(*frozen)
+            assert freeze is not None
+            traces.append(
+                Unfreeze(
+                    id=row_id,
+                    host=h,
+                    at=_from_text(at),
+                    by=by,
+                    note=note,
+                    freeze=freeze,
+                )
+            )
+        return traces
 
     # --- lifecycle ----------------------------------------------------------
 

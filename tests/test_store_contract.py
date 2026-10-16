@@ -18,6 +18,7 @@ from politefetch.store import (
     RequestRow,
     RowState,
     Store,
+    Unfreeze,
 )
 from politefetch.store.base import ABANDONED
 
@@ -508,3 +509,129 @@ def test_store_is_a_context_manager(harness: Harness) -> None:
         open_at(store, T)
     harness.restart()
     assert harness.store.host_state(HOST, T).requests_today == 1
+
+
+# --- 429 answers since the last good one (T2) ---------------------------------
+
+
+def close_with(store: Store, now: datetime, outcome: Outcome) -> None:
+    row = open_at(store, now, cap=100)
+    reason = RefusalReason.MIN_INTERVAL if outcome.ok else RefusalReason.BACKOFF
+    store.close_request(
+        row.id,
+        now=now,
+        outcome=outcome,
+        update=lambda _s: HostUpdate(now + timedelta(seconds=1), reason),
+    )
+
+
+def test_throttled_counts_429_answers_since_the_last_good_one(store: Store) -> None:
+    too_many = Outcome(ok=False, status=429, failure="http")
+    steps = [
+        (too_many, 1),
+        (FAIL, 1),  # a timeout is not a 429, and is not a good answer either
+        (Outcome(ok=False, status=503, failure="http"), 1),
+        (too_many, 2),
+        (OK, 0),
+        (too_many, 1),
+    ]
+    now = T
+    for outcome, expected in steps:
+        close_with(store, now, outcome)
+        assert store.host_state(HOST, now).throttled == expected
+        now += timedelta(hours=1)
+
+
+def test_reconcile_does_not_touch_throttled(store: Store) -> None:
+    close_with(store, T, Outcome(ok=False, status=429, failure="http"))
+    open_at(store, T + timedelta(hours=1))
+    store.reconcile(now=T + timedelta(hours=3), older_than=timedelta(hours=1))
+    assert store.host_state(HOST, T + timedelta(hours=3)).throttled == 1
+
+
+def test_opening_keeps_throttled(store: Store) -> None:
+    close_with(store, T, Outcome(ok=False, status=429, failure="http"))
+    open_at(store, T + timedelta(hours=1))
+    assert store.host_state(HOST, T + timedelta(hours=1)).throttled == 1
+
+
+# --- manual unfreeze (T2) -------------------------------------------------------
+
+
+def freeze_host(store: Store, freeze: Freeze, now: datetime = T) -> None:
+    row = open_at(store, now)
+    store.close_request(
+        row.id,
+        now=now,
+        outcome=Outcome(ok=False, status=freeze.status, failure="http"),
+        update=update(timedelta(minutes=1), RefusalReason.BACKOFF, freeze, base=now),
+    )
+
+
+def test_unfreeze_lifts_the_freeze_and_leaves_a_trace(harness: Harness) -> None:
+    store = harness.store
+    freeze = Freeze(since=T, status=403, note="Forbidden")
+    freeze_host(store, freeze)
+    later = T + timedelta(days=2)
+    trace = store.unfreeze(HOST, now=later, by="ops@example.org", note="asked them")
+    assert trace is not None
+    assert trace == Unfreeze(
+        id=trace.id,
+        host=HOST,
+        at=later,
+        by="ops@example.org",
+        note="asked them",
+        freeze=freeze,
+    )
+    state = store.host_state(HOST, later)
+    assert state.freeze is None
+    open_at(store, later)
+    assert store.unfreezes() == [trace]
+    assert harness.restart().unfreezes() == [trace]
+
+
+def test_unfreeze_keeps_failures_and_promise(store: Store) -> None:
+    freeze_host(store, Freeze(since=T, status=451))
+    before = store.host_state(HOST, T)
+    store.unfreeze(HOST, now=T, by="ops")
+    after_unfreeze = store.host_state(HOST, T)
+    assert after_unfreeze.failures == before.failures
+    assert after_unfreeze.not_before == before.not_before
+    assert after_unfreeze.throttled == before.throttled
+
+
+def test_unfreeze_of_a_host_not_frozen_does_nothing(store: Store) -> None:
+    open_at(store, T)
+    assert store.unfreeze(HOST, now=T, by="ops") is None
+    assert store.unfreeze("never-seen.example", now=T, by="ops") is None
+    assert store.unfreezes() == []
+
+
+def test_unfreeze_removes_an_expired_freeze_too(store: Store) -> None:
+    freeze = Freeze(since=T, until=T + timedelta(hours=1), status=429)
+    freeze_host(store, freeze)
+    trace = store.unfreeze(HOST, now=T + timedelta(hours=2), by="ops")
+    assert trace is not None
+    assert trace.freeze == freeze
+    assert store.host_state(HOST, T + timedelta(hours=2)).freeze is None
+
+
+def test_unfreeze_needs_someone(store: Store) -> None:
+    freeze_host(store, Freeze(since=T, status=403))
+    with pytest.raises(ValueError, match="by"):
+        store.unfreeze(HOST, now=T, by="  ")
+    assert store.host_state(HOST, T).freeze is not None
+
+
+def test_unfreezes_filter_by_host(store: Store) -> None:
+    for host in ("a.example", "b.example"):
+        row = open_at(store, T, host=host)
+        store.close_request(
+            row.id,
+            now=T,
+            outcome=Outcome(ok=False, status=403, failure="http"),
+            update=update(timedelta(1), RefusalReason.BACKOFF, Freeze(T, None, 403)),
+        )
+        store.unfreeze(host, now=T, by="ops")
+    assert [u.host for u in store.unfreezes(host="b.example")] == ["b.example"]
+    assert [u.host for u in store.unfreezes()] == ["a.example", "b.example"]

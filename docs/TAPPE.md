@@ -75,7 +75,7 @@ T5 dopo T2, T4 e T6 (i suoi test usano il simulatore); T7 dopo T3 e T4
 
 ## T2 — Gate e politiche
 
-- [ ] Fatta
+- [x] Fatta
 
 - `HostPolicy`: tetto giornaliero, intervallo minimo, pausa dopo errore
   (esponenziale con tetto), comportamento per 403/429/451 (congelamento fino

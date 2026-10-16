@@ -18,11 +18,15 @@ from politefetch.errors import (
     StuckSource,
     UnexpectedContent,
 )
+from politefetch.gate import Gate
+from politefetch.policy import HostPolicy
 
 __all__ = [
     "Clock",
     "ContentError",
     "FakeClock",
+    "Gate",
+    "HostPolicy",
     "PoliteFetchError",
     "RefusalReason",
     "Refused",
