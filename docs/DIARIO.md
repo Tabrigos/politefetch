@@ -4,20 +4,18 @@
 
 Riscritto da capo a ogni fine sessione, mai accodato.
 
-- **Stato**: T0, T1, T2 e T6 fatte. Esistono il Gate, le politiche, lo store
-  in memoria e SQLite, e il kit di test: plugin pytest (barriera con
-  controllo in chiusura, fixture del simulatore), simulatore di fonte con gli
-  scenari di `SPEC.md`, contatore, conteggi del caso peggiore.
-- **Prossimo passo**: T3 o T4 (in qualunque ordine); poi T5 (dopo T4) e T7
-  (dopo T3 e T4). Da sapere:
-  - T3 e T4 aggiungono metodi allo store: i test vanno nella suite di
-    contratto, le colonne nuove di tabelle esistenti in `_ADDED_COLUMNS`
-    (D-021);
-  - il budget di byte di T4 si controlla in `check_admission` e si consuma
-    in `open_request`, nella stessa transazione (D-002);
-  - T5 prova gli adattatori contro il simulatore e può sostituire il
-    chiamante ingenuo di `tests/fetching.py`; i conteggi di
-    `tests/test_worst_case.py` devono restare gli stessi (D-026).
+- **Stato**: T0, T1, T2, T4 e T6 fatte. Esistono il Gate, le politiche, le
+  richieste condizionali (validatori per URL), i byte per host e giorno con
+  il budget prenotato all'apertura, lo store in memoria e SQLite e il kit di
+  test.
+- **Prossimo passo**: T5 (adattatori) o T3 (controlli sul contenuto); T7
+  dopo T3. Da sapere:
+  - gli adattatori di T5 mandano `attempt.conditional_headers`, registrano
+    con `attempt.response(status, headers=..., wire_bytes=...,
+    decoded_bytes=...)` e si provano contro il simulatore; i conteggi di
+    `tests/test_worst_case.py` devono restare gli stessi (D-026);
+  - T3 aggiunge allo store lo storico per la fonte ferma: test nella suite di
+    contratto, colonne nuove in `_ADDED_COLUMNS` (D-021).
 - **Dubbi aperti**:
   - il repository GitHub si chiama ancora `fetchguard` (D-010);
   - lo stato di httpx (vedi T5): il 2026-10-16 `httpx` è a 0.28.1 e `httpx2`
@@ -69,3 +67,9 @@ Una riga per sessione: data, tappa, cosa è entrato, cosa resta.
   (D-026), test di scenario di T2 rifatti con HTTP vero e un processo ucciso
   a richiesta partita. Controllato che i test scoprano cinque difetti
   introdotti apposta. Resta: T3, T4.
+- 2026-10-17 — T4. Entrati: validatori per URL e intestazioni condizionali
+  (D-028), byte sul filo e decodificati per host e giorno, budget di byte
+  prenotato all'apertura e corretto alla chiusura (D-027), registrazione
+  della risposta dalle intestazioni (D-029), scenario `Validated` nel
+  simulatore. Controllato che i test scoprano sei difetti introdotti
+  apposta. Resta: T3, T5.

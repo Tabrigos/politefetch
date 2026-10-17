@@ -29,6 +29,8 @@ __all__ = [
     "RowState",
     "Store",
     "Unfreeze",
+    "UrlRecord",
+    "Validators",
     "apply_close",
     "check_admission",
     "next_utc_midnight",
@@ -52,15 +54,22 @@ class Outcome:
 
     `failure` is the shape of the failure (connect timeout, reset, refusal,
     TLS, HTTP status...); the adapters stage fixes its vocabulary.
+    `wire_bytes` is the body as transferred (compressed, if it was) and
+    `decoded_bytes` the body after decoding; `None` when unknown.
     """
 
     ok: bool
     status: int | None = None
     failure: str | None = None
+    wire_bytes: int | None = None
+    decoded_bytes: int | None = None
 
     def __post_init__(self) -> None:
         if self.ok and self.failure is not None:
             raise ValueError("a successful outcome has no failure shape")
+        for amount in (self.wire_bytes, self.decoded_bytes):
+            if amount is not None and amount < 0:
+                raise ValueError(f"bytes cannot be negative, got {amount}")
 
 
 @dataclass(frozen=True, slots=True)
@@ -88,6 +97,27 @@ class Freeze:
 
 
 @dataclass(frozen=True, slots=True)
+class Validators:
+    """What a source said about a resource's version: raw `ETag` and
+    `Last-Modified` header values, sent back as `If-None-Match` and
+    `If-Modified-Since`."""
+
+    etag: str | None = None
+    last_modified: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class UrlRecord:
+    """What the store remembers about one URL: its validators and the wire
+    size of its last full (200) answer, used to reserve bytes."""
+
+    url: str
+    validators: Validators
+    size: int | None
+    updated_at: datetime
+
+
+@dataclass(frozen=True, slots=True)
 class HostUpdate:
     """What the caller wants written after a request: the next promise, and a
     freeze if the answer calls for one."""
@@ -109,8 +139,10 @@ class HostState:
     """Everything the store knows about one host, as of one moment.
 
     `requests_today` counts the requests opened on `day`, the UTC day of the
-    moment the state was read for. `failures` counts consecutive failures,
-    and `throttled` the 429 answers, since the last good answer.
+    moment the state was read for, and so do `wire_bytes_today` (real bytes,
+    or the reservation of requests that never reported theirs) and
+    `decoded_bytes_today`. `failures` counts consecutive failures, and
+    `throttled` the 429 answers, since the last good answer.
     """
 
     host: str
@@ -122,6 +154,8 @@ class HostState:
     freeze: Freeze | None = None
     in_flight: int = 0
     throttled: int = 0
+    wire_bytes_today: int = 0
+    decoded_bytes_today: int = 0
 
 
 @dataclass(frozen=True, slots=True)
@@ -147,6 +181,7 @@ class RequestRow:
     state: RowState
     closed_at: datetime | None = None
     outcome: Outcome | None = field(default=None)
+    reserved_bytes: int = 0
 
 
 class Store(Protocol):
@@ -176,12 +211,15 @@ class Store(Protocol):
         now: datetime,
         daily_cap: int,
         cautious: Callable[[HostState], datetime],
+        byte_budget: int | None = None,
     ) -> RequestRow:
         """Admit a request, or raise `Refused` having written nothing.
 
         On admission, in one transaction: the cautious promise returned by
         `cautious(state)` is written (it must be later than `now`), today's
-        count grows by one, and a row is opened in flight.
+        count grows by one, the wire size of the URL's last full answer is
+        reserved against `byte_budget` (bytes per UTC day, `None` for no
+        limit), and a row is opened in flight.
         """
         ...
 
@@ -192,15 +230,22 @@ class Store(Protocol):
         now: datetime,
         outcome: Outcome,
         update: Callable[[HostState], HostUpdate],
+        validators: Validators | None = None,
     ) -> RequestRow:
         """Close an in-flight row with its outcome and update the host.
 
         `update` receives the host state before this close. A good outcome
-        may shorten the promise; a failure only lengthens it. Closing a row
-        that is no longer in flight (closed, or reconciled as failed) changes
-        nothing and returns the row as it is. Raises `KeyError` for an unknown
-        row.
+        may shorten the promise; a failure only lengthens it. The outcome's
+        wire bytes replace the row's reservation, on the day the row opened.
+        `validators` are those of the answer; see `apply_validators`. Closing
+        a row that is no longer in flight (closed, or reconciled as failed)
+        changes nothing and returns the row as it is. Raises `KeyError` for an
+        unknown row.
         """
+        ...
+
+    def url_record(self, url: str) -> UrlRecord | None:
+        """Return what the store remembers about `url`, if anything."""
         ...
 
     def reconcile(self, *, now: datetime, older_than: timedelta) -> list[RequestRow]:
@@ -254,14 +299,24 @@ def next_utc_midnight(now: datetime) -> datetime:
     return datetime.combine(now.date(), datetime.min.time(), UTC) + timedelta(days=1)
 
 
-def check_admission(state: HostState, now: datetime, daily_cap: int) -> Refused | None:
+def check_admission(
+    state: HostState,
+    now: datetime,
+    daily_cap: int,
+    byte_budget: int | None = None,
+    reserve: int = 0,
+) -> Refused | None:
     """Return why a request to the host must be refused now, or `None`.
 
-    When several constraints apply, the one that ends last is reported, so a
-    caller that waits for `retry_after` does not run into the next one.
+    `reserve` is the number of bytes the request would reserve against
+    `byte_budget`. When several constraints apply, the one that ends last is
+    reported, so a caller that waits for `retry_after` does not run into the
+    next one.
     """
     if daily_cap < 0:
         raise ValueError(f"daily_cap must not be negative, got {daily_cap}")
+    if byte_budget is not None and byte_budget < 0:
+        raise ValueError(f"byte_budget must not be negative, got {byte_budget}")
     blocks: list[tuple[RefusalReason, datetime | None]] = []
     if state.freeze is not None and state.freeze.active(now):
         blocks.append((RefusalReason.FROZEN, state.freeze.until))
@@ -273,6 +328,10 @@ def check_admission(state: HostState, now: datetime, daily_cap: int) -> Refused 
         blocks.append((reason, state.not_before))
     if state.requests_today >= daily_cap:
         blocks.append((RefusalReason.DAILY_CAP, next_utc_midnight(now)))
+    if byte_budget is not None:
+        used = state.wire_bytes_today
+        if used >= byte_budget or used + reserve > byte_budget:
+            blocks.append((RefusalReason.BYTE_BUDGET, next_utc_midnight(now)))
     if not blocks:
         return None
     # A freeze without end beats everything; otherwise the latest end wins,
@@ -318,6 +377,52 @@ def apply_close(state: HostState, outcome: Outcome, update: HostUpdate) -> HostS
         freeze=update.freeze if update.freeze is not None else state.freeze,
         in_flight=max(state.in_flight - 1, 0),
     )
+
+
+def apply_validators(
+    previous: UrlRecord | None,
+    url: str,
+    outcome: Outcome,
+    validators: Validators | None,
+    now: datetime,
+) -> UrlRecord | None:
+    """Return the URL record after an answer, or `None` to leave it as is.
+
+    A 200 replaces the validators (an answer without them forgets the old
+    ones) and records its wire size. A 304 keeps what was known, refreshing
+    only the validators it carries. Anything else changes nothing.
+    """
+    if not outcome.ok:
+        return None
+    if outcome.status == 200:
+        size = outcome.wire_bytes
+        if size is None and previous is not None:
+            size = previous.size
+        return UrlRecord(url, validators or Validators(), size, now)
+    if outcome.status == 304:
+        if previous is None and validators is None:
+            return None
+        old = previous.validators if previous is not None else Validators()
+        new = validators or Validators()
+        merged = Validators(
+            etag=new.etag if new.etag is not None else old.etag,
+            last_modified=(
+                new.last_modified
+                if new.last_modified is not None
+                else old.last_modified
+            ),
+        )
+        if previous is not None and merged == previous.validators:
+            return None
+        return UrlRecord(url, merged, previous.size if previous else None, now)
+    return None
+
+
+def byte_changes(row: RequestRow, outcome: Outcome) -> tuple[int, int]:
+    """How a close changes the day's (wire, decoded) bytes: the real wire
+    bytes replace the reservation; without them the reservation stays."""
+    wire = 0 if outcome.wire_bytes is None else outcome.wire_bytes - row.reserved_bytes
+    return wire, outcome.decoded_bytes or 0
 
 
 def check_unfreezer(by: str) -> str:

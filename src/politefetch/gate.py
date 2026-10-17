@@ -6,8 +6,9 @@
         attempt.response(response.status_code,
                          retry_after=response.headers.get("Retry-After"))
 
-Entering `attempt` writes the cautious promise, consumes the daily cap and
-opens the log row in one atomic store operation; leaving it closes the row
+Entering `attempt` writes the cautious promise, consumes the daily cap,
+reserves bytes against the byte budget and opens the log row in one atomic
+store operation; leaving it closes the row
 with the outcome the caller recorded, in a `finally`. An attempt left without
 an outcome counts as failed, and so does one ended by an exception, which is
 re-raised. The gate never retries (rule 2).
@@ -26,6 +27,7 @@ import asyncio
 from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import datetime, timedelta
+from email.message import Message
 from types import TracebackType
 from typing import Self
 from urllib.parse import urlsplit
@@ -38,6 +40,7 @@ from politefetch.store.base import (
     RequestRow,
     Store,
     Unfreeze,
+    Validators,
     check_admission,
 )
 
@@ -45,6 +48,16 @@ __all__ = ["Attempt", "Gate", "Verdict"]
 
 UNRECORDED = "unrecorded"
 """Failure shape of an attempt that ended without an outcome."""
+
+Headers = Mapping[str, str] | Message
+"""Response headers: any mapping (httpx, requests) or an `email.message.Message`
+(urllib, http.client)."""
+
+
+def _lowercase(headers: Headers | None) -> dict[str, str]:
+    if headers is None:
+        return {}
+    return {str(name).lower(): str(value) for name, value in headers.items()}
 
 
 @dataclass(frozen=True, slots=True)
@@ -110,7 +123,11 @@ class Gate:
         now = self.clock.now()
         self.reconcile(now)
         state = self.store.host_state(host, now)
-        return Verdict(check_admission(state, now, policy.daily_cap))
+        record = self.store.url_record(url)
+        reserve = record.size if record is not None and record.size else 0
+        return Verdict(
+            check_admission(state, now, policy.daily_cap, policy.byte_budget, reserve)
+        )
 
     def attempt(self, url: str) -> "Attempt":
         """A context manager (sync or async) around one request to `url`."""
@@ -135,6 +152,8 @@ class Attempt:
         self._row: RequestRow | None = None
         self._outcome: Outcome | None = None
         self._retry_at: datetime | None = None
+        self._validators: Validators | None = None
+        self._conditional: dict[str, str] = {}
         self.result: RequestRow | None = None
         """The closed row, once the block has ended (`None` if cancelled)."""
 
@@ -149,30 +168,72 @@ class Attempt:
     def outcome(self) -> Outcome | None:
         return self._outcome
 
-    def response(self, status: int, *, retry_after: str | None = None) -> None:
+    @property
+    def conditional_headers(self) -> dict[str, str]:
+        """`If-None-Match` and `If-Modified-Since` for this URL, from the
+        validators of its last answer; send them with the request."""
+        return dict(self._conditional)
+
+    def response(
+        self,
+        status: int,
+        *,
+        headers: Headers | None = None,
+        retry_after: str | None = None,
+        wire_bytes: int | None = None,
+        decoded_bytes: int | None = None,
+    ) -> None:
         """Record that the source answered with HTTP `status`.
 
         2xx and 3xx (304 included) are good answers; anything else is a
-        failure. `retry_after` is the raw Retry-After header, if any.
+        failure. From `headers` the gate reads Retry-After, ETag and
+        Last-Modified; `retry_after`, if given, wins over the header.
+        `wire_bytes` is the body as transferred, `decoded_bytes` after
+        decoding.
         """
         if not 100 <= status <= 599:
             raise ValueError(f"not an HTTP status: {status}")
         ok = 200 <= status < 400
-        retry_at = parse_retry_after(retry_after, self._gate.clock.now())
-        self._record(
-            Outcome(ok=ok, status=status, failure=None if ok else "http"), retry_at
+        found = _lowercase(headers)
+        if retry_after is None:
+            retry_after = found.get("retry-after")
+        etag, last_modified = found.get("etag"), found.get("last-modified")
+        validators = None
+        if etag is not None or last_modified is not None:
+            validators = Validators(etag=etag, last_modified=last_modified)
+        outcome = Outcome(
+            ok=ok,
+            status=status,
+            failure=None if ok else "http",
+            wire_bytes=wire_bytes,
+            decoded_bytes=decoded_bytes,
         )
+        retry_at = parse_retry_after(retry_after, self._gate.clock.now())
+        self._record(outcome, retry_at, validators)
 
-    def failure(self, shape: str) -> None:
-        """Record that no HTTP answer came, and how it failed (connect
-        timeout, reset, refusal, TLS...)."""
-        self._record(Outcome(ok=False, failure=shape), None)
+    def failure(
+        self,
+        shape: str,
+        *,
+        wire_bytes: int | None = None,
+        decoded_bytes: int | None = None,
+    ) -> None:
+        """Record that no usable HTTP answer came, and how it failed (connect
+        timeout, reset, refusal, TLS, truncated body...), with the bytes that
+        did arrive, if any."""
+        outcome = Outcome(
+            ok=False, failure=shape, wire_bytes=wire_bytes, decoded_bytes=decoded_bytes
+        )
+        self._record(outcome, None, None)
 
-    def _record(self, outcome: Outcome, retry_at: datetime | None) -> None:
+    def _record(
+        self, outcome: Outcome, retry_at: datetime | None, validators: Validators | None
+    ) -> None:
         if self._outcome is not None:
             raise RuntimeError("the outcome of this attempt is already recorded")
         self._outcome = outcome
         self._retry_at = retry_at
+        self._validators = validators
 
     # --- opening and closing ------------------------------------------------
 
@@ -187,8 +248,15 @@ class Attempt:
             self.url,
             now=now,
             daily_cap=policy.daily_cap,
+            byte_budget=policy.byte_budget,
             cautious=lambda state: policy.cautious_until(state, now),
         )
+        record = gate.store.url_record(self.url)
+        if record is not None:
+            if record.validators.etag is not None:
+                self._conditional["If-None-Match"] = record.validators.etag
+            if record.validators.last_modified is not None:
+                self._conditional["If-Modified-Since"] = record.validators.last_modified
 
     def _close(self, exc: BaseException | None) -> None:
         outcome = self._outcome
@@ -203,6 +271,7 @@ class Attempt:
             now=now,
             outcome=outcome,
             update=lambda state: policy.after(state, now, outcome, retry_at),
+            validators=self._validators,
         )
 
     def __enter__(self) -> Self:

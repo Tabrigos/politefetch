@@ -19,6 +19,7 @@ from politefetch.testing.simulator import (
     SourceSimulator,
     TooManyRequests,
     Truncated,
+    Validated,
     advancing_json,
     closed_port_url,
     stuck_json,
@@ -203,3 +204,38 @@ def test_counter_is_safe_across_threads() -> None:
         t.join()
     assert counter.count == 1600
     assert sorted(r.number for r in counter.requests) == list(range(1, 1601))
+
+
+def test_validated_answers_304_to_a_matching_etag(source: SourceSimulator) -> None:
+    source.scenario = Validated(b'{"a": 1}', etag='"v1"')
+    status, headers, body = get(source.url())
+    assert (status, headers["ETag"], body) == (200, '"v1"', b'{"a": 1}')
+    request = urllib.request.Request(source.url(), headers={"If-None-Match": '"v1"'})
+    with pytest.raises(urllib.error.HTTPError) as error:
+        urllib.request.urlopen(request, timeout=5)
+    assert error.value.code == 304
+    error.value.close()
+    other = urllib.request.Request(source.url(), headers={"If-None-Match": '"v0"'})
+    with urllib.request.urlopen(other, timeout=5) as response:
+        assert response.status == 200
+
+
+def test_validated_answers_304_to_if_modified_since(source: SourceSimulator) -> None:
+    source.scenario = Validated(b"{}", last_modified="Fri, 16 Oct 2026 10:00:00 GMT")
+    _, headers, _ = get(source.url())
+    assert headers["Last-Modified"] == "Fri, 16 Oct 2026 10:00:00 GMT"
+    for since, expected in [
+        ("Fri, 16 Oct 2026 10:00:00 GMT", 304),
+        ("Fri, 16 Oct 2026 11:00:00 GMT", 304),
+        ("Fri, 16 Oct 2026 09:00:00 GMT", 200),
+    ]:
+        request = urllib.request.Request(
+            source.url(), headers={"If-Modified-Since": since}
+        )
+        try:
+            with urllib.request.urlopen(request, timeout=5) as response:
+                code = response.status
+        except urllib.error.HTTPError as error:
+            code = error.code
+            error.close()
+        assert code == expected

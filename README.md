@@ -6,9 +6,9 @@ per-host promises and daily caps that survive restarts, freezing on 403/429/451)
 and keeps you safe from the source (truncated bodies, HTML instead of JSON,
 data that stopped advancing even though every request "succeeds").
 
-**Status: in development, not released.** The gate, the host policies, the
-stores (memory and SQLite) and the test kit exist; content checks,
-conditional requests and the HTTP adapters are coming. See `SPEC.md` for the
+**Status: in development, not released.** The gate, the host policies,
+conditional requests, byte accounting, the stores (memory and SQLite) and
+the test kit exist; content checks and the HTTP adapters are coming. See `SPEC.md` for the
 design and `docs/TAPPE.md` for the plan.
 
 ## Why another library
@@ -59,18 +59,26 @@ result = fetch.get(url, expect="json", data_time=lambda body: ..., max_age="3h")
 
   gate = Gate(
       SqliteStore("ingest.db"),
-      {"celestrak.org": HostPolicy(daily_cap=40, min_interval="2h")},
+      {
+          "celestrak.org": HostPolicy(
+              daily_cap=40, min_interval="2h", byte_budget="50MB"
+          )
+      },
   )
   with gate.attempt(url) as attempt:  # raises Refused: nothing is sent
-      response = client.get(url)
+      response = client.get(url, headers=attempt.conditional_headers)
       attempt.response(
-          response.status_code, retry_after=response.headers.get("Retry-After")
+          response.status_code,
+          headers=response.headers,  # Retry-After, ETag, Last-Modified
+          wire_bytes=wire_size,  # the body as transferred
+          decoded_bytes=len(response.content),
       )
   ```
 
-  `gate.may_fetch(url)` says whether a request may start now and, if not,
-  why and until when; `gate.unfreeze(host, by="you")` lifts a freeze and
-  leaves a trace.
+  `attempt.conditional_headers` carries `If-None-Match` and
+  `If-Modified-Since` from the URL's last answer. `gate.may_fetch(url)` says
+  whether a request may start now and, if not, why and until when;
+  `gate.unfreeze(host, by="you")` lifts a freeze and leaves a trace.
 - `politefetch.store`: `SqliteStore` (the default, safe to share between
   processes) and `MemoryStore` (tests).
 - `politefetch.errors`: `PoliteFetchError`, `Refused` (with a reason and a

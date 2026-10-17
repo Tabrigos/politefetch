@@ -107,7 +107,7 @@ suite di contratto).
 
 ## T4 — Richieste condizionali e traffico
 
-- [ ] Fatta
+- [x] Fatta
 
 ETag e Last-Modified per URL nello store; byte sul filo e decodificati per
 host e giorno; budget di byte per host consumato come il tetto, nella stessa

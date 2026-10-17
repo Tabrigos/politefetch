@@ -16,6 +16,8 @@ from politefetch.store.base import (
     RowState,
     Store,
     Unfreeze,
+    UrlRecord,
+    Validators,
 )
 from politefetch.store.memory import MemoryData, MemoryStore
 from politefetch.store.sqlite import SqliteStore
@@ -32,4 +34,6 @@ __all__ = [
     "SqliteStore",
     "Store",
     "Unfreeze",
+    "UrlRecord",
+    "Validators",
 ]

@@ -15,7 +15,7 @@ from datetime import UTC, datetime, timedelta
 from politefetch.errors import RefusalReason
 from politefetch.store.base import Freeze, HostState, HostUpdate, Outcome
 
-__all__ = ["HostPolicy", "parse_duration", "parse_retry_after"]
+__all__ = ["HostPolicy", "parse_duration", "parse_retry_after", "parse_size"]
 
 _DURATION = re.compile(
     r"(?:(?P<d>\d+)d)?(?:(?P<h>\d+)h)?(?:(?P<m>\d+)m(?!s))?"
@@ -27,6 +27,17 @@ _UNITS = {
     "m": timedelta(minutes=1),
     "s": timedelta(seconds=1),
     "ms": timedelta(milliseconds=1),
+}
+
+_SIZE = re.compile(r"(?P<amount>\d+)(?P<unit>B|kB|MB|GB|KiB|MiB|GiB)")
+_SIZE_UNITS = {
+    "B": 1,
+    "kB": 1000,
+    "MB": 1000**2,
+    "GB": 1000**3,
+    "KiB": 1024,
+    "MiB": 1024**2,
+    "GiB": 1024**3,
 }
 
 # A Retry-After further away than this is treated as this far: the header is
@@ -60,6 +71,26 @@ def parse_duration(value: timedelta | str) -> timedelta:
         ),
         timedelta(0),
     )
+
+
+def parse_size(value: int | str) -> int:
+    """Turn 1500, "500B", "2kB", "50MB", "1GB", "2KiB", "50MiB" or "1GiB" into
+    bytes.
+
+    Decimal units (kB = 1000) and binary units (KiB = 1024) are both exact;
+    spellings that could mean either ("5mb", "5Kb") and bare numbers in text
+    are rejected.
+    """
+    if isinstance(value, bool):
+        raise ValueError(f"not a size: {value!r}")
+    if isinstance(value, int):
+        if value < 0:
+            raise ValueError(f"a size cannot be negative, got {value}")
+        return value
+    match = _SIZE.fullmatch(value.strip())
+    if match is None:
+        raise ValueError(f"not a size: {value!r} (use e.g. '500kB', '50MB', '1GiB')")
+    return int(match["amount"]) * _SIZE_UNITS[match["unit"]]
 
 
 def parse_retry_after(value: str | None, now: datetime) -> datetime | None:
@@ -99,8 +130,11 @@ class HostPolicy:
     - `respect_retry_after_429`: off by default. When on, the first 429 since
       the last good answer that carries a Retry-After only pauses; any other
       429 freezes.
+    - `byte_budget`: wire bytes per UTC day, `None` (default) for no limit.
+      Each request reserves the size of its URL's last full answer.
 
-    Durations accept a `timedelta` or a string such as "90s" or "2h".
+    Durations accept a `timedelta` or a string such as "90s" or "2h"; sizes an
+    int (bytes) or a string such as "50MB".
     """
 
     daily_cap: int
@@ -110,6 +144,7 @@ class HostPolicy:
     backoff_max: timedelta
     freeze_for: timedelta | None
     respect_retry_after_429: bool
+    byte_budget: int | None
 
     def __init__(
         self,
@@ -121,6 +156,7 @@ class HostPolicy:
         backoff_max: timedelta | str = "6h",
         freeze_for: timedelta | str | None = None,
         respect_retry_after_429: bool = False,
+        byte_budget: int | str | None = None,
     ) -> None:
         if (
             isinstance(daily_cap, bool)
@@ -149,6 +185,11 @@ class HostPolicy:
         set_field(self, "backoff_max", cap)
         set_field(self, "freeze_for", freeze)
         set_field(self, "respect_retry_after_429", bool(respect_retry_after_429))
+        set_field(
+            self,
+            "byte_budget",
+            None if byte_budget is None else parse_size(byte_budget),
+        )
 
     def backoff(self, failures: int) -> timedelta:
         """The pause after the `failures`-th consecutive failure."""

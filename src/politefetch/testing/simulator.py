@@ -13,7 +13,8 @@ the scenario plays (`politefetch.testing.counter`).
 Scenarios: `Respond` (any status, body, headers), `TooManyRequests`, `Html`,
 `Truncated` (body shorter than its Content-Length), `NoAnswer` (holds the
 connection until the simulator stops), `Reset` (closes with a TCP reset),
-`stuck_json` and `advancing_json` (data whose time stays put or moves on).
+`stuck_json` and `advancing_json` (data whose time stays put or moves on),
+`Validated` (answers 304 to a matching If-None-Match or If-Modified-Since).
 A source that refuses connections is a closed port: `closed_port_url()`.
 
 Every answer closes the connection (`Connection: close`). Socket timeouts
@@ -27,6 +28,7 @@ import struct
 import threading
 from collections.abc import Callable, Mapping
 from datetime import datetime, timedelta
+from email.utils import parsedate_to_datetime
 from http import HTTPStatus
 from types import TracebackType
 from typing import Protocol, Self
@@ -42,6 +44,7 @@ __all__ = [
     "SourceSimulator",
     "TooManyRequests",
     "Truncated",
+    "Validated",
     "advancing_json",
     "closed_port_url",
     "stuck_json",
@@ -138,6 +141,55 @@ class Html(Respond):
         super().__init__(
             status, self.PAGE, content_type="text/html; charset=utf-8", name=name
         )
+
+
+class Validated:
+    """A resource with an ETag and/or Last-Modified: 304 when the request's
+    conditional headers match, 200 with the body otherwise."""
+
+    def __init__(
+        self,
+        body: bytes = b"{}",
+        *,
+        etag: str | None = None,
+        last_modified: str | None = None,
+        content_type: str = "application/json",
+        name: str = "validated",
+    ) -> None:
+        self.body = body
+        self.etag = etag
+        self.last_modified = last_modified
+        self.content_type = content_type
+        self.name = name
+
+    def _not_modified(self, request: SourceRequest) -> bool:
+        if_none_match = request.headers.get("if-none-match")
+        if if_none_match is not None:
+            return self.etag is not None and self.etag in {
+                tag.strip() for tag in if_none_match.split(",")
+            }
+        since = request.headers.get("if-modified-since")
+        if since is None or self.last_modified is None:
+            return False
+        try:
+            return parsedate_to_datetime(self.last_modified) <= parsedate_to_datetime(
+                since
+            )
+        except (TypeError, ValueError):
+            return False
+
+    def serve(
+        self, conn: socket.socket, request: SourceRequest, stop: threading.Event
+    ) -> None:
+        headers = {}
+        if self.etag is not None:
+            headers["ETag"] = self.etag
+        if self.last_modified is not None:
+            headers["Last-Modified"] = self.last_modified
+        if self._not_modified(request):
+            _send(conn, 304, headers, b"")
+        else:
+            _send(conn, 200, {"Content-Type": self.content_type, **headers}, self.body)
 
 
 class Truncated:

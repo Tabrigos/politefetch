@@ -36,12 +36,15 @@ from politefetch.store import (
     RequestRow,
     RowState,
     Store,
+    Validators,
 )
 
 from .stores import Harness
 
 HOSTS = ["a.example", "b.example"]
+PATHS = ["/a", "/b"]
 CAP = 3
+BUDGET = 5000
 START = datetime(2026, 10, 16, 22, 0, tzinfo=UTC)  # near midnight: days change
 
 hosts = st.sampled_from(HOSTS)
@@ -72,7 +75,12 @@ class StoreMachine(RuleBasedStateMachine):
         return self.harness.store
 
     def everything(self) -> object:
-        return ([self.store.host_state(h, self.now) for h in HOSTS], self.store.rows())
+        urls = [f"https://{h}{p}" for h in HOSTS for p in PATHS]
+        return (
+            [self.store.host_state(h, self.now) for h in HOSTS],
+            self.store.rows(),
+            [self.store.url_record(u) for u in urls],
+        )
 
     def check_promise_not_shortened(self, host: str) -> None:
         before = self.promise[host]
@@ -84,21 +92,30 @@ class StoreMachine(RuleBasedStateMachine):
 
     # --- operations ---------------------------------------------------------
 
-    @rule(target=open_rows, host=hosts, pause=pauses)
-    def open(self, host: str, pause: timedelta) -> object:
+    @rule(target=open_rows, host=hosts, path=st.sampled_from(PATHS), pause=pauses)
+    def open(self, host: str, path: str, pause: timedelta) -> object:
         before = self.everything()
         now = self.now
+        url = f"https://{host}{path}"
+        used = self.store.host_state(host, now).wire_bytes_today
+        record = self.store.url_record(url)
+        expected_reserve = record.size if record is not None and record.size else 0
         try:
             row = self.store.open_request(
                 host,
-                f"https://{host}/x",
+                url,
                 now=now,
                 daily_cap=CAP,
+                byte_budget=BUDGET,
                 cautious=lambda _s: now + pause,
             )
         except Refused:
             assert self.everything() == before
             return multiple()
+        # Admitted: the budget had room for what this request reserves.
+        assert row.reserved_bytes == expected_reserve
+        assert used < BUDGET
+        assert used + row.reserved_bytes <= BUDGET
         key = (host, now.date())
         self.admitted[key] = self.admitted.get(key, 0) + 1
         self.check_promise_not_shortened(host)
@@ -117,21 +134,46 @@ class StoreMachine(RuleBasedStateMachine):
             )
         assert self.everything() == before
 
-    @rule(row=consumes(open_rows), ok=st.booleans(), pause=pauses)
-    def close(self, row: RequestRow, ok: bool, pause: timedelta) -> None:
+    @rule(
+        row=consumes(open_rows),
+        status=st.sampled_from([200, 304, None]),
+        wire=st.one_of(st.none(), st.integers(min_value=0, max_value=3000)),
+        etag=st.sampled_from([None, '"v1"', '"v2"']),
+        pause=pauses,
+    )
+    def close(
+        self,
+        row: RequestRow,
+        status: int | None,
+        wire: int | None,
+        etag: str | None,
+        pause: timedelta,
+    ) -> None:
         if row.id in self.forgotten:
             return  # the process that opened it is dead
         now = self.now
+        ok = status is not None
         reason = RefusalReason.MIN_INTERVAL if ok else RefusalReason.BACKOFF
         outcome = (
-            Outcome(ok=True, status=200) if ok else Outcome(ok=False, failure="reset")
+            Outcome(ok=True, status=status, wire_bytes=wire)
+            if ok
+            else Outcome(ok=False, failure="reset", wire_bytes=wire)
         )
+        before = self.store.url_record(row.url)
         closed = self.store.close_request(
             row.id,
             now=now,
             outcome=outcome,
             update=lambda _s: HostUpdate(now + pause, reason),
+            validators=None if etag is None else Validators(etag=etag),
         )
+        after_close = self.store.url_record(row.url)
+        if status == 304 and before is not None:
+            # A 304 never forgets what the source told us before.
+            assert after_close is not None
+            assert after_close.size == before.size
+            if before.validators.etag is not None:
+                assert after_close.validators.etag is not None
         assert closed.state is not RowState.IN_FLIGHT
         if ok and closed.state is RowState.CLOSED:
             # A good answer may shorten the promise: start tracking afresh.
@@ -183,6 +225,19 @@ class StoreMachine(RuleBasedStateMachine):
         for (host, day), admitted in self.admitted.items():
             assert self.store.requests_on(host, day) == admitted
             assert admitted <= CAP
+
+    @invariant()
+    def bytes_are_real_bytes_or_reservations(self) -> None:
+        expected: dict[tuple[str, date], int] = {}
+        for row in self.store.rows():
+            real = row.outcome.wire_bytes if row.outcome is not None else None
+            key = (row.host, row.opened_at.date())
+            expected[key] = expected.get(key, 0) + (
+                real if real is not None else row.reserved_bytes
+            )
+        for (host, day), total in expected.items():
+            moment = datetime.combine(day, datetime.min.time(), UTC)
+            assert self.store.host_state(host, moment).wire_bytes_today == total
 
     @invariant()
     def every_admitted_request_has_a_row(self) -> None:

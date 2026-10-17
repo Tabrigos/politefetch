@@ -23,7 +23,11 @@ from politefetch.store.base import (
     RequestRow,
     RowState,
     Unfreeze,
+    UrlRecord,
+    Validators,
     apply_close,
+    apply_validators,
+    byte_changes,
     check_admission,
     check_cautious,
     check_threshold,
@@ -39,6 +43,9 @@ class MemoryData:
 
     hosts: dict[str, HostState] = field(default_factory=dict)
     counts: dict[tuple[str, date], int] = field(default_factory=dict)
+    wire: dict[tuple[str, date], int] = field(default_factory=dict)
+    decoded: dict[tuple[str, date], int] = field(default_factory=dict)
+    urls: dict[str, UrlRecord] = field(default_factory=dict)
     rows: dict[int, RequestRow] = field(default_factory=dict)
     next_id: int = 1
     unfreezes: list[Unfreeze] = field(default_factory=list)
@@ -67,6 +74,8 @@ class MemoryStore:
             day=day,
             requests_today=self.data.counts.get((host, day), 0),
             in_flight=in_flight,
+            wire_bytes_today=self.data.wire.get((host, day), 0),
+            decoded_bytes_today=self.data.decoded.get((host, day), 0),
         )
 
     def host_state(self, host: str, now: datetime) -> HostState:
@@ -103,11 +112,14 @@ class MemoryStore:
         now: datetime,
         daily_cap: int,
         cautious: Callable[[HostState], datetime],
+        byte_budget: int | None = None,
     ) -> RequestRow:
         now = as_utc(now, "now")
         with self.data.lock:
             state = self._state(host, now)
-            refusal = check_admission(state, now, daily_cap)
+            record = self.data.urls.get(url)
+            reserve = record.size if record is not None and record.size else 0
+            refusal = check_admission(state, now, daily_cap, byte_budget, reserve)
             if refusal is not None:
                 raise refusal
             promise = check_cautious(now, cautious(state))
@@ -118,11 +130,13 @@ class MemoryStore:
                 url=url,
                 opened_at=now,
                 state=RowState.IN_FLIGHT,
+                reserved_bytes=reserve,
             )
             self.data.next_id += 1
             self.data.rows[row.id] = row
             key = (host, now.date())
             self.data.counts[key] = self.data.counts.get(key, 0) + 1
+            self.data.wire[key] = self.data.wire.get(key, 0) + reserve
             self.data.hosts[host] = replace(
                 state, not_before=promise, not_before_reason=RefusalReason.BACKOFF
             )
@@ -135,6 +149,7 @@ class MemoryStore:
         now: datetime,
         outcome: Outcome,
         update: Callable[[HostState], HostUpdate],
+        validators: Validators | None = None,
     ) -> RequestRow:
         now = as_utc(now, "now")
         with self.data.lock:
@@ -143,10 +158,24 @@ class MemoryStore:
                 return row
             state = self._state(row.host, now)
             new_state = apply_close(state, outcome, update(state))
+            record = apply_validators(
+                self.data.urls.get(row.url), row.url, outcome, validators, now
+            )
+            # Nothing has been written yet: everything below cannot fail.
             closed = replace(row, state=RowState.CLOSED, closed_at=now, outcome=outcome)
             self.data.rows[row_id] = closed
             self.data.hosts[row.host] = new_state
+            if record is not None:
+                self.data.urls[row.url] = record
+            wire, decoded = byte_changes(row, outcome)
+            key = (row.host, row.opened_at.date())
+            self.data.wire[key] = self.data.wire.get(key, 0) + wire
+            self.data.decoded[key] = self.data.decoded.get(key, 0) + decoded
             return closed
+
+    def url_record(self, url: str) -> UrlRecord | None:
+        with self.data.lock:
+            return self.data.urls.get(url)
 
     def reconcile(self, *, now: datetime, older_than: timedelta) -> list[RequestRow]:
         now = as_utc(now, "now")
