@@ -6,9 +6,9 @@ per-host promises and daily caps that survive restarts, freezing on 403/429/451)
 and keeps you safe from the source (truncated bodies, HTML instead of JSON,
 data that stopped advancing even though every request "succeeds").
 
-**Status: in development, not released.** The gate, the host policies and
-the stores (memory and SQLite) exist; content checks, conditional requests,
-the HTTP adapters and the source simulator are coming. See `SPEC.md` for the
+**Status: in development, not released.** The gate, the host policies, the
+stores (memory and SQLite) and the test kit exist; content checks,
+conditional requests and the HTTP adapters are coming. See `SPEC.md` for the
 design and `docs/TAPPE.md` for the plan.
 
 ## Why another library
@@ -78,18 +78,25 @@ result = fetch.get(url, expect="json", data_time=lambda body: ..., max_age="3h")
   `UnexpectedContent`, `StaleData`, `StuckSource`.
 - `politefetch.clock`: the `Clock` protocol, `SystemClock` and `FakeClock`.
   Nothing in the library reads the wall clock directly.
-- `politefetch.testing.barrier`: `NetworkBarrier`, which makes every attempt
-  to leave the machine raise `NetworkBlockedError` before a packet is sent,
-  while loopback and Unix sockets keep working:
+- `politefetch.testing`, the test kit, with a pytest plugin that is
+  installed with the package and does nothing until asked:
+  - `politefetch_barrier = true` in your pytest configuration puts every test
+    behind a socket barrier: any attempt to leave the machine raises
+    `NetworkBlockedError` before a packet is sent, loopback and Unix sockets
+    keep working, and a test whose code swallowed the error fails anyway;
+  - the `source_simulator` fixture is a real HTTP server on 127.0.0.1 that
+    plays the bad days of a source (never answers, resets, 429, truncated
+    body, HTML, stuck data) and counts the requests that actually reached it;
+  - `politefetch.testing.processes.spawn` runs a function in a child process
+    behind the barrier, and can kill it mid-request.
 
   ```python
-  import pytest
-  from politefetch.testing.barrier import NetworkBarrier
+  from politefetch.testing.simulator import NoAnswer
 
-  @pytest.fixture(autouse=True)
-  def network_barrier():
-      with NetworkBarrier() as barrier:
-          yield barrier
+  def test_my_ingest_gives_up_politely(source_simulator):
+      source_simulator.scenario = NoAnswer()
+      run_my_ingest_for_a_day(source_simulator.url("/data.json"))
+      assert source_simulator.counter.count <= 11
   ```
 
 ## Development
