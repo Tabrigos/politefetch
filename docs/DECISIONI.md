@@ -536,3 +536,60 @@ alla vecchia e la vecchia prende la riga "Superata da".
   scelte che T3 e T5 faranno per bene.
 - **Conseguenze**: un cambiamento delle politiche che fa partire più
   richieste fa fallire questi conteggi esatti, e va motivato.
+
+## D-027 — Il budget di byte si prenota all'apertura
+
+- **Data e tappa**: 2026-10-17, T4
+- **Contesto**: la tappa vuole il budget "consumato come il tetto, nella
+  stessa transazione dell'apertura", ma all'apertura i byte della risposta
+  non si conoscono ancora.
+- **Decisione**:
+  - all'apertura lo store prenota i byte sul filo dell'ultima risposta
+    completa (200) dello stesso URL, zero se non ne ha mai vista una, e
+    rifiuta (`byte_budget`, fino alla mezzanotte UTC) se i byte del giorno
+    hanno già raggiunto il budget o se la prenotazione lo sforerebbe;
+  - alla chiusura i byte veri sostituiscono la prenotazione, contati sul
+    giorno in cui la richiesta è partita; se la chiusura non porta i byte, o
+    se la riga viene riconciliata, la prenotazione resta consumata;
+  - si contano i byte del corpo: sul filo (compressi, se lo erano) per il
+    budget, e decodificati a parte; le intestazioni no.
+- **Alternative scartate**: contare solo alla chiusura (un processo che muore
+  a metà non lascerebbe traccia dei byte); una stima fissa per tutte le
+  richieste (arbitraria, e troppo bassa o troppo alta a seconda della fonte).
+- **Conseguenze**: la prima richiesta a un URL non prenota nulla e può
+  sforare il budget della sua grandezza; dalla seconda in poi la prenotazione
+  la ferma prima. Un 304 piccolo dopo un 200 grande restituisce al budget la
+  differenza.
+
+## D-028 — I validatori per URL
+
+- **Data e tappa**: 2026-10-17, T4
+- **Decisione**:
+  - lo store ricorda per ogni URL `ETag` e `Last-Modified` (il testo grezzo
+    delle intestazioni) e la grandezza dell'ultima risposta completa, in una
+    tabella `urls` separata dal registro;
+  - un 200 sostituisce i validatori: se non ne porta, quelli vecchi si
+    dimenticano. Un 304 tiene ciò che si sapeva e aggiorna solo i validatori
+    che porta. Ogni altro esito non cambia nulla;
+  - `attempt.conditional_headers` li restituisce come `If-None-Match` e
+    `If-Modified-Since`, da mandare con la richiesta.
+- **Alternative scartate**: salvare i validatori nelle righe del registro
+  (servirebbe cercare l'ultima risposta buona per URL a ogni richiesta).
+- **Conseguenze**: un 304 conferma soltanto che il dato non è cambiato, non
+  che è fresco: la freschezza si misura sul contenuto (T3).
+
+## D-029 — Come si registra una risposta
+
+- **Data e tappa**: 2026-10-17, T4
+- **Decisione**:
+  - `attempt.response(status, headers=...)` legge Retry-After, ETag e
+    Last-Modified dalle intestazioni, senza badare a maiuscole e minuscole,
+    da qualunque mappa (httpx, requests) o da un `email.message.Message`
+    (urllib); `retry_after=` esplicito vince sull'intestazione;
+  - `wire_bytes` e `decoded_bytes` si passano sia a `response` sia a
+    `failure` (per esempio i byte di un corpo troncato);
+  - le grandezze si scrivono come numero di byte o con un'unità esatta:
+    `kB`, `MB`, `GB` (potenze di 1000) e `KiB`, `MiB`, `GiB` (potenze di
+    1024). Scritture ambigue come `"5mb"` o `"5Kb"` sono rifiutate;
+  - il simulatore ha lo scenario `Validated`, che risponde 304 a un
+    `If-None-Match` o `If-Modified-Since` che combacia.
