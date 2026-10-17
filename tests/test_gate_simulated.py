@@ -17,7 +17,7 @@ from politefetch.gate import Gate
 from politefetch.policy import HostPolicy
 from politefetch.store import MemoryStore, RowState, SqliteStore
 from politefetch.testing.processes import ChildFailed, spawn
-from politefetch.testing.simulator import NoAnswer, Respond, SourceSimulator
+from politefetch.testing.simulator import NoAnswer, Respond, SourceSimulator, Validated
 
 from . import children
 from .fetching import fetch
@@ -98,3 +98,23 @@ def test_a_crash_leaves_the_promise_cautious(
         assert gate.may_fetch(source.url())  # reconciled as failed
         assert store.rows()[0].state is RowState.RECONCILED
         assert store.host_state(HOST, clock.now()).failures == 1
+
+
+def test_conditional_requests_save_bytes(source: SourceSimulator) -> None:
+    body = b'{"data": "' + b"x" * 1000 + b'"}'
+    source.scenario = Validated(body, etag='"v1"')
+    clock = FakeClock(T)
+    gate = Gate(
+        MemoryStore(), {HOST: HostPolicy(daily_cap=50, min_interval="10m")}, clock=clock
+    )
+    first = fetch(gate, source.url())
+    clock.advance(timedelta(minutes=10))
+    second = fetch(gate, source.url())
+    assert first.result is not None
+    assert first.result.outcome is not None
+    assert second.result is not None
+    assert second.result.outcome is not None
+    assert first.result.outcome.status == 200
+    assert second.result.outcome.status == 304
+    assert source.counter.requests[1].headers["if-none-match"] == '"v1"'
+    assert gate.store.host_state(HOST, clock.now()).wire_bytes_today == len(body)

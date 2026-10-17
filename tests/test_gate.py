@@ -425,3 +425,61 @@ def test_the_package_exports_the_gate() -> None:
 
     assert politefetch.Gate is Gate
     assert politefetch.HostPolicy is HostPolicy
+
+
+# --- conditional requests and bytes (T4) --------------------------------------------
+
+
+LAST_MODIFIED = "Fri, 16 Oct 2026 10:00:00 GMT"
+
+
+def test_validators_come_back_as_conditional_headers(
+    harness: Harness, clock: FakeClock
+) -> None:
+    gate = make_gate(harness, clock)
+    with gate.attempt(URL) as attempt:
+        assert attempt.conditional_headers == {}
+        attempt.response(200, headers={"etag": '"v1"', "Last-Modified": LAST_MODIFIED})
+    clock.advance(timedelta(minutes=1))
+    with gate.attempt(URL) as attempt:
+        assert attempt.conditional_headers == {
+            "If-None-Match": '"v1"',
+            "If-Modified-Since": LAST_MODIFIED,
+        }
+        attempt.response(304)
+    clock.advance(timedelta(minutes=1))
+    with gate.attempt("https://example.org/other") as attempt:
+        assert attempt.conditional_headers == {}
+        attempt.response(200)
+
+
+def test_retry_after_is_read_from_headers(harness: Harness, clock: FakeClock) -> None:
+    gate = make_gate(harness, clock, backoff_base="1m")
+    with gate.attempt(URL) as attempt:
+        attempt.response(503, headers={"retry-after": "3600"})
+    assert promise(gate, clock) == T + timedelta(hours=1)
+
+
+def test_bytes_are_recorded(harness: Harness, clock: FakeClock) -> None:
+    gate = make_gate(harness, clock)
+    with gate.attempt(URL) as attempt:
+        attempt.response(200, wire_bytes=300, decoded_bytes=1200)
+    clock.advance(timedelta(minutes=1))
+    with gate.attempt(URL) as attempt:
+        attempt.failure("truncated", wire_bytes=50)
+    state = gate.store.host_state(HOST, clock.now())
+    assert state.wire_bytes_today == 350
+    assert state.decoded_bytes_today == 1200
+
+
+def test_byte_budget_through_the_gate(harness: Harness, clock: FakeClock) -> None:
+    gate = make_gate(harness, clock, byte_budget="1kB")
+    with gate.attempt(URL) as attempt:
+        attempt.response(200, wire_bytes=600)
+    clock.advance(timedelta(minutes=1))
+    refusal = gate.may_fetch(URL).refusal  # 600 used + 600 reserved > 1000
+    assert refusal is not None
+    assert refusal.reason is RefusalReason.BYTE_BUDGET
+    with pytest.raises(Refused), gate.attempt(URL):
+        pass
+    assert gate.may_fetch("https://example.org/small")  # nothing to reserve
