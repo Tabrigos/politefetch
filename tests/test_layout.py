@@ -24,6 +24,7 @@ MODULES = [
     "politefetch.store.sqlite",
     "politefetch.store.postgres",
     "politefetch.adapters",
+    "politefetch.adapters.base",
     "politefetch.adapters.urllib",
     "politefetch.adapters.httpx",
     "politefetch.adapters.requests",
@@ -38,7 +39,7 @@ MODULES = [
 # Third-party imports allowed per file; everything else must be stdlib.
 EXTRAS = {
     "adapters/httpx.py": {"httpx"},
-    "adapters/requests.py": {"requests"},
+    "adapters/requests.py": {"requests", "urllib3"},
     "store/postgres.py": set(),  # the driver is chosen in T7
     "testing/plugin.py": {"pytest"},
 }
