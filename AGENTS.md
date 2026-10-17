@@ -30,6 +30,7 @@ Questo repo è autosufficiente: tutto quello che serve sta qui.
 
 ```bash
 uv sync --all-extras
+eval "$(scripts/postgres-for-tests.sh)"   # accende PostgreSQL 16 per i test
 uv run pytest
 uv run ruff check .
 uv run ruff format --check .
