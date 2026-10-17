@@ -15,6 +15,24 @@ jobs:
       fail-fast: false
       matrix:
         python: ["3.12", "3.13"]
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: politefetch
+          POSTGRES_PASSWORD: politefetch
+          POSTGRES_DB: politefetch_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U politefetch"
+          --health-interval 2s
+          --health-timeout 5s
+          --health-retries 15
+    env:
+      # A throwaway password for a database that lives as long as the job.
+      POLITEFETCH_TEST_POSTGRES: host=127.0.0.1 port=5432 dbname=politefetch_test user=politefetch password=politefetch
+      POLITEFETCH_REQUIRE_POSTGRES: "1"
     steps:
       - uses: actions/checkout@v7
       - uses: astral-sh/setup-uv@v10.3.0
