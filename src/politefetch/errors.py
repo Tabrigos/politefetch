@@ -2,6 +2,7 @@
 
     PoliteFetchError
     ├── Refused              the gate said no: no request was sent
+    ├── FetchFailed          a request was sent: no answer, or an HTTP error
     └── ContentError         a request was sent, but its response is unusable
         ├── SourceNotReady   truncated or empty body; transient
         ├── UnexpectedContent  HTML where data was expected, foreign redirect
@@ -19,6 +20,7 @@ from politefetch.clock import as_utc
 
 __all__ = [
     "ContentError",
+    "FetchFailed",
     "PoliteFetchError",
     "RefusalReason",
     "Refused",
@@ -85,6 +87,29 @@ class Refused(PoliteFetchError):
         else:
             when = f"retry after {self.retry_after.isoformat()}"
         return f"{self.host}: refused ({self.reason.value}), {when}"
+
+
+class FetchFailed(PoliteFetchError):
+    """A request was sent but no usable HTTP answer came back.
+
+    `shape` says how it failed: a connect or read timeout, a refused or reset
+    connection, TLS, DNS, another connection error, or `http` for an error
+    status (then `status` is set). The gate has already recorded it.
+    """
+
+    url: str
+    shape: str
+    status: int | None
+
+    def __init__(self, url: str, shape: str, status: int | None = None) -> None:
+        super().__init__(url, shape, status)
+        self.url = url
+        self.shape = shape
+        self.status = status
+
+    def __str__(self) -> str:
+        what = f"HTTP {self.status}" if self.status is not None else self.shape
+        return f"{self.url}: request failed ({what})"
 
 
 class ContentError(PoliteFetchError):
