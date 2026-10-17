@@ -11,8 +11,13 @@ from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
+from politefetch.clock import FakeClock
 from politefetch.errors import RefusalReason, Refused
+from politefetch.gate import Gate
+from politefetch.policy import HostPolicy
 from politefetch.store import HostState, HostUpdate, Outcome, SqliteStore
+
+from .fetching import fetch
 
 
 def add(a: int, b: int) -> int:
@@ -106,3 +111,14 @@ def hang_inside_open(path: str, host: str, now: datetime, marker: str) -> None:
 
     with SqliteStore(path) as store:
         store.open_request(host, "https://x/", now=now, daily_cap=10, cautious=cautious)
+
+
+def fetch_through_gate(path: str, url: str, start: datetime) -> None:
+    """Fetch `url` through a gate on the SQLite store at `path`."""
+    with SqliteStore(path) as store:
+        gate = Gate(
+            store,
+            {"127.0.0.1": HostPolicy(daily_cap=50, min_interval="10m")},
+            clock=FakeClock(start),
+        )
+        fetch(gate, url, timeout=600)

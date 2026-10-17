@@ -20,6 +20,9 @@ classifiers = [
     "Typing :: Typed",
 ]
 
+[project.entry-points.pytest11]
+politefetch = "politefetch.testing.plugin"
+
 [project.optional-dependencies]
 # Filled in by the adapter and Postgres stages; the core never imports them.
 httpx = []
@@ -39,7 +42,8 @@ packages = ["src/politefetch"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-addopts = ["-ra", "--strict-markers", "--strict-config"]
+addopts = ["-ra", "--strict-markers", "--strict-config", "-p", "pytester"]
+politefetch_barrier = true
 xfail_strict = true
 filterwarnings = ["error"]
 
