@@ -17,6 +17,7 @@ from politefetch.clock import as_utc
 from politefetch.errors import RefusalReason
 from politefetch.store.base import (
     ABANDONED,
+    DataTimeRecord,
     HostState,
     HostUpdate,
     Outcome,
@@ -26,6 +27,7 @@ from politefetch.store.base import (
     UrlRecord,
     Validators,
     apply_close,
+    apply_data_time,
     apply_validators,
     byte_changes,
     check_admission,
@@ -46,6 +48,7 @@ class MemoryData:
     wire: dict[tuple[str, date], int] = field(default_factory=dict)
     decoded: dict[tuple[str, date], int] = field(default_factory=dict)
     urls: dict[str, UrlRecord] = field(default_factory=dict)
+    data_times: dict[str, DataTimeRecord] = field(default_factory=dict)
     rows: dict[int, RequestRow] = field(default_factory=dict)
     next_id: int = 1
     unfreezes: list[Unfreeze] = field(default_factory=list)
@@ -176,6 +179,19 @@ class MemoryStore:
     def url_record(self, url: str) -> UrlRecord | None:
         with self.data.lock:
             return self.data.urls.get(url)
+
+    def note_data_time(
+        self, url: str, data_time: datetime, *, now: datetime
+    ) -> DataTimeRecord:
+        now = as_utc(now, "now")
+        with self.data.lock:
+            record = apply_data_time(self.data.data_times.get(url), url, data_time, now)
+            self.data.data_times[url] = record
+            return record
+
+    def data_time_record(self, url: str) -> DataTimeRecord | None:
+        with self.data.lock:
+            return self.data.data_times.get(url)
 
     def reconcile(self, *, now: datetime, older_than: timedelta) -> list[RequestRow]:
         now = as_utc(now, "now")

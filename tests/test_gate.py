@@ -62,7 +62,7 @@ def fail(gate: Gate, shape: str = "connect_timeout") -> None:
         attempt.failure(shape)
 
 
-# --- the basic cycle --------------------------------------------------------------
+# --- the basic cycle ------------------------------------------------------------------
 
 
 def test_an_allowed_request_opens_and_closes_a_row(
@@ -127,7 +127,7 @@ def test_daily_cap_through_the_gate(harness: Harness, clock: FakeClock) -> None:
     assert refused.value.reason is RefusalReason.DAILY_CAP
 
 
-# --- scenarios required by T2 -----------------------------------------------------
+# --- scenarios required by T2 ---------------------------------------------------------
 
 
 def test_the_pause_grows(harness: Harness, clock: FakeClock) -> None:
@@ -180,7 +180,7 @@ def test_a_crash_leaves_the_promise_cautious(
     assert restarted.store.rows()[0].state is RowState.RECONCILED
 
 
-# --- how outcomes are recorded ------------------------------------------------------
+# --- how outcomes are recorded --------------------------------------------------------
 
 
 def test_an_exception_is_recorded_as_a_failure(
@@ -239,7 +239,7 @@ def test_retry_after_as_a_date(harness: Harness, clock: FakeClock) -> None:
     assert promise(gate, clock) == datetime(2026, 10, 16, 15, tzinfo=UTC)
 
 
-# --- freezing and unfreezing --------------------------------------------------------
+# --- freezing and unfreezing ----------------------------------------------------------
 
 
 @pytest.mark.parametrize("status", [403, 451, 429])
@@ -305,7 +305,7 @@ def test_option_starts_over_after_a_good_answer(
     assert refusal.reason is not RefusalReason.FROZEN
 
 
-# --- hosts and policies -------------------------------------------------------------
+# --- hosts and policies ---------------------------------------------------------------
 
 
 def test_unknown_hosts_are_not_allowed(harness: Harness, clock: FakeClock) -> None:
@@ -363,7 +363,7 @@ def test_reconcile_threshold_must_be_positive(
         Gate(harness.store, {}, clock=clock, reconcile_after=timedelta(0))
 
 
-# --- async ---------------------------------------------------------------------------
+# --- async ----------------------------------------------------------------------------
 
 
 def test_async_attempt(harness: Harness, clock: FakeClock) -> None:
@@ -427,7 +427,7 @@ def test_the_package_exports_the_gate() -> None:
     assert politefetch.HostPolicy is HostPolicy
 
 
-# --- conditional requests and bytes (T4) --------------------------------------------
+# --- conditional requests and bytes (T4) ----------------------------------------------
 
 
 LAST_MODIFIED = "Fri, 16 Oct 2026 10:00:00 GMT"
@@ -483,3 +483,18 @@ def test_byte_budget_through_the_gate(harness: Harness, clock: FakeClock) -> Non
     with pytest.raises(Refused), gate.attempt(URL):
         pass
     assert gate.may_fetch("https://example.org/small")  # nothing to reserve
+
+
+# --- data times (T3) ------------------------------------------------------------------
+
+
+def test_the_gate_notes_data_times_with_its_clock(
+    harness: Harness, clock: FakeClock
+) -> None:
+    gate = make_gate(harness, clock)
+    data_time = T - timedelta(hours=1)
+    assert gate.note_data_time(URL, data_time).reads == 1
+    clock.advance(timedelta(minutes=10))
+    record = gate.note_data_time(URL, data_time)
+    assert record.reads == 2
+    assert record.updated_at == clock.now()

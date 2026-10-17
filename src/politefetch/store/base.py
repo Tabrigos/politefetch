@@ -21,6 +21,7 @@ from politefetch.errors import RefusalReason, Refused
 
 __all__ = [
     "ABANDONED",
+    "DataTimeRecord",
     "Freeze",
     "HostState",
     "HostUpdate",
@@ -114,6 +115,18 @@ class UrlRecord:
     url: str
     validators: Validators
     size: int | None
+    updated_at: datetime
+
+
+@dataclass(frozen=True, slots=True)
+class DataTimeRecord:
+    """The data-time history of one URL: the latest data time seen, and how
+    many consecutive reads have not gone past it (the read that brought it
+    included)."""
+
+    url: str
+    latest: datetime
+    reads: int
     updated_at: datetime
 
 
@@ -246,6 +259,17 @@ class Store(Protocol):
 
     def url_record(self, url: str) -> UrlRecord | None:
         """Return what the store remembers about `url`, if anything."""
+        ...
+
+    def note_data_time(
+        self, url: str, data_time: datetime, *, now: datetime
+    ) -> DataTimeRecord:
+        """Record the data time a read of `url` returned; see
+        `apply_data_time`. Atomic."""
+        ...
+
+    def data_time_record(self, url: str) -> DataTimeRecord | None:
+        """Return the data-time history of `url`, if any."""
         ...
 
     def reconcile(self, *, now: datetime, older_than: timedelta) -> list[RequestRow]:
@@ -416,6 +440,20 @@ def apply_validators(
             return None
         return UrlRecord(url, merged, previous.size if previous else None, now)
     return None
+
+
+def apply_data_time(
+    previous: DataTimeRecord | None, url: str, data_time: datetime, now: datetime
+) -> DataTimeRecord:
+    """Return the history after a read that returned `data_time`.
+
+    A later time than any seen starts over at one read. The same time, or an
+    earlier one (a source going back is not progress), adds a read.
+    """
+    data_time = as_utc(data_time, "data_time")
+    if previous is None or data_time > previous.latest:
+        return DataTimeRecord(url=url, latest=data_time, reads=1, updated_at=now)
+    return replace(previous, reads=previous.reads + 1, updated_at=now)
 
 
 def byte_changes(row: RequestRow, outcome: Outcome) -> tuple[int, int]:

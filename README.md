@@ -6,10 +6,10 @@ per-host promises and daily caps that survive restarts, freezing on 403/429/451)
 and keeps you safe from the source (truncated bodies, HTML instead of JSON,
 data that stopped advancing even though every request "succeeds").
 
-**Status: in development, not released.** The gate, the host policies,
-conditional requests, byte accounting, the stores (memory and SQLite) and
-the test kit exist; content checks and the HTTP adapters are coming. See `SPEC.md` for the
-design and `docs/TAPPE.md` for the plan.
+**Status: in development, not released.** The gate, the host policies, the
+content checks, conditional requests, byte accounting, the stores (memory
+and SQLite) and the test kit exist; the HTTP adapters are coming. See
+`SPEC.md` for the design and `docs/TAPPE.md` for the plan.
 
 ## Why another library
 
@@ -79,6 +79,13 @@ result = fetch.get(url, expect="json", data_time=lambda body: ..., max_age="3h")
   `If-Modified-Since` from the URL's last answer. `gate.may_fetch(url)` says
   whether a request may start now and, if not, why and until when;
   `gate.unfreeze(host, by="you")` lifts a freeze and leaves a trace.
+- `politefetch.checks`: pure functions that reject what should not pass for
+  data. A body shorter than its Content-Length, an empty body or JSON that
+  ends mid-way raise `SourceNotReady`; HTML where JSON or text was expected
+  and a redirect to another host raise `UnexpectedContent`; data older than
+  `max_age`, measured on a time read from the data itself, raises
+  `StaleData`; a data time that stopped advancing for N reads raises
+  `StuckSource` (`gate.note_data_time(url, data_time)` keeps the history).
 - `politefetch.store`: `SqliteStore` (the default, safe to share between
   processes) and `MemoryStore` (tests).
 - `politefetch.errors`: `PoliteFetchError`, `Refused` (with a reason and a

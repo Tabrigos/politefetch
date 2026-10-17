@@ -97,7 +97,7 @@ T5 dopo T2, T4 e T6 (i suoi test usano il simulatore); T7 dopo T3 e T4
 
 ## T3 — Controlli sul contenuto
 
-- [ ] Fatta
+- [x] Fatta
 
 Funzioni pure: troncato (Content-Length, JSON finito a metà, corpo vuoto),
 HTML al posto di JSON o testo, redirect verso un altro host, freschezza con

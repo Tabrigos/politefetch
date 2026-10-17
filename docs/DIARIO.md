@@ -4,18 +4,22 @@
 
 Riscritto da capo a ogni fine sessione, mai accodato.
 
-- **Stato**: T0, T1, T2, T4 e T6 fatte. Esistono il Gate, le politiche, le
-  richieste condizionali (validatori per URL), i byte per host e giorno con
-  il budget prenotato all'apertura, lo store in memoria e SQLite e il kit di
-  test.
-- **Prossimo passo**: T5 (adattatori) o T3 (controlli sul contenuto); T7
-  dopo T3. Da sapere:
-  - gli adattatori di T5 mandano `attempt.conditional_headers`, registrano
-    con `attempt.response(status, headers=..., wire_bytes=...,
-    decoded_bytes=...)` e si provano contro il simulatore; i conteggi di
-    `tests/test_worst_case.py` devono restare gli stessi (D-026);
-  - T3 aggiunge allo store lo storico per la fonte ferma: test nella suite di
-    contratto, colonne nuove in `_ADDED_COLUMNS` (D-021).
+- **Stato**: T0, T1, T2, T3, T4 e T6 fatte. Esistono il Gate, le politiche,
+  i controlli sul contenuto con lo storico per la fonte ferma, le richieste
+  condizionali, i byte con il budget, lo store in memoria e SQLite e il kit
+  di test.
+- **Prossimo passo**: T5 (adattatori) e T7 (Postgres), in qualunque ordine;
+  T8 per ultima. Da sapere per T5:
+  - mandare `attempt.conditional_headers`; registrare con
+    `attempt.response(status, headers=..., wire_bytes=..., decoded_bytes=...)`;
+  - applicare `check_redirect`, `check_length`, `check_body`,
+    `read_data_time`, `gate.note_data_time` con `check_advancing`, e
+    `check_fresh`; un `ContentError` si registra come fallimento con la sua
+    `shape` (D-030, D-031);
+  - provare gli adattatori contro il simulatore; i conteggi di
+    `tests/test_worst_case.py` devono restare gli stessi (D-026).
+  Per T7: la suite di contratto ora copre anche byte, validatori e storico
+  dei tempi del dato.
 - **Dubbi aperti**:
   - il repository GitHub si chiama ancora `fetchguard` (D-010);
   - lo stato di httpx (vedi T5): il 2026-10-16 `httpx` è a 0.28.1 e `httpx2`
@@ -73,3 +77,9 @@ Una riga per sessione: data, tappa, cosa è entrato, cosa resta.
   della risposta dalle intestazioni (D-029), scenario `Validated` nel
   simulatore. Controllato che i test scoprano sei difetti introdotti
   apposta. Resta: T3, T5.
+- 2026-10-17 — T3. Entrati: controlli sul contenuto come funzioni pure
+  (D-030), storico dei tempi del dato nello store e `check_advancing`
+  (D-031), `shape` sugli errori di contenuto, README sistemato. Controllato
+  che i test scoprano sette difetti introdotti apposta; due sopravvivevano
+  al primo giro (il JSON troncato con una graffa dentro una stringa) e ora
+  hanno il loro test. Resta: T5, T7, T8.

@@ -32,6 +32,7 @@ from politefetch.clock import as_utc
 from politefetch.errors import RefusalReason
 from politefetch.store.base import (
     ABANDONED,
+    DataTimeRecord,
     Freeze,
     HostState,
     HostUpdate,
@@ -42,6 +43,7 @@ from politefetch.store.base import (
     UrlRecord,
     Validators,
     apply_close,
+    apply_data_time,
     apply_validators,
     byte_changes,
     check_admission,
@@ -92,6 +94,14 @@ _SCHEMA = (
         reserved_bytes INTEGER NOT NULL DEFAULT 0,
         wire_bytes INTEGER,
         decoded_bytes INTEGER
+    )
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS data_times (
+        url TEXT PRIMARY KEY,
+        latest TEXT NOT NULL,
+        reads INTEGER NOT NULL,
+        updated_at TEXT NOT NULL
     )
     """,
     """
@@ -486,6 +496,47 @@ class SqliteStore:
     def url_record(self, url: str) -> UrlRecord | None:
         with self._transaction(immediate=False) as conn:
             return self._url_record(conn, url)
+
+    @staticmethod
+    def _data_time_record(conn: sqlite3.Connection, url: str) -> DataTimeRecord | None:
+        found = conn.execute(
+            "SELECT latest, reads, updated_at FROM data_times WHERE url = ?", (url,)
+        ).fetchone()
+        if found is None:
+            return None
+        latest, reads, updated_at = found
+        return DataTimeRecord(
+            url=url,
+            latest=_from_text(latest),
+            reads=reads,
+            updated_at=_from_text(updated_at),
+        )
+
+    def note_data_time(
+        self, url: str, data_time: datetime, *, now: datetime
+    ) -> DataTimeRecord:
+        now = as_utc(now, "now")
+        with self._transaction(immediate=True) as conn:
+            record = apply_data_time(
+                self._data_time_record(conn, url), url, data_time, now
+            )
+            conn.execute(
+                "INSERT INTO data_times (url, latest, reads, updated_at)"
+                " VALUES (?, ?, ?, ?)"
+                " ON CONFLICT (url) DO UPDATE SET latest = excluded.latest,"
+                " reads = excluded.reads, updated_at = excluded.updated_at",
+                (
+                    url,
+                    _to_text(record.latest),
+                    record.reads,
+                    _to_text(record.updated_at),
+                ),
+            )
+        return record
+
+    def data_time_record(self, url: str) -> DataTimeRecord | None:
+        with self._transaction(immediate=False) as conn:
+            return self._data_time_record(conn, url)
 
     def reconcile(self, *, now: datetime, older_than: timedelta) -> list[RequestRow]:
         now = as_utc(now, "now")
