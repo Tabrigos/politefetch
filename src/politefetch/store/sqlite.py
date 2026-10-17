@@ -39,7 +39,11 @@ from politefetch.store.base import (
     RequestRow,
     RowState,
     Unfreeze,
+    UrlRecord,
+    Validators,
     apply_close,
+    apply_validators,
+    byte_changes,
     check_admission,
     check_cautious,
     check_threshold,
@@ -69,6 +73,8 @@ _SCHEMA = (
         host TEXT NOT NULL,
         day TEXT NOT NULL,
         requests INTEGER NOT NULL,
+        wire_bytes INTEGER NOT NULL DEFAULT 0,
+        decoded_bytes INTEGER NOT NULL DEFAULT 0,
         PRIMARY KEY (host, day)
     )
     """,
@@ -82,7 +88,19 @@ _SCHEMA = (
         closed_at TEXT,
         ok INTEGER,
         status INTEGER,
-        failure TEXT
+        failure TEXT,
+        reserved_bytes INTEGER NOT NULL DEFAULT 0,
+        wire_bytes INTEGER,
+        decoded_bytes INTEGER
+    )
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS urls (
+        url TEXT PRIMARY KEY,
+        etag TEXT,
+        last_modified TEXT,
+        size INTEGER,
+        updated_at TEXT NOT NULL
     )
     """,
     """
@@ -105,9 +123,19 @@ _SCHEMA = (
 # Columns added after a table first shipped: created on databases that lack
 # them, so a file written by an earlier stage keeps working (no numbered
 # migrations before the first release, D-002).
-_ADDED_COLUMNS = (("hosts", "throttled", "INTEGER NOT NULL DEFAULT 0"),)
+_ADDED_COLUMNS = (
+    ("hosts", "throttled", "INTEGER NOT NULL DEFAULT 0"),
+    ("daily_counts", "wire_bytes", "INTEGER NOT NULL DEFAULT 0"),
+    ("daily_counts", "decoded_bytes", "INTEGER NOT NULL DEFAULT 0"),
+    ("requests", "reserved_bytes", "INTEGER NOT NULL DEFAULT 0"),
+    ("requests", "wire_bytes", "INTEGER"),
+    ("requests", "decoded_bytes", "INTEGER"),
+)
 
-_ROW_COLUMNS = "id, host, url, opened_at, state, closed_at, ok, status, failure"
+_ROW_COLUMNS = (
+    "id, host, url, opened_at, state, closed_at, ok, status, failure,"
+    " reserved_bytes, wire_bytes, decoded_bytes"
+)
 
 
 def _to_text(value: datetime) -> str:
@@ -136,10 +164,17 @@ def _freeze(
 
 
 def _row(record: tuple[Any, ...]) -> RequestRow:
-    row_id, host, url, opened_at, state, closed_at, ok, status, failure = record
-    outcome = (
-        None if ok is None else Outcome(ok=bool(ok), status=status, failure=failure)
-    )
+    (row_id, host, url, opened_at, state, closed_at, ok, status, failure) = record[:9]
+    reserved, wire, decoded = record[9:]
+    outcome = None
+    if ok is not None:
+        outcome = Outcome(
+            ok=bool(ok),
+            status=status,
+            failure=failure,
+            wire_bytes=wire,
+            decoded_bytes=decoded,
+        )
     return RequestRow(
         id=row_id,
         host=host,
@@ -148,6 +183,7 @@ def _row(record: tuple[Any, ...]) -> RequestRow:
         state=RowState(state),
         closed_at=_maybe_time(closed_at),
         outcome=outcome,
+        reserved_bytes=reserved,
     )
 
 
@@ -208,8 +244,9 @@ class SqliteStore:
             " FROM hosts WHERE host = ?",
             (host,),
         ).fetchone()
-        (count,) = conn.execute(
-            "SELECT COALESCE(SUM(requests), 0) FROM daily_counts"
+        count, wire, decoded = conn.execute(
+            "SELECT COALESCE(SUM(requests), 0), COALESCE(SUM(wire_bytes), 0),"
+            " COALESCE(SUM(decoded_bytes), 0) FROM daily_counts"
             " WHERE host = ? AND day = ?",
             (host, day.isoformat()),
         ).fetchone()
@@ -217,7 +254,14 @@ class SqliteStore:
             "SELECT COUNT(*) FROM requests WHERE host = ? AND state = ?",
             (host, RowState.IN_FLIGHT.value),
         ).fetchone()
-        state = HostState(host=host, day=day, requests_today=count, in_flight=in_flight)
+        state = HostState(
+            host=host,
+            day=day,
+            requests_today=count,
+            in_flight=in_flight,
+            wire_bytes_today=wire,
+            decoded_bytes_today=decoded,
+        )
         if record is None:
             return state
         not_before, reason, failures, throttled = record[:4]
@@ -232,6 +276,8 @@ class SqliteStore:
             freeze=freeze,
             in_flight=in_flight,
             throttled=throttled,
+            wire_bytes_today=wire,
+            decoded_bytes_today=decoded,
         )
 
     @staticmethod
@@ -324,23 +370,28 @@ class SqliteStore:
         now: datetime,
         daily_cap: int,
         cautious: Callable[[HostState], datetime],
+        byte_budget: int | None = None,
     ) -> RequestRow:
         now = as_utc(now, "now")
         with self._transaction(immediate=True) as conn:
             state = self._state(conn, host, now)
-            refusal = check_admission(state, now, daily_cap)
+            record = self._url_record(conn, url)
+            reserve = record.size if record is not None and record.size else 0
+            refusal = check_admission(state, now, daily_cap, byte_budget, reserve)
             if refusal is not None:
                 raise refusal
             promise = check_cautious(now, cautious(state))
             cursor = conn.execute(
-                "INSERT INTO requests (host, url, opened_at, state)"
-                " VALUES (?, ?, ?, ?)",
-                (host, url, _to_text(now), RowState.IN_FLIGHT.value),
+                "INSERT INTO requests (host, url, opened_at, state, reserved_bytes)"
+                " VALUES (?, ?, ?, ?, ?)",
+                (host, url, _to_text(now), RowState.IN_FLIGHT.value, reserve),
             )
             conn.execute(
-                "INSERT INTO daily_counts (host, day, requests) VALUES (?, ?, 1)"
-                " ON CONFLICT (host, day) DO UPDATE SET requests = requests + 1",
-                (host, now.date().isoformat()),
+                "INSERT INTO daily_counts (host, day, requests, wire_bytes)"
+                " VALUES (?, ?, 1, ?)"
+                " ON CONFLICT (host, day) DO UPDATE SET requests = requests + 1,"
+                " wire_bytes = wire_bytes + excluded.wire_bytes",
+                (host, now.date().isoformat(), reserve),
             )
             self._write_host(
                 conn,
@@ -351,7 +402,12 @@ class SqliteStore:
             row_id = cursor.lastrowid
             assert row_id is not None
         return RequestRow(
-            id=row_id, host=host, url=url, opened_at=now, state=RowState.IN_FLIGHT
+            id=row_id,
+            host=host,
+            url=url,
+            opened_at=now,
+            state=RowState.IN_FLIGHT,
+            reserved_bytes=reserve,
         )
 
     def close_request(
@@ -361,6 +417,7 @@ class SqliteStore:
         now: datetime,
         outcome: Outcome,
         update: Callable[[HostState], HostUpdate],
+        validators: Validators | None = None,
     ) -> RequestRow:
         now = as_utc(now, "now")
         with self._transaction(immediate=True) as conn:
@@ -369,28 +426,66 @@ class SqliteStore:
                 return row
             state = self._state(conn, row.host, now)
             new_state = apply_close(state, outcome, update(state))
+            record = apply_validators(
+                self._url_record(conn, row.url), row.url, outcome, validators, now
+            )
             self._write_host(conn, new_state)
             conn.execute(
                 "UPDATE requests SET state = ?, closed_at = ?, ok = ?, status = ?,"
-                " failure = ? WHERE id = ?",
+                " failure = ?, wire_bytes = ?, decoded_bytes = ? WHERE id = ?",
                 (
                     RowState.CLOSED.value,
                     _to_text(now),
                     int(outcome.ok),
                     outcome.status,
                     outcome.failure,
+                    outcome.wire_bytes,
+                    outcome.decoded_bytes,
                     row_id,
                 ),
             )
-        return RequestRow(
-            id=row.id,
-            host=row.host,
-            url=row.url,
-            opened_at=row.opened_at,
-            state=RowState.CLOSED,
-            closed_at=now,
-            outcome=outcome,
+            wire, decoded = byte_changes(row, outcome)
+            conn.execute(
+                "UPDATE daily_counts SET wire_bytes = wire_bytes + ?,"
+                " decoded_bytes = decoded_bytes + ? WHERE host = ? AND day = ?",
+                (wire, decoded, row.host, row.opened_at.date().isoformat()),
+            )
+            if record is not None:
+                conn.execute(
+                    "INSERT INTO urls (url, etag, last_modified, size, updated_at)"
+                    " VALUES (?, ?, ?, ?, ?)"
+                    " ON CONFLICT (url) DO UPDATE SET etag = excluded.etag,"
+                    " last_modified = excluded.last_modified, size = excluded.size,"
+                    " updated_at = excluded.updated_at",
+                    (
+                        record.url,
+                        record.validators.etag,
+                        record.validators.last_modified,
+                        record.size,
+                        _to_text(record.updated_at),
+                    ),
+                )
+        return replace(row, state=RowState.CLOSED, closed_at=now, outcome=outcome)
+
+    @staticmethod
+    def _url_record(conn: sqlite3.Connection, url: str) -> UrlRecord | None:
+        found = conn.execute(
+            "SELECT etag, last_modified, size, updated_at FROM urls WHERE url = ?",
+            (url,),
+        ).fetchone()
+        if found is None:
+            return None
+        etag, last_modified, size, updated_at = found
+        return UrlRecord(
+            url=url,
+            validators=Validators(etag=etag, last_modified=last_modified),
+            size=size,
+            updated_at=_from_text(updated_at),
         )
+
+    def url_record(self, url: str) -> UrlRecord | None:
+        with self._transaction(immediate=False) as conn:
+            return self._url_record(conn, url)
 
     def reconcile(self, *, now: datetime, older_than: timedelta) -> list[RequestRow]:
         now = as_utc(now, "now")
@@ -416,11 +511,8 @@ class SqliteStore:
                     (row.host,),
                 )
                 reconciled.append(
-                    RequestRow(
-                        id=row.id,
-                        host=row.host,
-                        url=row.url,
-                        opened_at=row.opened_at,
+                    replace(
+                        row,
                         state=RowState.RECONCILED,
                         closed_at=now,
                         outcome=Outcome(ok=False, failure=ABANDONED),

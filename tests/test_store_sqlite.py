@@ -39,3 +39,37 @@ def test_a_database_from_an_earlier_stage_gains_new_columns(tmp_path: Path) -> N
         assert state.failures == 3
         assert state.throttled == 0
     SqliteStore(path).close()  # opening again is harmless
+
+
+def test_a_database_from_t1_gains_the_byte_columns(tmp_path: Path) -> None:
+    path = tmp_path / "t1.db"
+    conn = sqlite3.connect(path)
+    try:
+        # daily_counts and requests as stage T1 created them, without bytes.
+        conn.execute(
+            "CREATE TABLE daily_counts (host TEXT NOT NULL, day TEXT NOT NULL,"
+            " requests INTEGER NOT NULL, PRIMARY KEY (host, day))"
+        )
+        conn.execute(
+            "CREATE TABLE requests (id INTEGER PRIMARY KEY AUTOINCREMENT,"
+            " host TEXT NOT NULL, url TEXT NOT NULL, opened_at TEXT NOT NULL,"
+            " state TEXT NOT NULL, closed_at TEXT, ok INTEGER, status INTEGER,"
+            " failure TEXT)"
+        )
+        conn.execute("INSERT INTO daily_counts VALUES ('example.org', '2026-10-16', 2)")
+        conn.execute(
+            "INSERT INTO requests (host, url, opened_at, state, closed_at, ok, status)"
+            " VALUES ('example.org', 'https://example.org/x',"
+            " '2026-10-16T11:00:00.000000Z', 'closed',"
+            " '2026-10-16T11:00:01.000000Z', 1, 200)"
+        )
+        conn.commit()
+    finally:
+        conn.close()
+    with SqliteStore(path) as store:
+        state = store.host_state("example.org", T)
+        assert (state.requests_today, state.wire_bytes_today) == (2, 0)
+        row = store.rows()[0]
+        assert row.reserved_bytes == 0
+        assert row.outcome is not None
+        assert row.outcome.wire_bytes is None

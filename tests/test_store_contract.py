@@ -19,6 +19,8 @@ from politefetch.store import (
     RowState,
     Store,
     Unfreeze,
+    UrlRecord,
+    Validators,
 )
 from politefetch.store.base import ABANDONED
 
@@ -92,7 +94,7 @@ def snapshot(store: Store, now: datetime, host: str = HOST) -> object:
     return (store.host_state(host, now), store.rows())
 
 
-# --- a host never seen ------------------------------------------------------
+# --- a host never seen ----------------------------------------------------------------
 
 
 def test_unknown_host_has_an_empty_state(store: Store) -> None:
@@ -101,7 +103,7 @@ def test_unknown_host_has_an_empty_state(store: Store) -> None:
     assert store.requests_on(HOST, date(2026, 10, 16)) == 0
 
 
-# --- opening ----------------------------------------------------------------
+# --- opening --------------------------------------------------------------------------
 
 
 def test_open_writes_the_cautious_promise_and_counts(store: Store) -> None:
@@ -193,7 +195,7 @@ def test_hosts_are_independent(store: Store) -> None:
     assert store.host_state("b.example", T).requests_today == 1
 
 
-# --- the daily cap ----------------------------------------------------------
+# --- the daily cap --------------------------------------------------------------------
 
 
 def use_up_cap(store: Store, cap: int, start: datetime = T) -> datetime:
@@ -262,7 +264,7 @@ def test_cap_wins_over_a_shorter_promise(store: Store) -> None:
     assert refused.value.retry_after == datetime(2026, 10, 17, tzinfo=UTC)
 
 
-# --- closing ----------------------------------------------------------------
+# --- closing --------------------------------------------------------------------------
 
 
 def test_a_good_answer_may_shorten_the_promise(store: Store) -> None:
@@ -366,7 +368,7 @@ def test_success_cannot_freeze(store: Store) -> None:
     assert snapshot(store, T) == before
 
 
-# --- freezing ---------------------------------------------------------------
+# --- freezing -------------------------------------------------------------------------
 
 
 def test_freeze_without_expiry_waits_for_a_person(store: Store) -> None:
@@ -403,7 +405,7 @@ def test_freeze_with_expiry_lifts_by_itself(store: Store) -> None:
     open_at(store, until)
 
 
-# --- reconciliation ---------------------------------------------------------
+# --- reconciliation -------------------------------------------------------------------
 
 
 def test_reconcile_closes_old_rows_as_failed(store: Store) -> None:
@@ -450,7 +452,7 @@ def test_reconcile_with_nothing_open_does_nothing(store: Store) -> None:
     assert store.reconcile(now=T, older_than=timedelta(hours=1)) == []
 
 
-# --- persistence ------------------------------------------------------------
+# --- persistence ----------------------------------------------------------------------
 
 
 def test_everything_survives_a_restart(harness: Harness) -> None:
@@ -479,7 +481,7 @@ def test_everything_survives_a_restart(harness: Harness) -> None:
     assert after_restart == before
 
 
-# --- queries and validation -------------------------------------------------
+# --- queries and validation -----------------------------------------------------------
 
 
 def test_rows_filter_by_host_and_state(store: Store) -> None:
@@ -511,7 +513,7 @@ def test_store_is_a_context_manager(harness: Harness) -> None:
     assert harness.store.host_state(HOST, T).requests_today == 1
 
 
-# --- 429 answers since the last good one (T2) ---------------------------------
+# --- 429 answers since the last good one (T2) -----------------------------------------
 
 
 def close_with(store: Store, now: datetime, outcome: Outcome) -> None:
@@ -555,7 +557,7 @@ def test_opening_keeps_throttled(store: Store) -> None:
     assert store.host_state(HOST, T + timedelta(hours=1)).throttled == 1
 
 
-# --- manual unfreeze (T2) -------------------------------------------------------
+# --- manual unfreeze (T2) -------------------------------------------------------------
 
 
 def freeze_host(store: Store, freeze: Freeze, now: datetime = T) -> None:
@@ -635,3 +637,213 @@ def test_unfreezes_filter_by_host(store: Store) -> None:
         store.unfreeze(host, now=T, by="ops")
     assert [u.host for u in store.unfreezes(host="b.example")] == ["b.example"]
     assert [u.host for u in store.unfreezes()] == ["a.example", "b.example"]
+
+
+# --- validators per URL (T4) ----------------------------------------------------------
+
+
+def answer(
+    store: Store,
+    now: datetime,
+    outcome: Outcome,
+    validators: Validators | None = None,
+    *,
+    url: str = URL,
+    cap: int = 100,
+    budget: int | None = None,
+) -> RequestRow:
+    row = store.open_request(
+        HOST,
+        url,
+        now=now,
+        daily_cap=cap,
+        byte_budget=budget,
+        cautious=lambda _s: now + timedelta(minutes=5),
+    )
+    reason = RefusalReason.MIN_INTERVAL if outcome.ok else RefusalReason.BACKOFF
+    return store.close_request(
+        row.id,
+        now=now,
+        outcome=outcome,
+        update=lambda _s: HostUpdate(now + timedelta(seconds=1), reason),
+        validators=validators,
+    )
+
+
+TAG = Validators(etag='"v1"', last_modified="Fri, 16 Oct 2026 10:00:00 GMT")
+
+
+def test_unknown_url_has_no_record(store: Store) -> None:
+    assert store.url_record(URL) is None
+
+
+def test_a_full_answer_saves_validators_and_size(store: Store) -> None:
+    answer(
+        store, T, Outcome(ok=True, status=200, wire_bytes=1200, decoded_bytes=5000), TAG
+    )
+    assert store.url_record(URL) == UrlRecord(
+        url=URL, validators=TAG, size=1200, updated_at=T
+    )
+
+
+def test_not_modified_keeps_validators_and_size(store: Store) -> None:
+    answer(store, T, Outcome(ok=True, status=200, wire_bytes=1200), TAG)
+    later = T + timedelta(hours=1)
+    answer(store, later, Outcome(ok=True, status=304, wire_bytes=0), None)
+    assert store.url_record(URL) == UrlRecord(
+        url=URL, validators=TAG, size=1200, updated_at=T
+    )
+
+
+def test_not_modified_may_refresh_one_validator(store: Store) -> None:
+    answer(store, T, Outcome(ok=True, status=200, wire_bytes=1200), TAG)
+    later = T + timedelta(hours=1)
+    answer(store, later, Outcome(ok=True, status=304), Validators(etag='"v2"'))
+    record = store.url_record(URL)
+    assert record is not None
+    assert record.validators == Validators(etag='"v2"', last_modified=TAG.last_modified)
+    assert record.size == 1200
+    assert record.updated_at == later
+
+
+def test_a_full_answer_without_validators_forgets_the_old_ones(store: Store) -> None:
+    answer(store, T, Outcome(ok=True, status=200, wire_bytes=1200), TAG)
+    later = T + timedelta(hours=1)
+    answer(store, later, Outcome(ok=True, status=200, wire_bytes=900), None)
+    assert store.url_record(URL) == UrlRecord(
+        url=URL, validators=Validators(), size=900, updated_at=later
+    )
+
+
+@pytest.mark.parametrize(
+    "outcome",
+    [
+        Outcome(ok=False, status=503, failure="http"),
+        Outcome(ok=False, failure="reset"),
+        Outcome(ok=True, status=204),
+    ],
+)
+def test_other_answers_leave_the_record_alone(store: Store, outcome: Outcome) -> None:
+    answer(store, T, Outcome(ok=True, status=200, wire_bytes=1200), TAG)
+    answer(store, T + timedelta(hours=1), outcome, Validators(etag='"other"'))
+    assert store.url_record(URL) == UrlRecord(
+        url=URL, validators=TAG, size=1200, updated_at=T
+    )
+
+
+def test_url_records_survive_a_restart(harness: Harness) -> None:
+    answer(harness.store, T, Outcome(ok=True, status=200, wire_bytes=1200), TAG)
+    assert harness.restart().url_record(URL) == UrlRecord(
+        url=URL, validators=TAG, size=1200, updated_at=T
+    )
+
+
+# --- bytes per host and day (T4) ------------------------------------------------------
+
+
+def test_bytes_are_counted_per_host_and_day(store: Store) -> None:
+    answer(store, T, Outcome(ok=True, status=200, wire_bytes=1000, decoded_bytes=4000))
+    answer(
+        store,
+        T + timedelta(hours=1),
+        Outcome(ok=True, status=200, wire_bytes=500, decoded_bytes=2000),
+        url="https://example.org/other",
+    )
+    state = store.host_state(HOST, T)
+    assert state.wire_bytes_today == 1500
+    assert state.decoded_bytes_today == 6000
+    assert store.host_state(HOST, T + timedelta(days=1)).wire_bytes_today == 0
+
+
+def test_rows_carry_their_bytes(store: Store) -> None:
+    row = answer(
+        store, T, Outcome(ok=True, status=200, wire_bytes=1000, decoded_bytes=4000)
+    )
+    assert row.outcome is not None
+    assert (row.outcome.wire_bytes, row.outcome.decoded_bytes) == (1000, 4000)
+    assert store.row(row.id) == row
+
+
+def test_opening_reserves_the_last_full_size(store: Store) -> None:
+    answer(store, T, Outcome(ok=True, status=200, wire_bytes=1000))
+    row = open_at(store, T + timedelta(hours=1), cap=100)
+    assert row.reserved_bytes == 1000
+    assert (
+        store.host_state(HOST, T).wire_bytes_today == 2000
+    )  # 1000 used + 1000 reserved
+
+
+def test_closing_replaces_the_reservation_with_the_real_bytes(store: Store) -> None:
+    answer(store, T, Outcome(ok=True, status=200, wire_bytes=1000))
+    answer(store, T + timedelta(hours=1), Outcome(ok=True, status=304, wire_bytes=0))
+    assert store.host_state(HOST, T).wire_bytes_today == 1000
+
+
+def test_a_close_without_bytes_keeps_the_reservation(store: Store) -> None:
+    answer(store, T, Outcome(ok=True, status=200, wire_bytes=1000))
+    answer(store, T + timedelta(hours=1), Outcome(ok=False, failure="timeout"))
+    assert store.host_state(HOST, T).wire_bytes_today == 2000
+
+
+def test_a_reconciled_row_keeps_its_reservation(store: Store) -> None:
+    answer(store, T, Outcome(ok=True, status=200, wire_bytes=1000))
+    open_at(store, T + timedelta(hours=1), cap=100)
+    store.reconcile(now=T + timedelta(hours=3), older_than=timedelta(hours=1))
+    assert store.host_state(HOST, T).wire_bytes_today == 2000
+
+
+def test_bytes_count_on_the_day_the_request_opened(store: Store) -> None:
+    late = datetime(2026, 10, 16, 23, 59, tzinfo=UTC)
+    row = open_at(store, late, cap=100)
+    store.close_request(
+        row.id,
+        now=late + timedelta(minutes=2),
+        outcome=Outcome(ok=True, status=200, wire_bytes=700),
+        update=update(timedelta(1), base=late),
+    )
+    assert store.host_state(HOST, late).wire_bytes_today == 700
+    assert store.host_state(HOST, late + timedelta(minutes=2)).wire_bytes_today == 0
+
+
+def test_byte_budget_refuses_once_used_up(store: Store) -> None:
+    answer(
+        store, T, Outcome(ok=True, status=200, wire_bytes=1000), url="https://e.org/a"
+    )
+    before = snapshot(store, T + timedelta(hours=1))
+    with pytest.raises(Refused) as refused:
+        store.open_request(
+            HOST,
+            "https://example.org/new",
+            now=T + timedelta(hours=1),
+            daily_cap=100,
+            byte_budget=1000,
+            cautious=after(timedelta(hours=2)),
+        )
+    assert refused.value.reason is RefusalReason.BYTE_BUDGET
+    assert refused.value.retry_after == datetime(2026, 10, 17, tzinfo=UTC)
+    assert snapshot(store, T + timedelta(hours=1)) == before
+
+
+def test_byte_budget_refuses_a_reservation_that_does_not_fit(store: Store) -> None:
+    answer(store, T, Outcome(ok=True, status=200, wire_bytes=600))
+    with pytest.raises(Refused) as refused:
+        answer(store, T + timedelta(hours=1), OK, budget=1000)  # 600 used + 600 > 1000
+    assert refused.value.reason is RefusalReason.BYTE_BUDGET
+    answer(
+        store, T + timedelta(hours=1), OK, url="https://example.org/small", budget=1000
+    )
+
+
+def test_no_budget_means_no_byte_limit(store: Store) -> None:
+    answer(store, T, Outcome(ok=True, status=200, wire_bytes=10**9))
+    answer(store, T + timedelta(hours=1), OK)
+
+
+def test_negative_byte_budget_is_rejected(store: Store) -> None:
+    with pytest.raises(ValueError, match="byte_budget"):
+        answer(store, T, OK, budget=-1)
+
+
+def test_negative_bytes_are_rejected() -> None:
+    with pytest.raises(ValueError, match="bytes"):
+        Outcome(ok=True, status=200, wire_bytes=-1)
