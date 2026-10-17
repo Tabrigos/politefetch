@@ -221,16 +221,28 @@ class Attempt:
         self,
         shape: str,
         *,
+        status: int | None = None,
+        headers: Headers | None = None,
         wire_bytes: int | None = None,
         decoded_bytes: int | None = None,
     ) -> None:
-        """Record that no usable HTTP answer came, and how it failed (connect
-        timeout, reset, refusal, TLS, truncated body...), with the bytes that
-        did arrive, if any."""
+        """Record that no usable answer came, and how it failed (connect
+        timeout, reset, refusal, TLS, truncated body, stale data...).
+
+        If an HTTP answer did arrive but could not be used, pass its `status`
+        and `headers`: Retry-After still counts, its validators do not (they
+        would vouch for a body that was rejected).
+        """
+        found = _lowercase(headers)
         outcome = Outcome(
-            ok=False, failure=shape, wire_bytes=wire_bytes, decoded_bytes=decoded_bytes
+            ok=False,
+            status=status,
+            failure=shape,
+            wire_bytes=wire_bytes,
+            decoded_bytes=decoded_bytes,
         )
-        self._record(outcome, None, None)
+        retry_at = parse_retry_after(found.get("retry-after"), self._gate.clock.now())
+        self._record(outcome, retry_at, None)
 
     def _record(
         self, outcome: Outcome, retry_at: datetime | None, validators: Validators | None

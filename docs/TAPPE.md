@@ -117,7 +117,7 @@ contratto.
 
 ## T5 — Adattatori
 
-- [ ] Fatta
+- [x] Fatta
 
 Interfaccia `Fetcher` e adattatori `urllib` (core), `httpx`, `requests`, sync e
 async dove il client lo permette. Ogni adattatore si prova contro il

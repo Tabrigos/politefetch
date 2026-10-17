@@ -4,26 +4,22 @@
 
 Riscritto da capo a ogni fine sessione, mai accodato.
 
-- **Stato**: T0, T1, T2, T3, T4 e T6 fatte. Esistono il Gate, le politiche,
-  i controlli sul contenuto con lo storico per la fonte ferma, le richieste
-  condizionali, i byte con il budget, lo store in memoria e SQLite e il kit
-  di test.
-- **Prossimo passo**: T5 (adattatori) e T7 (Postgres), in qualunque ordine;
-  T8 per ultima. Da sapere per T5:
-  - mandare `attempt.conditional_headers`; registrare con
-    `attempt.response(status, headers=..., wire_bytes=..., decoded_bytes=...)`;
-  - applicare `check_redirect`, `check_length`, `check_body`,
-    `read_data_time`, `gate.note_data_time` con `check_advancing`, e
-    `check_fresh`; un `ContentError` si registra come fallimento con la sua
-    `shape` (D-030, D-031);
-  - provare gli adattatori contro il simulatore; i conteggi di
-    `tests/test_worst_case.py` devono restare gli stessi (D-026).
-  Per T7: la suite di contratto ora copre anche byte, validatori e storico
-  dei tempi del dato.
+- **Stato**: fatte tutte le tappe tranne T7 e T8. La libreria si usa come
+  nell'esempio di `SPEC.md`: `HttpxFetcher(gate).get(url, expect="json",
+  data_time=..., max_age="3h")`, e allo stesso modo con urllib, requests e
+  httpx asincrono.
+- **Prossimo passo**: T7 (store Postgres), poi T8 (stato leggibile, README
+  con esempio verificato da un test, CHANGELOG, 0.1.0). Da sapere per T7:
+  - la suite di contratto (`tests/test_store_contract.py`, `KINDS` in
+    `tests/stores.py`) copre tutto: promesse, tetto, righe, riconciliazione,
+    congelamenti e sblocchi, byte e prenotazioni, validatori, tempi del dato;
+  - le regole stanno in `politefetch.store.base` (`check_admission`,
+    `apply_close`, `apply_validators`, `apply_data_time`, `byte_changes`):
+    Postgres le riusa, non le riscrive;
+  - PostgreSQL 16 è installato ma spento: `pg_ctlcluster 16 main start`.
 - **Dubbi aperti**:
   - il repository GitHub si chiama ancora `fetchguard` (D-010);
-  - lo stato di httpx (vedi T5): il 2026-10-16 `httpx` è a 0.28.1 e `httpx2`
-    a 2.13.1.
+  - `httpx2` non è supportato (D-032).
 
 ## Log
 
@@ -83,3 +79,9 @@ Una riga per sessione: data, tappa, cosa è entrato, cosa resta.
   che i test scoprano sette difetti introdotti apposta; due sopravvivevano
   al primo giro (il JSON troncato con una graffa dentro una stringa) e ora
   hanno il loro test. Resta: T5, T7, T8.
+- 2026-10-17 — T5. Entrati: nucleo comune degli adattatori (D-033),
+  `UrllibFetcher`, `HttpxFetcher`, `AsyncHttpxFetcher`, `RequestsFetcher`,
+  forme del fallimento uniformi, errore `FetchFailed` (D-034), scelta di
+  httpx 0.28 (D-032). I conteggi del caso peggiore girano con tutti gli
+  adattatori e restano uguali. Controllato che i test scoprano sei difetti
+  introdotti apposta. Resta: T7, T8.

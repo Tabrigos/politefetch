@@ -8,6 +8,7 @@ import pytest
 from politefetch import errors
 from politefetch.errors import (
     ContentError,
+    FetchFailed,
     PoliteFetchError,
     RefusalReason,
     Refused,
@@ -24,6 +25,8 @@ def sample_errors() -> list[PoliteFetchError]:
     return [
         Refused("example.org", RefusalReason.DAILY_CAP, T),
         Refused("example.org", RefusalReason.FROZEN, None),
+        FetchFailed("https://e.org/a", "read_timeout"),
+        FetchFailed("https://e.org/a", "http", 503),
         SourceNotReady("body shorter than Content-Length", url="https://e.org/a"),
         UnexpectedContent("HTML where JSON was expected"),
         StaleData(data_time=T, max_age=timedelta(hours=3), age=timedelta(hours=5)),
@@ -54,6 +57,7 @@ def test_public_names_cover_the_hierarchy() -> None:
     assert exported == {
         "PoliteFetchError",
         "Refused",
+        "FetchFailed",
         "ContentError",
         "SourceNotReady",
         "UnexpectedContent",
@@ -159,3 +163,15 @@ def test_errors_survive_pickling(exc: PoliteFetchError) -> None:
     assert type(copy) is type(exc)
     assert str(copy) == str(exc)
     assert vars(copy) == vars(exc)
+
+
+def test_fetch_failed_says_how() -> None:
+    timeout = FetchFailed("https://e.org/a", "read_timeout")
+    assert (timeout.url, timeout.shape, timeout.status) == (
+        "https://e.org/a",
+        "read_timeout",
+        None,
+    )
+    assert "read_timeout" in str(timeout)
+    assert "HTTP 503" in str(FetchFailed("https://e.org/a", "http", 503))
+    assert ContentError not in type(timeout).__mro__

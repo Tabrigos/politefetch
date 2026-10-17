@@ -6,10 +6,9 @@ per-host promises and daily caps that survive restarts, freezing on 403/429/451)
 and keeps you safe from the source (truncated bodies, HTML instead of JSON,
 data that stopped advancing even though every request "succeeds").
 
-**Status: in development, not released.** The gate, the host policies, the
-content checks, conditional requests, byte accounting, the stores (memory
-and SQLite) and the test kit exist; the HTTP adapters are coming. See
-`SPEC.md` for the design and `docs/TAPPE.md` for the plan.
+**Status: in development, not released.** Everything in `SPEC.md` exists
+except the Postgres store and the readable per-host status; see
+`docs/TAPPE.md` for the plan.
 
 ## Why another library
 
@@ -28,14 +27,14 @@ the process.**
 - 403, 429 and 451 freeze the host until a person unlocks it.
 - Freshness is measured on the data itself, not on `304` or `Last-Modified`.
 
-## Planned usage
-
-Not implemented yet; names may change.
+## Usage
 
 ```python
+from datetime import datetime
+
 from politefetch import Gate, HostPolicy
-from politefetch.store import SqliteStore
 from politefetch.adapters.httpx import HttpxFetcher
+from politefetch.store import SqliteStore
 
 gate = Gate(
     SqliteStore("ingest.db"),
@@ -45,8 +44,29 @@ gate = Gate(
     },
 )
 fetch = HttpxFetcher(gate)
-result = fetch.get(url, expect="json", data_time=lambda body: ..., max_age="3h")
+result = fetch.get(
+    url,
+    expect="json",
+    data_time=lambda data: datetime.fromisoformat(data["time"]),
+    max_age="3h",
+)
 ```
+
+`fetch.get` sends the request once, if the gate allows it, with the
+conditional headers of the URL's last answer, and returns a `FetchResult`
+(`content` is the parsed JSON). Otherwise it raises:
+
+- `Refused`: nothing was sent (promise, daily cap, byte budget, freeze, or a
+  request already in flight); `retry_after` says when to ask again;
+- `FetchFailed`: no usable answer (`shape`: `connect_timeout`,
+  `read_timeout`, `refused`, `reset`, `tls`, `dns`, `connection`, or `http`
+  with `status`);
+- a `ContentError`: truncated, HTML, redirected, stale or stuck data.
+
+Adapters: `politefetch.adapters.urllib.UrllibFetcher` (no extras),
+`politefetch.adapters.httpx.HttpxFetcher` and `AsyncHttpxFetcher` (extra
+`httpx`), `politefetch.adapters.requests.RequestsFetcher` (extra
+`requests`). They never follow redirects and never retry.
 
 ## What is there today
 
