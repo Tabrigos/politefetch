@@ -8,6 +8,7 @@ rules every store applies are in `politefetch.store.base`.
 """
 
 from politefetch.store.base import (
+    DataTimeRecord,
     Freeze,
     HostState,
     HostUpdate,
@@ -23,6 +24,7 @@ from politefetch.store.memory import MemoryData, MemoryStore
 from politefetch.store.sqlite import SqliteStore
 
 __all__ = [
+    "DataTimeRecord",
     "Freeze",
     "HostState",
     "HostUpdate",

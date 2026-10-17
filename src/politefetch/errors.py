@@ -88,8 +88,13 @@ class Refused(PoliteFetchError):
 
 
 class ContentError(PoliteFetchError):
-    """A request was sent and answered, but the answer cannot be used."""
+    """A request was sent and answered, but the answer cannot be used.
 
+    `shape` is a short, stable name for the kind of problem, recorded as the
+    failure shape of the request.
+    """
+
+    shape = "content"
     url: str | None
 
     def _where(self) -> str:
@@ -117,14 +122,20 @@ class SourceNotReady(_DetailedContentError):
     Transient: asking again later, when the gate allows it, may succeed.
     """
 
+    shape = "not_ready"
+
 
 class UnexpectedContent(_DetailedContentError):
     """The body is not what was asked for: HTML instead of JSON or text, or a
     redirect to another host."""
 
+    shape = "unexpected_content"
+
 
 class StaleData(ContentError):
     """The time extracted from the body is older than `max_age`."""
+
+    shape = "stale_data"
 
     data_time: datetime
     max_age: timedelta
@@ -164,6 +175,8 @@ class StaleData(ContentError):
 class StuckSource(ContentError):
     """The data time has not advanced for `reads` consecutive reads, even
     though every request succeeded."""
+
+    shape = "stuck_source"
 
     data_time: datetime
     reads: int
