@@ -23,6 +23,9 @@ from politefetch.testing.barrier import (
     is_allowed_address,
 )
 
+# These tests hit the barrier on purpose.
+pytestmark = pytest.mark.politefetch_expects_blocked
+
 PUBLIC_IP = "1.1.1.1"  # a real, routable address
 TEST_NET_IP = "192.0.2.1"
 

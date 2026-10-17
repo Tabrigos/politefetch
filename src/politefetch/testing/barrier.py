@@ -125,6 +125,11 @@ class NetworkBarrier:
     def active(self) -> bool:
         return NetworkBarrier._active is self
 
+    @classmethod
+    def current(cls) -> "NetworkBarrier | None":
+        """The barrier active right now, if any."""
+        return cls._active
+
     @staticmethod
     def original(name: str) -> Callable[..., Any]:
         """Return the unpatched `socket` function or method called `name`."""

@@ -1,14 +1,5 @@
-"""Shared fixtures: every test runs behind the network barrier."""
+"""Every test runs behind the network barrier.
 
-from collections.abc import Iterator
-
-import pytest
-
-from politefetch.testing.barrier import NetworkBarrier
-
-
-@pytest.fixture(autouse=True)
-def network_barrier() -> Iterator[NetworkBarrier]:
-    """Block every outbound connection except loopback and Unix sockets."""
-    with NetworkBarrier() as barrier:
-        yield barrier
+The barrier comes from the politefetch pytest plugin, switched on for this
+suite by `politefetch_barrier = true` in pyproject.toml.
+"""

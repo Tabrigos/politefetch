@@ -29,6 +29,7 @@ MODULES = [
     "politefetch.adapters.requests",
     "politefetch.testing",
     "politefetch.testing.barrier",
+    "politefetch.testing.plugin",
     "politefetch.testing.processes",
     "politefetch.testing.simulator",
     "politefetch.testing.counter",
