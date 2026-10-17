@@ -7,7 +7,7 @@ from hypothesis import given
 from hypothesis import strategies as st
 
 from politefetch.errors import RefusalReason
-from politefetch.policy import HostPolicy, parse_duration, parse_retry_after
+from politefetch.policy import HostPolicy, parse_duration, parse_retry_after, parse_size
 from politefetch.store import HostState, Outcome
 
 T = datetime(2026, 10, 16, 12, 0, tzinfo=UTC)
@@ -278,3 +278,40 @@ def test_other_errors_back_off_without_freezing(status: int) -> None:
     update = policy.after(state(), T, http(status), None)
     assert update.freeze is None
     assert update.reason is RefusalReason.BACKOFF
+
+
+# --- byte budget (T4) --------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("value", "expected"),
+    [
+        (0, 0),
+        (1500, 1500),
+        ("500B", 500),
+        ("2kB", 2000),
+        ("2KiB", 2048),
+        ("50MB", 50_000_000),
+        ("50MiB", 50 * 1024**2),
+        ("1GB", 10**9),
+        ("1GiB", 1024**3),
+        (" 3MB ", 3_000_000),
+    ],
+)
+def test_parse_size(value: int | str, expected: int) -> None:
+    assert parse_size(value) == expected
+
+
+@pytest.mark.parametrize(
+    "value", ["", "50", "50 MB", "1.5MB", "-1MB", "5mb", "5Kb", -1]
+)
+def test_parse_size_rejects_ambiguous_values(value: int | str) -> None:
+    with pytest.raises(ValueError, match="size"):
+        parse_size(value)
+
+
+def test_policy_byte_budget() -> None:
+    assert HostPolicy(daily_cap=10, min_interval="1m").byte_budget is None
+    assert HostPolicy(
+        daily_cap=10, min_interval="1m", byte_budget="5MB"
+    ).byte_budget == (5_000_000)
