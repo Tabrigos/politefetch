@@ -593,3 +593,57 @@ alla vecchia e la vecchia prende la riga "Superata da".
     1024). Scritture ambigue come `"5mb"` o `"5Kb"` sono rifiutate;
   - il simulatore ha lo scenario `Validated`, che risponde 304 a un
     `If-None-Match` o `If-Modified-Since` che combacia.
+
+## D-030 — I controlli sul contenuto
+
+- **Data e tappa**: 2026-10-17, T3
+- **Decisione**:
+  - funzioni pure in `politefetch.checks`, una per controllo, che tornano in
+    silenzio o sollevano un `ContentError`; T5 le chiama nell'ordine che
+    serve all'adattatore;
+  - `check_length` confronta i byte arrivati sul filo con `Content-Length`:
+    meno è `SourceNotReady`, di più è `UnexpectedContent`;
+  - `check_body` restituisce il contenuto già letto (JSON analizzato, testo
+    decodificato, o i byte). Corpo vuoto (o di soli spazi, per JSON e testo)
+    è `SourceNotReady`. HTML per `Content-Type` (`text/html`,
+    `application/xhtml+xml`) o per l'inizio del corpo (`<!doctype html`,
+    `<html`, anche dopo BOM e spazi) dove si aspetta JSON o testo è
+    `UnexpectedContent`. JSON servito come `text/plain` passa;
+  - un JSON non valido è "troncato" (`SourceNotReady`) se alla fine del testo
+    resta aperta una stringa, una parentesi o una graffa; altrimenti è
+    "inatteso" (`UnexpectedContent`). Un test basato su proprietà taglia
+    documenti JSON casuali in ogni punto e verifica che il risultato sia
+    sempre "troncato";
+  - un redirect può cambiare schema, porta o percorso, non host;
+  - `read_data_time` esegue l'estrattore di chi chiama: se non trova il
+    tempo, il contenuto è inatteso; se restituisce un `datetime` senza fuso è
+    un errore dell'estrattore (`ValueError`);
+  - `check_fresh` confronta l'età con `max_age`; un dato dal futuro passa
+    (alcune fonti pubblicano previsioni);
+  - ogni `ContentError` ha una `shape` breve e stabile (`not_ready`,
+    `unexpected_content`, `stale_data`, `stuck_source`), da registrare come
+    forma del fallimento della richiesta.
+- **Alternative scartate**: riconoscere il JSON troncato dal messaggio
+  d'errore del parser (cambia fra versioni, e per una stringa non chiusa
+  indica l'inizio della stringa, non la fine del testo).
+- **Conseguenze**: un numero al primo livello troncato (`12` al posto di
+  `123`) è JSON valido: lo scopre solo `check_length`.
+
+## D-031 — Lo storico per la fonte ferma
+
+- **Data e tappa**: 2026-10-17, T3
+- **Decisione**: lo store tiene per ogni URL il tempo del dato più recente
+  visto e quante letture consecutive non l'hanno superato, compresa quella
+  che l'ha portato (`note_data_time`, tabella `data_times`). Un tempo più
+  recente riparte da una lettura; lo stesso tempo, o uno più vecchio (una
+  fonte che torna indietro non avanza), aggiunge una lettura.
+  `check_advancing(record, stuck_after=N)` solleva `StuckSource` da N
+  letture in poi, con N almeno 2. `gate.note_data_time(url, data_time)` usa
+  l'orologio del Gate.
+- **Alternative scartate**: tenere la storia in memoria (si perderebbe a ogni
+  riavvio, e una fonte ferma da giorni ripartirebbe da zero); conservare
+  tutti i tempi letti (cresce senza limite, e serve solo l'ultimo con il suo
+  conteggio).
+- **Conseguenze**: T5 decide dove si imposta N (per chiamata, come
+  `max_age`) e se registrare `StaleData` e `StuckSource` come fallimenti
+  della richiesta (la lettura prudente: sì, così la pausa cresce).
