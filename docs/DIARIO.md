@@ -4,19 +4,20 @@
 
 Riscritto da capo a ogni fine sessione, mai accodato.
 
-- **Stato**: T0, T1 e T2 fatte. Esistono il Gate (`attempt` sincrono e
-  asincrono, `may_fetch`, `unfreeze`), le politiche per host (pausa
-  crescente, `Retry-After` come minimo, congelamenti di D-013) e lo store in
-  memoria e SQLite, con lo sblocco manuale tracciato.
-- **Prossimo passo**: T3, T4 e T6 si possono fare in qualunque ordine (anche
-  in parallelo); poi T5 (dopo T4 e T6) e T7 (dopo T3 e T4). Da sapere:
+- **Stato**: T0, T1, T2 e T6 fatte. Esistono il Gate, le politiche, lo store
+  in memoria e SQLite, e il kit di test: plugin pytest (barriera con
+  controllo in chiusura, fixture del simulatore), simulatore di fonte con gli
+  scenari di `SPEC.md`, contatore, conteggi del caso peggiore.
+- **Prossimo passo**: T3 o T4 (in qualunque ordine); poi T5 (dopo T4) e T7
+  (dopo T3 e T4). Da sapere:
   - T3 e T4 aggiungono metodi allo store: i test vanno nella suite di
     contratto, le colonne nuove di tabelle esistenti in `_ADDED_COLUMNS`
     (D-021);
   - il budget di byte di T4 si controlla in `check_admission` e si consuma
     in `open_request`, nella stessa transazione (D-002);
-  - T6 riscrive i test di scenario di `tests/test_gate.py` con il
-    simulatore.
+  - T5 prova gli adattatori contro il simulatore e può sostituire il
+    chiamante ingenuo di `tests/fetching.py`; i conteggi di
+    `tests/test_worst_case.py` devono restare gli stessi (D-026).
 - **Dubbi aperti**:
   - il repository GitHub si chiama ancora `fetchguard` (D-010);
   - lo stato di httpx (vedi T5): il 2026-10-16 `httpx` è a 0.28.1 e `httpx2`
@@ -63,3 +64,8 @@ Una riga per sessione: data, tappa, cosa è entrato, cosa resta.
   l'orologio finto e un test basato su proprietà su sequenze casuali di
   risposte. Controllato che i test scoprano sei difetti introdotti apposta.
   Resta: T3, T4, T6.
+- 2026-10-17 — T6. Entrati: plugin pytest installabile (D-024), simulatore di
+  fonte e contatore (D-025), conteggi del caso peggiore per ogni scenario
+  (D-026), test di scenario di T2 rifatti con HTTP vero e un processo ucciso
+  a richiesta partita. Controllato che i test scoprano cinque difetti
+  introdotti apposta. Resta: T3, T4.

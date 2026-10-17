@@ -129,7 +129,7 @@ connessione, reset, rifiuto, TLS, codice HTTP) si registra in modo uniforme.
 
 ## T6 — Kit di test
 
-- [ ] Fatta
+- [x] Fatta
 
 `politefetch.testing`: completa la barriera di T0 e la rende un plugin pytest
 installabile; simulatore di fonte con gli scenari di `SPEC.md`; contatore

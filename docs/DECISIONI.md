@@ -468,3 +468,71 @@ alla vecchia e la vecchia prende la riga "Superata da".
   senza congelamento non fa nulla e non lascia tracce.
 - **Alternative scartate**: azzerare i fallimenti allo sblocco (la persona
   dice "puoi riprovare", non "la fonte sta bene").
+
+## D-024 — Il plugin pytest
+
+- **Data e tappa**: 2026-10-17, T6
+- **Decisione**:
+  - il plugin è registrato come entry point `pytest11` (`politefetch`), quindi
+    pytest lo carica da solo dove politefetch è installato; per default non
+    fa nulla oltre a offrire fixture, un'opzione e un marcatore;
+  - `politefetch_barrier = true` nella configurazione di pytest mette ogni
+    test dietro la barriera; la fixture `network_barrier` la mette su un solo
+    test (o restituisce quella attiva);
+  - un test che ha tentato di uscire fallisce in chiusura anche se il codice
+    sotto test ha inghiottito `NetworkBlockedError`, a meno del marcatore
+    `politefetch_expects_blocked` (i test che provano la barriera stessa);
+  - la fixture `source_simulator` avvia un simulatore per un test;
+  - la nostra suite usa l'opzione in `pyproject.toml`; `tests/conftest.py`
+    non definisce più la barriera; `pytester` è attivato da `addopts`.
+- **Alternative scartate**: barriera attiva per default in chi installa la
+  libreria (romperebbe le suite che usano la rete di proposito, e l'utente
+  non l'ha chiesto); nessun controllo in chiusura (un `except Exception: pass`
+  nel codice sotto test renderebbe la barriera invisibile).
+- **Conseguenze**: chi vuole disattivarlo usa `-p no:politefetch`.
+
+## D-025 — Il simulatore e il contatore
+
+- **Data e tappa**: 2026-10-17, T6
+- **Decisione**:
+  - il simulatore è un server su socket grezzi, in un thread, su 127.0.0.1;
+    ogni risposta chiude la connessione (`Connection: close`). I socket
+    grezzi servono a produrre ciò che un server HTTP normale non sa fare: un
+    corpo più corto di `Content-Length`, un reset TCP, nessuna risposta;
+  - scenari: `Respond` (qualunque stato, corpo e intestazioni),
+    `TooManyRequests`, `Html`, `Truncated`, `NoAnswer` (tiene la connessione
+    finché il simulatore non si ferma), `Reset`, `stuck_json`,
+    `advancing_json`; lo scenario si cambia fra una richiesta e l'altra;
+  - "rifiuta" è una porta chiusa (`closed_port_url()`): lì non arriva nulla a
+    un server, quindi il contatore non vede niente e conta il registro del
+    Gate;
+  - il contatore registra ogni richiesta **prima** che lo scenario risponda,
+    con lo scenario attivo: una richiesta a cui la fonte non risponde è
+    comunque arrivata.
+- **Alternative scartate**: `http.server` della libreria standard (non sa
+  rispondere troncato né fare reset); un trasporto finto (D-003).
+
+## D-026 — Il caso peggiore, contato
+
+- **Data e tappa**: 2026-10-17, T6
+- **Decisione**: `tests/test_worst_case.py` fa provare ogni minuto, per 24
+  ore finte, un chiamante che insiste qualunque cosa succeda, con 50 richieste
+  al giorno, 10 minuti dopo una risposta buona e una pausa dopo i fallimenti
+  da 1 minuto raddoppiata fino a 1 ora (mai meno dei 10 minuti). Conta quante
+  richieste arrivano alla fonte:
+
+  | Scenario | Richieste arrivate |
+  |---|---|
+  | risponde (anche con dato fermo) | 50 in un giorno (il tetto) |
+  | 503, reset, troncato, HTML, rifiuta | 29 in un giorno |
+  | non risponde | 11 in sei ore |
+  | 429, 403, 451 | 1 |
+  | 429 con l'opzione di D-013 | 2 |
+  | cento riavvii nello stesso minuto | 1 |
+  | processo ucciso a richiesta partita | 1, e nient'altro per l'ora fino alla riconciliazione |
+
+  Il chiamante dei test (`tests/fetching.py`) usa `urllib` dentro
+  `gate.attempt` e tratta come fallimenti un corpo troncato e l'HTML: sono le
+  scelte che T3 e T5 faranno per bene.
+- **Conseguenze**: un cambiamento delle politiche che fa partire più
+  richieste fa fallire questi conteggi esatti, e va motivato.
