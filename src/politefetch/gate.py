@@ -36,6 +36,7 @@ from politefetch.clock import Clock, SystemClock
 from politefetch.errors import Refused
 from politefetch.policy import HostPolicy, parse_duration, parse_retry_after
 from politefetch.store.base import (
+    DataTimeRecord,
     Outcome,
     RequestRow,
     Store,
@@ -133,6 +134,11 @@ class Gate:
         """A context manager (sync or async) around one request to `url`."""
         host = host_of(url)
         return Attempt(self, url, host, self.policy_for(host))
+
+    def note_data_time(self, url: str, data_time: datetime) -> DataTimeRecord:
+        """Record the data time a read of `url` returned, for stuck-source
+        detection (`politefetch.checks.check_advancing`)."""
+        return self.store.note_data_time(url, data_time, now=self.clock.now())
 
     def unfreeze(self, host_or_url: str, *, by: str, note: str = "") -> Unfreeze | None:
         """Lift a host's freeze by hand, leaving a trace of who did it."""
