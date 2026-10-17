@@ -154,7 +154,7 @@ delle richieste partite per scenario.
 
 ## T7 — Store Postgres
 
-- [ ] Fatta
+- [x] Fatta
 
 Extra `postgres` (driver da scegliere e motivare in `docs/DECISIONI.md`). Le
 stesse prove di T1 e la suite di contratto completa (con i metodi di T3 e

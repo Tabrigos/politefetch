@@ -39,7 +39,7 @@ from politefetch.store import (
     Validators,
 )
 
-from .stores import Harness
+from .stores import Harness, needs_postgres
 
 HOSTS = ["a.example", "b.example"]
 PATHS = ["/a", "/b"]
@@ -272,6 +272,12 @@ class SqliteStoreMachine(StoreMachine):
     kind = "sqlite"
 
 
+class PostgresStoreMachine(StoreMachine):
+    kind = "postgres"
+
+
+TestPostgresStore = needs_postgres(PostgresStoreMachine.TestCase)
+TestPostgresStore.settings = settings(max_examples=25, deadline=None)
 TestMemoryStore = MemoryStoreMachine.TestCase
 TestSqliteStore = SqliteStoreMachine.TestCase
 TestSqliteStore.settings = settings(max_examples=50, deadline=None)

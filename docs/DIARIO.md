@@ -4,19 +4,15 @@
 
 Riscritto da capo a ogni fine sessione, mai accodato.
 
-- **Stato**: fatte tutte le tappe tranne T7 e T8. La libreria si usa come
-  nell'esempio di `SPEC.md`: `HttpxFetcher(gate).get(url, expect="json",
-  data_time=..., max_age="3h")`, e allo stesso modo con urllib, requests e
-  httpx asincrono.
-- **Prossimo passo**: T7 (store Postgres), poi T8 (stato leggibile, README
-  con esempio verificato da un test, CHANGELOG, 0.1.0). Da sapere per T7:
-  - la suite di contratto (`tests/test_store_contract.py`, `KINDS` in
-    `tests/stores.py`) copre tutto: promesse, tetto, righe, riconciliazione,
-    congelamenti e sblocchi, byte e prenotazioni, validatori, tempi del dato;
-  - le regole stanno in `politefetch.store.base` (`check_admission`,
-    `apply_close`, `apply_validators`, `apply_data_time`, `byte_changes`):
-    Postgres le riusa, non le riscrive;
-  - PostgreSQL 16 è installato ma spento: `pg_ctlcluster 16 main start`.
+- **Stato**: fatte tutte le tappe tranne T8. Esistono tre store (memoria,
+  SQLite, Postgres) con la stessa suite di contratto, il Gate, le politiche,
+  i controlli sul contenuto, le richieste condizionali, i byte, quattro
+  adattatori e il kit di test.
+- **Prossimo passo**: T8: stato leggibile per host in JSON, README con un
+  esempio completo eseguibile verificato da un test, CHANGELOG, versione
+  0.1.0, niente pubblicazione. Prima dei test: `eval
+  "$(scripts/postgres-for-tests.sh)"`, altrimenti i test Postgres vengono
+  saltati.
 - **Dubbi aperti**:
   - il repository GitHub si chiama ancora `fetchguard` (D-010);
   - `httpx2` non è supportato (D-032).
@@ -85,3 +81,9 @@ Una riga per sessione: data, tappa, cosa è entrato, cosa resta.
   httpx 0.28 (D-032). I conteggi del caso peggiore girano con tutti gli
   adattatori e restano uguali. Controllato che i test scoprano sei difetti
   introdotti apposta. Resta: T7, T8.
+- 2026-10-17 — T7. Entrati: `PostgresStore` con psycopg 3 (D-035), uno
+  scrittore alla volta per schema con lock consultivo e `lock_timeout`
+  (D-036), test contro Postgres in locale e in CI, ognuno nel suo schema
+  (D-037). Tutta la suite di contratto e i test con più processi passano
+  anche su Postgres. Controllato che i test scoprano quattro difetti
+  introdotti apposta, compreso il lock tolto. Resta: T8.

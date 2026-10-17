@@ -717,3 +717,67 @@ alla vecchia e la vecchia prende la riga "Superata da".
   arrivata ma rifiutata.
 - **Alternative scartate**: restituire un risultato con `ok=False` (chi
   chiama potrebbe non guardarlo e usare un corpo d'errore come dato).
+
+## D-035 — Il driver Postgres è psycopg 3
+
+- **Data e tappa**: 2026-10-17, T7
+- **Contesto**: T7 chiedeva di scegliere e motivare il driver. Su PyPI il
+  2026-10-17: `psycopg` 3.3.6 (settembre 2026), `psycopg2` 2.9.13, `asyncpg`
+  0.32.0, `pg8000` 1.31.5 (settembre 2025).
+- **Decisione**: l'extra `postgres` chiede `psycopg[binary]>=3.2,<4`. psycopg
+  3 è il successore di psycopg2, mantenuto, con tipi per `mypy --strict`, e
+  con le ruote binarie non serve compilare nulla. La licenza LGPL del driver
+  non tocca il MIT di politefetch: è una dipendenza opzionale, importata
+  solo da `store/postgres.py`.
+- **Alternative scartate**: `asyncpg` (solo asincrono, mentre lo store è
+  sincrono come gli altri); `psycopg2` (in manutenzione, senza tipi);
+  `pg8000` (puro Python, meno diffuso).
+
+## D-036 — Lo store Postgres: uno scrittore alla volta
+
+- **Data e tappa**: 2026-10-17, T7
+- **Decisione**:
+  - ogni operazione che cambia lo stato è una transazione che prende per
+    prima cosa un lock consultivo di transazione (`pg_advisory_xact_lock`)
+    legato allo schema: le scritture vanno una alla volta, come con il
+    `BEGIN IMMEDIATE` di SQLite. Le letture usano istantanee `REPEATABLE READ`
+    in sola lettura e non aspettano;
+  - `lock_timeout` (30 secondi, configurabile) limita l'attesa del lock; se
+    scade l'operazione solleva `psycopg.errors.LockNotAvailable` e nessuna
+    richiesta parte;
+  - un processo che muore dentro una transazione perde la connessione:
+    Postgres annulla la transazione e rilascia il lock (c'è un test che lo
+    uccide con `SIGKILL` mentre tiene il lock);
+  - le tabelle stanno in uno schema proprio (`schema=`, default
+    `politefetch`), creato all'apertura sotto lo stesso lock, così due
+    processi che partono insieme non si scontrano nel crearlo;
+  - tempi in `timestamptz` con la sessione in UTC; le regole sono quelle di
+    `politefetch.store.base`, le stesse degli altri store.
+- **Alternative scartate**: lock di riga per host (più concorrenza, ma la
+  riconciliazione e lo storico dei tempi toccano più righe e andrebbero
+  ordinati per evitare stalli; ai ritmi di questa libreria, poche richieste
+  al minuto, la concorrenza non serve); isolamento `SERIALIZABLE` con
+  ritentativi (un ciclo di ritentativi nello store, e gli errori di
+  serializzazione da gestire).
+- **Conseguenze**: togliere il lock fa superare il tetto a quattro processi
+  insieme: il test con più processi lo scopre.
+
+## D-037 — I test contro Postgres
+
+- **Data e tappa**: 2026-10-17, T7
+- **Decisione**:
+  - i test leggono la stringa di connessione da `POLITEFETCH_TEST_POSTGRES`;
+    senza, i test Postgres vengono saltati con il motivo scritto. In CI
+    `POLITEFETCH_REQUIRE_POSTGRES=1` trasforma l'assenza in un errore, così
+    non si possono saltare in silenzio;
+  - ogni test lavora in uno schema suo (`test_<casuale>`) e lo cancella alla
+    fine: i test non si pestano i piedi e il database resta pulito;
+  - in locale `scripts/postgres-for-tests.sh` accende il cluster 16 e crea
+    ruolo e database di prova; in CI c'è un servizio `postgres:16`. La
+    password è usa e getta, per un database su loopback, non un segreto;
+  - Postgres entra in `KINDS` di `tests/stores.py`: la suite di contratto, i
+    test del Gate, la macchina a stati (25 esempi), lo storico dei tempi e i
+    test con più processi girano anche su Postgres.
+- **Alternative scartate**: avviare un cluster dai test (servirebbe un
+  sottoprocesso, che la guardia di D-012 vieta, e i permessi di root per
+  `initdb`).

@@ -15,7 +15,8 @@ from politefetch.clock import FakeClock
 from politefetch.errors import RefusalReason, Refused
 from politefetch.gate import Gate
 from politefetch.policy import HostPolicy
-from politefetch.store import HostState, HostUpdate, Outcome, SqliteStore
+from politefetch.store import HostState, HostUpdate, Outcome, SqliteStore, Store
+from politefetch.store.postgres import PostgresStore
 
 from .fetching import fetch
 
@@ -61,10 +62,21 @@ def _next_after(moment: datetime) -> Callable[[HostState], HostUpdate]:
     return lambda _state: HostUpdate(moment + TINY, RefusalReason.MIN_INTERVAL)
 
 
-def hammer(path: str, host: str, cap: int, attempts: int, start_ns: int) -> int:
+StoreSpec = tuple[str, str, str]
+"""("sqlite", path, "") or ("postgres", conninfo, schema): picklable."""
+
+
+def open_store(spec: StoreSpec, *, wait: float = 30.0) -> Store:
+    kind, where, schema = spec
+    if kind == "sqlite":
+        return SqliteStore(where, busy_timeout=wait)
+    return PostgresStore(where, schema=schema, lock_timeout=wait)
+
+
+def hammer(spec: StoreSpec, host: str, cap: int, attempts: int, start_ns: int) -> int:
     """Try `attempts` requests as fast as possible; return how many got in."""
     admitted = 0
-    with SqliteStore(path) as store:
+    with open_store(spec) as store:
         for _ in range(attempts):
             now = _now(start_ns)
             try:
@@ -88,9 +100,9 @@ def hammer(path: str, host: str, cap: int, attempts: int, start_ns: int) -> int:
     return admitted
 
 
-def open_and_die(path: str, host: str, now: datetime) -> None:
+def open_and_die(spec: StoreSpec, host: str, now: datetime) -> None:
     """Open a request, then die before closing it."""
-    store = SqliteStore(path)
+    store = open_store(spec)
     store.open_request(
         host,
         "https://x/",
@@ -101,7 +113,7 @@ def open_and_die(path: str, host: str, now: datetime) -> None:
     os._exit(3)
 
 
-def hang_inside_open(path: str, host: str, now: datetime, marker: str) -> None:
+def hang_inside_open(spec: StoreSpec, host: str, now: datetime, marker: str) -> None:
     """Start opening a request and hang inside the transaction."""
 
     def cautious(_state: HostState) -> datetime:
@@ -109,7 +121,7 @@ def hang_inside_open(path: str, host: str, now: datetime, marker: str) -> None:
         time.sleep(600)
         return now + timedelta(minutes=5)
 
-    with SqliteStore(path) as store:
+    with open_store(spec) as store:
         store.open_request(host, "https://x/", now=now, daily_cap=10, cautious=cautious)
 
 

@@ -7,8 +7,7 @@ and keeps you safe from the source (truncated bodies, HTML instead of JSON,
 data that stopped advancing even though every request "succeeds").
 
 **Status: in development, not released.** Everything in `SPEC.md` exists
-except the Postgres store and the readable per-host status; see
-`docs/TAPPE.md` for the plan.
+except the readable per-host status; see `docs/TAPPE.md` for the plan.
 
 ## Why another library
 
@@ -107,7 +106,9 @@ Adapters: `politefetch.adapters.urllib.UrllibFetcher` (no extras),
   `StaleData`; a data time that stopped advancing for N reads raises
   `StuckSource` (`gate.note_data_time(url, data_time)` keeps the history).
 - `politefetch.store`: `SqliteStore` (the default, safe to share between
-  processes) and `MemoryStore` (tests).
+  processes on one machine), `PostgresStore` (extra `postgres`, safe to
+  share between machines; tables in their own schema) and `MemoryStore`
+  (tests).
 - `politefetch.errors`: `PoliteFetchError`, `Refused` (with a reason and a
   retry-after time), and the content errors `SourceNotReady`,
   `UnexpectedContent`, `StaleData`, `StuckSource`.
@@ -149,3 +150,9 @@ uv run mypy
 The core depends only on the standard library; HTTP clients and the Postgres
 driver live in the `httpx`, `requests` and `postgres` extras. Tests never use
 the network.
+
+The Postgres tests need a server: `POLITEFETCH_TEST_POSTGRES` holds its
+connection string, and each test works in a schema of its own. On a machine
+with PostgreSQL 16 installed, `eval "$(scripts/postgres-for-tests.sh)"`
+starts it and sets the variable; without it those tests are skipped, and CI
+refuses to skip them.

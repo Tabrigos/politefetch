@@ -40,7 +40,7 @@ MODULES = [
 EXTRAS = {
     "adapters/httpx.py": {"httpx"},
     "adapters/requests.py": {"requests", "urllib3"},
-    "store/postgres.py": set(),  # the driver is chosen in T7
+    "store/postgres.py": {"psycopg"},
     "testing/plugin.py": {"pytest"},
 }
 
