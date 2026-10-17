@@ -647,3 +647,73 @@ alla vecchia e la vecchia prende la riga "Superata da".
 - **Conseguenze**: T5 decide dove si imposta N (per chiamata, come
   `max_age`) e se registrare `StaleData` e `StuckSource` come fallimenti
   della richiesta (la lettura prudente: sì, così la pausa cresce).
+
+## D-032 — httpx 0.28, non httpx2
+
+- **Data e tappa**: 2026-10-17, T5
+- **Contesto**: T5 chiedeva di verificare su PyPI lo stato di httpx prima di
+  sceglierlo. Il 2026-10-17:
+  - `httpx` è a 0.28.1, stabile, del 6 dicembre 2024; la 1.0 è ancora in
+    prerelease (1.0.dev6, 31 agosto 2026);
+  - `httpx2` è un fork dell'organizzazione Pydantic, con nome d'import e
+    classi d'errore propri; esiste da maggio 2026, con 18 versioni (ultima
+    2.13.1, 23 settembre 2026).
+- **Decisione**: l'extra `httpx` chiede `httpx>=0.28,<1`: si resta sulla
+  versione stabile, e la 1.0 resta fuori finché non è rilasciata e provata.
+  `httpx2` non si supporta per ora. L'extra `requests` chiede
+  `requests>=2.32,<3`; fra le dipendenze di sviluppo entra `types-requests`
+  per `mypy --strict`.
+- **Alternative scartate**: dipendere dalla 1.0 in prerelease (l'interfaccia
+  può cambiare); scegliere `httpx2` (fork giovane, e un nome d'import diverso
+  che chi usa già httpx non ha).
+- **Conseguenze**: un adattatore per `httpx2` sarebbe una copia di
+  `adapters/httpx.py` con le sue classi d'errore; si valuta se qualcuno lo
+  chiede.
+
+## D-033 — Come lavora un adattatore
+
+- **Data e tappa**: 2026-10-17, T5
+- **Decisione**:
+  - un nucleo comune (`adapters/base.py`, `Fetcher` e `AsyncFetcher`) fa il
+    ciclo intero; un adattatore fornisce solo l'invio di una GET con il suo
+    client e il nome dei suoi errori. Adattatori: `UrllibFetcher` (libreria
+    standard), `HttpxFetcher` e `AsyncHttpxFetcher`, `RequestsFetcher`
+    (requests non ha una versione asincrona);
+  - **i redirect non si seguono**: ognuno sarebbe una seconda richiesta alla
+    fonte dentro lo stesso tentativo. Un 3xx diverso da 304 è
+    `UnexpectedContent`; se punta a un altro host il messaggio lo dice;
+  - forme del fallimento uguali per tutti (`FailureShape`):
+    `connect_timeout`, `read_timeout`, `refused`, `reset`, `tls`, `dns`,
+    `connection`, `http`. Si riconoscono guardando dietro l'errore del client
+    (cause, contesti, `reason`), non dal testo dei messaggi;
+  - un errore di contenuto si registra come fallimento con la sua `shape`, lo
+    stato HTTP e le intestazioni: `Retry-After` vale ancora, i validatori no
+    (garantirebbero un corpo rifiutato, e il 304 successivo confermerebbe un
+    dato sbagliato). Così anche dati vecchi o fermi fanno crescere la pausa;
+  - un 304 si controlla contro l'ultimo tempo del dato visto per l'URL: conta
+    come lettura per la fonte ferma e può essere `StaleData`;
+  - `stuck_after` e `max_age` si passano a ogni chiamata, insieme
+    all'estrattore del tempo del dato;
+  - i timeout sono obbligatoriamente finiti: una richiesta che non finisce
+    tiene l'host bloccato fino alla riconciliazione. urllib ha un solo
+    timeout per connessione e lettura: l'adattatore usa quello di lettura;
+  - ogni richiesta porta `User-Agent: politefetch/<versione>`, sostituibile;
+  - nessun adattatore ritenta: urllib e httpx non lo fanno, e requests per
+    default nemmeno.
+- **Alternative scartate**: seguire i redirect sullo stesso host (più
+  richieste per tentativo, e il registro ne conterebbe una sola).
+- **Conseguenze**: `tests/test_worst_case.py` ora gira con tutti e quattro gli
+  adattatori al posto del chiamante ingenuo, con gli stessi conteggi esatti
+  (D-026). `tests/fetching.py` resta per i test del Gate di T6.
+
+## D-034 — L'errore `FetchFailed`
+
+- **Data e tappa**: 2026-10-17, T5
+- **Decisione**: un terzo ramo sotto `PoliteFetchError`: `FetchFailed`
+  (richiesta partita, nessuna risposta usabile o uno stato HTTP di errore),
+  con `url`, `shape` e `status`. Accanto a `Refused` (non partita) e
+  `ContentError` (partita, risposta inutilizzabile). `Attempt.failure`
+  accetta ora anche `status` e `headers`, per registrare una risposta
+  arrivata ma rifiutata.
+- **Alternative scartate**: restituire un risultato con `ok=False` (chi
+  chiama potrebbe non guardarlo e usare un corpo d'errore come dato).
