@@ -10,6 +10,7 @@ data that stopped advancing). See SPEC.md for the rules.
 from politefetch.clock import Clock, FakeClock, SystemClock
 from politefetch.errors import (
     ContentError,
+    FetchFailed,
     PoliteFetchError,
     RefusalReason,
     Refused,
@@ -25,6 +26,7 @@ __all__ = [
     "Clock",
     "ContentError",
     "FakeClock",
+    "FetchFailed",
     "Gate",
     "HostPolicy",
     "PoliteFetchError",

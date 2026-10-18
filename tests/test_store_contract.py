@@ -495,6 +495,21 @@ def test_rows_filter_by_host_and_state(store: Store) -> None:
     assert [r.id for r in store.rows()] == sorted([a.id, b.id])
 
 
+def test_rows_latest_keeps_the_newest_oldest_first(store: Store) -> None:
+    made = []
+    for i in range(4):
+        moment = T + timedelta(minutes=10 * i)
+        made.append(close_at(store, open_at(store, moment), moment))
+    other = open_at(store, T + timedelta(hours=1), host="b.example")
+    assert store.rows(latest=2) == [made[3], other]
+    assert store.rows(host=HOST, latest=3) == made[1:]
+    assert store.rows(host=HOST, latest=10) == made
+    assert store.rows(state=RowState.IN_FLIGHT, latest=1) == [other]
+    for wrong in (0, -1):
+        with pytest.raises(ValueError, match="latest"):
+            store.rows(latest=wrong)
+
+
 def test_naive_times_are_rejected(store: Store) -> None:
     naive = datetime(2026, 10, 16, 12)  # noqa: DTZ001
     with pytest.raises(ValueError, match="timezone"):

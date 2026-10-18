@@ -24,7 +24,7 @@ sent.
 """
 
 import asyncio
-from collections.abc import Mapping
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from email.message import Message
@@ -35,8 +35,10 @@ from urllib.parse import urlsplit
 from politefetch.clock import Clock, SystemClock
 from politefetch.errors import Refused
 from politefetch.policy import HostPolicy, parse_duration, parse_retry_after
+from politefetch.status import HostStatus
 from politefetch.store.base import (
     DataTimeRecord,
+    HostState,
     Outcome,
     RequestRow,
     Store,
@@ -79,6 +81,10 @@ def host_of(url: str) -> str:
     return host.lower()
 
 
+def _host(host_or_url: str) -> str:
+    return host_of(host_or_url) if "://" in host_or_url else host_or_url.lower()
+
+
 class Gate:
     """The single point every request to a protected host goes through."""
 
@@ -119,16 +125,68 @@ class Gate:
         """Tell whether a request to `url` may start now, and if not why and
         until when. Advisory: `attempt` decides again, atomically. Sends
         nothing and opens no row; it does reconcile abandoned rows."""
-        host = host_of(url)
+        _, _, _, refusal = self._decide(url)
+        return Verdict(refusal)
+
+    def status(self, host_or_url: str, *, recent: int = 10) -> HostStatus:
+        """The readable state of a host: the decision `may_fetch` would take,
+        today's counts and bytes, and its latest `recent` log rows.
+
+        Given a URL, the decision counts the bytes that URL would reserve
+        against the byte budget, as `may_fetch` does; given a host, it counts
+        none. Like `may_fetch`, it sends nothing, opens no row and reconciles
+        abandoned rows first.
+        """
+        if recent < 0:
+            raise ValueError(f"recent must not be negative, got {recent}")
+        host, now, state, refusal = self._decide(host_or_url)
+        policy = self.policy_for(host)
+        rows = self.store.rows(host=host, latest=recent) if recent else []
+        freeze = state.freeze
+        return HostStatus(
+            host=host,
+            at=now,
+            may_fetch=refusal is None,
+            reason=None if refusal is None else refusal.reason,
+            next_allowed=now if refusal is None else refusal.retry_after,
+            frozen=freeze if freeze is not None and freeze.active(now) else None,
+            failures=state.failures,
+            throttled=state.throttled,
+            in_flight=state.in_flight,
+            day=state.day,
+            requests_today=state.requests_today,
+            daily_cap=policy.daily_cap,
+            wire_bytes_today=state.wire_bytes_today,
+            decoded_bytes_today=state.decoded_bytes_today,
+            byte_budget=policy.byte_budget,
+            recent=tuple(reversed(rows)),
+        )
+
+    def statuses(
+        self, hosts: Iterable[str] | None = None, *, recent: int = 10
+    ) -> list[HostStatus]:
+        """`status` of each of `hosts` (hosts or URLs), in their order; by
+        default of every host with a policy of its own, sorted by name."""
+        names = sorted(self._policies) if hosts is None else list(hosts)
+        return [self.status(name, recent=recent) for name in names]
+
+    def _decide(
+        self, host_or_url: str
+    ) -> tuple[str, datetime, HostState, Refused | None]:
+        is_url = "://" in host_or_url
+        host = _host(host_or_url)
         policy = self.policy_for(host)
         now = self.clock.now()
         self.reconcile(now)
         state = self.store.host_state(host, now)
-        record = self.store.url_record(url)
-        reserve = record.size if record is not None and record.size else 0
-        return Verdict(
-            check_admission(state, now, policy.daily_cap, policy.byte_budget, reserve)
+        reserve = 0
+        if is_url:
+            record = self.store.url_record(host_or_url)
+            reserve = record.size if record is not None and record.size else 0
+        refusal = check_admission(
+            state, now, policy.daily_cap, policy.byte_budget, reserve
         )
+        return host, now, state, refusal
 
     def attempt(self, url: str) -> "Attempt":
         """A context manager (sync or async) around one request to `url`."""
@@ -142,8 +200,9 @@ class Gate:
 
     def unfreeze(self, host_or_url: str, *, by: str, note: str = "") -> Unfreeze | None:
         """Lift a host's freeze by hand, leaving a trace of who did it."""
-        host = host_of(host_or_url) if "://" in host_or_url else host_or_url.lower()
-        return self.store.unfreeze(host, now=self.clock.now(), by=by, note=note)
+        return self.store.unfreeze(
+            _host(host_or_url), now=self.clock.now(), by=by, note=note
+        )
 
 
 class Attempt:

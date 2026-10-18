@@ -4,18 +4,22 @@
 
 Riscritto da capo a ogni fine sessione, mai accodato.
 
-- **Stato**: fatte tutte le tappe tranne T8. Esistono tre store (memoria,
+- **Stato**: fatte tutte le tappe tranne T9. Esistono tre store (memoria,
   SQLite, Postgres) con la stessa suite di contratto, il Gate, le politiche,
   i controlli sul contenuto, le richieste condizionali, i byte, quattro
-  adattatori e il kit di test.
-- **Prossimo passo**: T8: stato leggibile per host in JSON, README con un
-  esempio completo eseguibile verificato da un test, CHANGELOG, versione
-  0.1.0, niente pubblicazione. Prima dei test: `eval
-  "$(scripts/postgres-for-tests.sh)"`, altrimenti i test Postgres vengono
-  saltati.
+  adattatori, il kit di test e lo stato per host in JSON
+  (`gate.status`, `gate.statuses`). Il README ha un esempio completo che un
+  test esegue; c'è il CHANGELOG (sezione "Unreleased").
+- **Prossimo passo**: T9, la skill per gli agenti secondo lo schema comune
+  "skill dei pacchetti" v1 (D-040). Il riferimento è
+  `src/swpc_kit/skill/__init__.py` di swpc-kit (PR #11): stesso modulo,
+  stessi comandi e messaggi, cambiano solo le costanti. Poi versione 0.1.0.
+  Prima dei test: `eval "$(scripts/postgres-for-tests.sh)"`, altrimenti i
+  test Postgres vengono saltati.
 - **Dubbi aperti**:
   - il repository GitHub si chiama ancora `fetchguard` (D-010);
-  - `httpx2` non è supportato (D-032).
+  - `httpx2` non è supportato (D-032);
+  - la pubblicazione su PyPI si decide dopo 0.1.0.
 
 ## Log
 
@@ -87,3 +91,13 @@ Una riga per sessione: data, tappa, cosa è entrato, cosa resta.
   (D-037). Tutta la suite di contratto e i test con più processi passano
   anche su Postgres. Controllato che i test scoprano quattro difetti
   introdotti apposta, compreso il lock tolto. Resta: T8.
+- 2026-10-18 — T8. Entrati: `gate.status(host_or_url)` e `gate.statuses()`
+  con `HostStatus` e il suo JSON (D-038), con un test basato su proprietà
+  che lo confronta con la decisione del gate; `rows(latest=N)` nei tre store
+  con indice `(host, id)`; README riscritto con un esempio completo (job da
+  cron per il Kp di SWPC) eseguito da `tests/test_readme.py`; CHANGELOG;
+  `FetchFailed` esportato da `politefetch`; tolto il modulo vuoto
+  `politefetch.traffic` (D-039). Decisa con l'utente e con la sessione di
+  swpc-kit la skill per gli agenti dentro il pacchetto (D-040): nuova tappa
+  T9, e 0.1.0 passa a T9. 897 test (1 saltato, IPv6), difetti iniettati
+  presi tutti dopo un test in più su `reserved_bytes`. Resta: T9.

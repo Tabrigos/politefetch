@@ -781,3 +781,88 @@ alla vecchia e la vecchia prende la riga "Superata da".
 - **Alternative scartate**: avviare un cluster dai test (servirebbe un
   sottoprocesso, che la guardia di D-012 vieta, e i permessi di root per
   `initdb`).
+
+## D-038 — Lo stato per host
+
+- **Data e tappa**: 2026-10-18, T8
+- **Contesto**: `SPEC.md` vuole, per ogni host, la prossima richiesta
+  consentita, il motivo del blocco, i conteggi e i byte di oggi e le ultime
+  righe, serializzabili in JSON.
+- **Decisione**:
+  - `gate.status(host_or_url, recent=10)` restituisce un `HostStatus`
+    (`politefetch.status`) costruito con **la stessa decisione** di
+    `may_fetch`: un test basato su proprietà controlla che lo stato non dica
+    mai "puoi" quando il gate direbbe "no", e che motivo e "riprova dopo"
+    coincidano con quelli del `Refused`;
+  - con un URL la decisione conta i byte che quell'URL riserverebbe sul
+    budget, come `may_fetch`; con un host non ne conta. Nel dubbio si chiede
+    con l'URL;
+  - come `may_fetch`, prima riconcilia le righe abbandonate: senza, lo stato
+    mostrerebbe "in volo" una richiesta che il prossimo `attempt` chiuderebbe;
+  - `next_allowed` è `at` se si può, `None` se l'host è congelato fino allo
+    sblocco; `frozen` mostra solo il congelamento in vigore;
+  - `recent` sono le ultime righe dell'host, dalla più nuova; lo store prende
+    `rows(latest=N)` (tre store, suite di contratto, indice `(host, id)`)
+    così una dashboard non legge tutto il registro a ogni giro;
+  - `gate.statuses()` copre gli host con una politica propria; gli host
+    coperti solo dalla politica di default si chiedono per nome
+    (`statuses(hosts)`), perché lo store non ha un elenco degli host;
+  - `to_dict()` / `to_json()` danno tempi ISO 8601 con fuso e i nomi salvati
+    di motivi e stati; `to_json(statuses)` accetta uno stato o una lista.
+- **Alternative scartate**: uno stato che non riconcilia (in sola lettura,
+  ma racconterebbe una richiesta morta come viva); un comando a riga di
+  comando per lo stato (dovrebbe conoscere le politiche, che stanno nel
+  codice di chi usa la libreria).
+
+## D-039 — Rifinitura dell'API pubblica prima di 0.1.0
+
+- **Data e tappa**: 2026-10-18, T8
+- **Decisione**:
+  - `politefetch.traffic` era rimasto un modulo vuoto: richieste condizionali
+    e byte stanno nello store e nel Gate da T4. Lo tolgo invece di lasciare
+    un nome pubblico senza niente dentro;
+  - `FetchFailed` si importa anche da `politefetch`, accanto a `Refused` e
+    `ContentError`: sono i tre esiti che chi chiama `fetch.get` deve gestire;
+  - il README ha un esempio completo (un job da cron per il Kp di SWPC, nel
+    formato verificato da swpc-kit) che `tests/test_readme.py` esegue così
+    com'è, puntato sul simulatore: due volte come `__main__`, per mostrare
+    che la promessa regge fra due processi, e con le giornate storte della
+    fonte. Gli altri frammenti si controllano: si analizzano e i nomi che
+    importano da politefetch esistono; il JSON di esempio ha la forma vera.
+
+## D-040 — La skill per gli agenti dentro il pacchetto
+
+- **Data e tappa**: 2026-10-18, T8 (decisione), T9 (lavoro)
+- **Contesto**: l'utente vuole che il pacchetto porti con sé una skill per
+  gli assistenti AI, leggibile anche da una persona, aggiornata con il
+  codice, disponibile solo nei progetti che usano il pacchetto, senza
+  repository o dipendenze in più, per ora solo per Claude Code; e uguale per
+  tutti i suoi pacchetti (swpc-kit l'ha già).
+- **Decisione**: lo schema comune "skill dei pacchetti" v1, concordato con
+  la sessione di swpc-kit, che fa da riferimento (`src/swpc_kit/skill/`,
+  PR #11 di swpc-kit):
+  - la skill sta in `src/politefetch/skill/politefetch/` (`SKILL.md` scritto
+    a mano, `references/api.md` generato e verificato dai test), con
+    `metadata.version` uguale alla versione del pacchetto;
+  - l'entry point `[project.entry-points.agent_skills] politefetch =
+    "politefetch.skill"` la rende scopribile; il modulo espone `bundled()`;
+  - `python -m politefetch.skill install | check | show | path | sync`;
+    `sync` allinea `.claude/skills/` del progetto ai pacchetti installati
+    (aggiunge, aggiorna se la versione cambia, toglie quelle dei pacchetti
+    che non dichiarano più l'entry point, mai quelle senza il marcatore
+    `.package-skill`), mette un `.gitignore` con `*` nelle cartelle che crea,
+    stampa una riga ed esce sempre con 0;
+  - chi usa la libreria mette nel `.claude/settings.json` del suo progetto
+    un hook `SessionStart` che lancia `sync`: ogni sessione parte con la
+    skill della versione installata, solo in quel progetto.
+  Verificato con Claude Code 2.1.302: una skill in una cartella ignorata da
+  git si carica, e una skill scritta dall'hook è disponibile nella stessa
+  sessione.
+- **Alternative scartate**: copia in `~/.claude/skills` (vale per tutti i
+  progetti del PC); un piccolo strumento di sincronizzazione in un
+  repository a sé (una dipendenza in più per poche righe); collegamenti
+  simbolici al pacchetto installato (si rompono quando l'ambiente si rifà).
+- **Conseguenze**: nuova tappa T9 dopo T8; la versione 0.1.0 passa da T8 a
+  T9, così la prima versione esce con la skill. Il modulo `skill` segue lo
+  schema comune e non si cambia da soli: una modifica si concorda con gli
+  altri pacchetti.

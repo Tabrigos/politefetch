@@ -48,6 +48,7 @@ from politefetch.store.base import (
     byte_changes,
     check_admission,
     check_cautious,
+    check_latest,
     check_threshold,
     check_unfreezer,
 )
@@ -128,6 +129,7 @@ _SCHEMA = (
     """,
     "CREATE INDEX IF NOT EXISTS requests_by_state ON requests (state, opened_at)",
     "CREATE INDEX IF NOT EXISTS requests_by_host ON requests (host, state)",
+    "CREATE INDEX IF NOT EXISTS requests_latest ON requests (host, id)",
 )
 
 # Columns added after a table first shipped: created on databases that lack
@@ -353,10 +355,15 @@ class SqliteStore:
             return self._get_row(conn, row_id)
 
     def rows(
-        self, *, host: str | None = None, state: RowState | None = None
+        self,
+        *,
+        host: str | None = None,
+        state: RowState | None = None,
+        latest: int | None = None,
     ) -> list[RequestRow]:
+        check_latest(latest)
         clauses: list[str] = []
-        params: list[str] = []
+        params: list[str | int] = []
         if host is not None:
             clauses.append("host = ?")
             params.append(host)
@@ -364,10 +371,14 @@ class SqliteStore:
             clauses.append("state = ?")
             params.append(state.value)
         where = f" WHERE {' AND '.join(clauses)}" if clauses else ""
+        query = f"SELECT {_ROW_COLUMNS} FROM requests{where} ORDER BY id"
+        if latest is not None:
+            query = f"{query} DESC LIMIT ?"
+            params.append(latest)
         with self._transaction(immediate=False) as conn:
-            records = conn.execute(
-                f"SELECT {_ROW_COLUMNS} FROM requests{where} ORDER BY id", params
-            ).fetchall()
+            records = conn.execute(query, params).fetchall()
+        if latest is not None:
+            records.reverse()
         return [_row(r) for r in records]
 
     # --- critical operations ------------------------------------------------

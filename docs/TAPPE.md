@@ -8,12 +8,12 @@ prompt:
 Ordine:
 
 ```
-T0 → T1 → T2 → { T3, T4, T6 } → { T5, T7 } → T8
+T0 → T1 → T2 → { T3, T4, T6 } → { T5, T7 } → T8 → T9
 ```
 
 T0, T1, T2 in fila (sono le fondamenta); poi T3, T4, T6 anche in parallelo;
 T5 dopo T2, T4 e T6 (i suoi test usano il simulatore); T7 dopo T3 e T4
-(implementa lo store completo); T8 per ultima.
+(implementa lo store completo); T8 e T9 per ultime.
 
 ## T0 — Impianto e ricognizione
 
@@ -164,8 +164,33 @@ avviato nel test o nello script di setup (`pg_ctlcluster 16 main start`).
 
 ## T8 — Stato e rifinitura
 
-- [ ] Fatta
+- [x] Fatta
 
 Stato leggibile per host in JSON; README con un esempio completo eseguibile
-(verificato da un test); CHANGELOG; versione 0.1.0. Niente pubblicazione su
-PyPI: si decide dopo.
+(verificato da un test); CHANGELOG. La versione 0.1.0 passa a T9 (D-040).
+Niente pubblicazione su PyPI: si decide dopo.
+
+## T9 — La skill per gli agenti e 0.1.0
+
+- [ ] Fatta
+
+La skill per gli assistenti AI dentro il pacchetto, secondo lo schema comune
+"skill dei pacchetti" v1 (D-040; riferimento: `src/swpc_kit/skill/` di
+swpc-kit):
+
+- `src/politefetch/skill/politefetch/SKILL.md`, scritto a mano e leggibile da
+  una persona: il modello mentale (promessa, un tentativo, rifiuti normali),
+  le scelte (adattatore, store, politica), come leggere `Refused`,
+  `FetchFailed` e `ContentError`, lo stato, il kit di test e cosa non fare
+  (ritentare intorno a `fetch.get`, dormire su `Refused`, `MemoryStore` in
+  produzione, `unfreeze` automatico, redirect a mano, barriera spenta);
+- `references/api.md` generato dalle firme e dalle docstring, con un test che
+  fallisce se è vecchio; ogni blocco Python della skill eseguito contro il
+  simulatore; ogni nome citato esiste; ogni nome pubblico è citato;
+  `metadata.version` uguale alla versione del pacchetto;
+- l'entry point `agent_skills` e `python -m politefetch.skill install | check
+  | show | path | sync`, con gli stessi comportamenti e messaggi di swpc-kit;
+- README: la sezione per gli assistenti con l'hook `SessionStart`;
+  `AGENTS.md`: chi cambia l'API pubblica aggiorna la skill;
+- versione 0.1.0 (pacchetto, `metadata.version`, CHANGELOG). Niente
+  pubblicazione su PyPI.

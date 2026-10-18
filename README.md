@@ -6,8 +6,8 @@ per-host promises and daily caps that survive restarts, freezing on 403/429/451)
 and keeps you safe from the source (truncated bodies, HTML instead of JSON,
 data that stopped advancing even though every request "succeeds").
 
-**Status: in development, not released.** Everything in `SPEC.md` exists
-except the readable per-host status; see `docs/TAPPE.md` for the plan.
+**Status: in development, not released.** Everything in `SPEC.md` exists; see
+`CHANGELOG.md` for what is there and `docs/TAPPE.md` for the plan.
 
 ## Why another library
 
@@ -26,29 +26,67 @@ the process.**
 - 403, 429 and 451 freeze the host until a person unlocks it.
 - Freshness is measured on the data itself, not on `304` or `Last-Modified`.
 
-## Usage
+## A complete example
+
+A job that cron starts every few minutes to read the planetary K index from
+NOAA SWPC. Every run is a new process; the promises, the daily count and the
+log live in `ingest.db`, so a run started too early sends nothing.
 
 ```python
-from datetime import datetime
+"""Read the planetary K index from NOAA SWPC, politely. Run it from cron."""
 
-from politefetch import Gate, HostPolicy
-from politefetch.adapters.httpx import HttpxFetcher
+from datetime import UTC, datetime
+from typing import Any
+
+from politefetch import ContentError, FetchFailed, Gate, HostPolicy, Refused
+from politefetch.adapters.urllib import UrllibFetcher
 from politefetch.store import SqliteStore
 
-gate = Gate(
-    SqliteStore("ingest.db"),
-    policies={
-        "services.swpc.noaa.gov": HostPolicy(daily_cap=2000, min_interval="60s"),
-        "celestrak.org": HostPolicy(daily_cap=40, min_interval="2h"),
-    },
-)
-fetch = HttpxFetcher(gate)
-result = fetch.get(
-    url,
-    expect="json",
-    data_time=lambda data: datetime.fromisoformat(data["time"]),
-    max_age="3h",
-)
+URL = "https://services.swpc.noaa.gov/products/noaa-planetary-k-index.json"
+POLICIES = {
+    "services.swpc.noaa.gov": HostPolicy(daily_cap=120, min_interval="10m"),
+}
+
+
+def newest_time(rows: list[dict[str, Any]]) -> datetime:
+    """The data time: the `time_tag` of the last row, which SWPC gives in UTC."""
+    return datetime.fromisoformat(rows[-1]["time_tag"]).replace(tzinfo=UTC)
+
+
+def poll(gate: Gate, url: str = URL) -> list[dict[str, Any]] | None:
+    """Read the source once if the gate allows it; `None` if there is
+    nothing new to use."""
+    fetch = UrllibFetcher(gate)
+    try:
+        result = fetch.get(
+            url,
+            expect="json",
+            data_time=newest_time,
+            max_age="6h",  # Kp comes every 3 hours: two missed means trouble
+            stuck_after=36,  # six hours of reads every ten minutes
+        )
+    except Refused as refused:  # nothing was sent
+        print(f"not now: {refused}")
+        return None
+    except FetchFailed as failed:  # sent, no usable answer
+        print(f"no answer: {failed}")
+        return None
+    except ContentError as error:  # an answer, but not data to trust
+        print(f"rejected: {error}")
+        return None
+    if result.not_modified:
+        return None
+    rows: list[dict[str, Any]] = result.content
+    return rows
+
+
+if __name__ == "__main__":
+    with SqliteStore("ingest.db") as store:
+        gate = Gate(store, POLICIES)
+        rows = poll(gate)
+        if rows is not None:
+            print(f"Kp {rows[-1]['Kp']} at {rows[-1]['time_tag']}")
+        print(gate.status(URL).to_json(indent=2))
 ```
 
 `fetch.get` sends the request once, if the gate allows it, with the
@@ -56,21 +94,64 @@ conditional headers of the URL's last answer, and returns a `FetchResult`
 (`content` is the parsed JSON). Otherwise it raises:
 
 - `Refused`: nothing was sent (promise, daily cap, byte budget, freeze, or a
-  request already in flight); `retry_after` says when to ask again;
+  request already in flight); `retry_after` says when to ask again, and is
+  `None` while the host is frozen;
 - `FetchFailed`: no usable answer (`shape`: `connect_timeout`,
   `read_timeout`, `refused`, `reset`, `tls`, `dns`, `connection`, or `http`
   with `status`);
-- a `ContentError`: truncated, HTML, redirected, stale or stuck data.
+- a `ContentError`: truncated (`SourceNotReady`), HTML or redirected
+  (`UnexpectedContent`), stale (`StaleData`) or stuck (`StuckSource`) data.
 
 Adapters: `politefetch.adapters.urllib.UrllibFetcher` (no extras),
 `politefetch.adapters.httpx.HttpxFetcher` and `AsyncHttpxFetcher` (extra
 `httpx`), `politefetch.adapters.requests.RequestsFetcher` (extra
 `requests`). They never follow redirects and never retry.
 
-## What is there today
+## Status per host
+
+`gate.status(host_or_url)` says what the gate would decide now and why, with
+today's counts and bytes and the latest log rows; `gate.statuses()` does it
+for every host with a policy. Both send nothing and serialise to JSON for a
+dashboard:
+
+```python
+from politefetch.status import to_json
+
+status = gate.status("services.swpc.noaa.gov")
+if not status.may_fetch:
+    print(status.reason, status.next_allowed)  # next_allowed is None if frozen
+print(to_json(gate.statuses(), indent=2))
+```
+
+```json
+{
+  "host": "services.swpc.noaa.gov",
+  "at": "2026-10-16T12:00:32+00:00",
+  "may_fetch": false,
+  "reason": "min_interval",
+  "next_allowed": "2026-10-16T12:10:32+00:00",
+  "frozen": null,
+  "failures": 0,
+  "throttled": 0,
+  "in_flight": 0,
+  "today": {"day": "2026-10-16", "requests": 1, "daily_cap": 120,
+            "wire_bytes": 2310, "decoded_bytes": 5120, "byte_budget": null},
+  "recent": [{"id": 1, "url": "https://services.swpc.noaa.gov/...",
+              "opened_at": "2026-10-16T12:00:30+00:00", "state": "closed",
+              "closed_at": "2026-10-16T12:00:32+00:00", "ok": true,
+              "status": 200, "failure": null, "wire_bytes": 2310,
+              "decoded_bytes": 5120, "reserved_bytes": 0}]
+}
+```
+
+A frozen host stays frozen until a person lifts the freeze, which leaves a
+trace: `gate.unfreeze("services.swpc.noaa.gov", by="alice", note="asked them")`.
+
+## The pieces
 
 - `politefetch.Gate` and `politefetch.HostPolicy`: the gate every request
-  goes through, sync or async, with the client of your choice:
+  goes through, sync or async, with the client of your choice when no
+  adapter fits:
 
   ```python
   from politefetch import Gate, HostPolicy
@@ -95,23 +176,18 @@ Adapters: `politefetch.adapters.urllib.UrllibFetcher` (no extras),
   ```
 
   `attempt.conditional_headers` carries `If-None-Match` and
-  `If-Modified-Since` from the URL's last answer. `gate.may_fetch(url)` says
-  whether a request may start now and, if not, why and until when;
-  `gate.unfreeze(host, by="you")` lifts a freeze and leaves a trace.
-- `politefetch.checks`: pure functions that reject what should not pass for
-  data. A body shorter than its Content-Length, an empty body or JSON that
-  ends mid-way raise `SourceNotReady`; HTML where JSON or text was expected
-  and a redirect to another host raise `UnexpectedContent`; data older than
-  `max_age`, measured on a time read from the data itself, raises
-  `StaleData`; a data time that stopped advancing for N reads raises
-  `StuckSource` (`gate.note_data_time(url, data_time)` keeps the history).
+  `If-Modified-Since` from the URL's last answer; `gate.may_fetch(url)` says
+  whether a request may start now. A policy also takes the backoff
+  (`backoff_base`, `backoff_factor`, `backoff_max`), a freeze with an expiry
+  (`freeze_for`) and `respect_retry_after_429`, which honours the first 429
+  that carries a Retry-After and freezes on the second.
+- `politefetch.checks`: the pure functions behind the content errors, for
+  bodies you fetch yourself (`check_length`, `check_body`, `check_redirect`,
+  `read_data_time`, `check_fresh`, `check_advancing`).
 - `politefetch.store`: `SqliteStore` (the default, safe to share between
   processes on one machine), `PostgresStore` (extra `postgres`, safe to
   share between machines; tables in their own schema) and `MemoryStore`
   (tests).
-- `politefetch.errors`: `PoliteFetchError`, `Refused` (with a reason and a
-  retry-after time), and the content errors `SourceNotReady`,
-  `UnexpectedContent`, `StaleData`, `StuckSource`.
 - `politefetch.clock`: the `Clock` protocol, `SystemClock` and `FakeClock`.
   Nothing in the library reads the wall clock directly.
 - `politefetch.testing`, the test kit, with a pytest plugin that is
@@ -149,7 +225,8 @@ uv run mypy
 
 The core depends only on the standard library; HTTP clients and the Postgres
 driver live in the `httpx`, `requests` and `postgres` extras. Tests never use
-the network.
+the network; the example above is run by `tests/test_readme.py` against the
+local simulator.
 
 The Postgres tests need a server: `POLITEFETCH_TEST_POSTGRES` holds its
 connection string, and each test works in a schema of its own. On a machine

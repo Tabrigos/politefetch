@@ -16,7 +16,6 @@ MODULES = [
     "politefetch.policy",
     "politefetch.gate",
     "politefetch.checks",
-    "politefetch.traffic",
     "politefetch.status",
     "politefetch.store",
     "politefetch.store.base",

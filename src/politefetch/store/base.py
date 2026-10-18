@@ -297,9 +297,14 @@ class Store(Protocol):
         ...
 
     def rows(
-        self, *, host: str | None = None, state: RowState | None = None
+        self,
+        *,
+        host: str | None = None,
+        state: RowState | None = None,
+        latest: int | None = None,
     ) -> list[RequestRow]:
-        """Return the rows matching the filters, oldest first."""
+        """Return the rows matching the filters, oldest first; with `latest`,
+        only the newest `latest` of them (still oldest first)."""
         ...
 
     def close(self) -> None:
@@ -467,6 +472,11 @@ def check_unfreezer(by: str) -> str:
     if not by.strip():
         raise ValueError("unfreeze needs `by`: who lifts the freeze")
     return by
+
+
+def check_latest(latest: int | None) -> None:
+    if latest is not None and latest < 1:
+        raise ValueError(f"latest must be at least 1, got {latest}")
 
 
 def check_threshold(older_than: timedelta) -> None:

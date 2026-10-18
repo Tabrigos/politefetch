@@ -32,6 +32,7 @@ from politefetch.store.base import (
     byte_changes,
     check_admission,
     check_cautious,
+    check_latest,
     check_threshold,
     check_unfreezer,
 )
@@ -95,15 +96,21 @@ class MemoryStore:
             return self.data.rows[row_id]
 
     def rows(
-        self, *, host: str | None = None, state: RowState | None = None
+        self,
+        *,
+        host: str | None = None,
+        state: RowState | None = None,
+        latest: int | None = None,
     ) -> list[RequestRow]:
+        check_latest(latest)
         with self.data.lock:
-            return [
+            found = [
                 r
                 for _, r in sorted(self.data.rows.items())
                 if (host is None or r.host == host)
                 and (state is None or r.state is state)
             ]
+        return found if latest is None else found[-latest:]
 
     # --- critical operations ------------------------------------------------
 
