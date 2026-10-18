@@ -556,7 +556,6 @@ wheels = [
 
 [[package]]
 name = "politefetch"
-version = "0.0.0"
 source = { editable = "." }
 
 [package.optional-dependencies]
@@ -585,7 +584,7 @@ requires-dist = [
     { name = "psycopg", extras = ["binary"], marker = "extra == 'postgres'", specifier = ">=3.2,<4" },
     { name = "requests", marker = "extra == 'requests'", specifier = ">=2.32,<3" },
 ]
-provides-extras = ["httpx", "requests", "postgres"]
+provides-extras = ["httpx", "postgres", "requests"]
 
 [package.metadata.requires-dev]
 dev = [
