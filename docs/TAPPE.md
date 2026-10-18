@@ -172,7 +172,7 @@ Niente pubblicazione su PyPI: si decide dopo.
 
 ## T9 — La skill per gli agenti e 0.1.0
 
-- [ ] Fatta
+- [x] Fatta
 
 La skill per gli assistenti AI dentro il pacchetto, secondo lo schema comune
 "skill dei pacchetti" v1 (D-040; riferimento: `src/swpc_kit/skill/` di

@@ -4,22 +4,21 @@
 
 Riscritto da capo a ogni fine sessione, mai accodato.
 
-- **Stato**: fatte tutte le tappe tranne T9. Esistono tre store (memoria,
-  SQLite, Postgres) con la stessa suite di contratto, il Gate, le politiche,
-  i controlli sul contenuto, le richieste condizionali, i byte, quattro
-  adattatori, il kit di test e lo stato per host in JSON
-  (`gate.status`, `gate.statuses`). Il README ha un esempio completo che un
-  test esegue; c'è il CHANGELOG (sezione "Unreleased").
-- **Prossimo passo**: T9, la skill per gli agenti secondo lo schema comune
-  "skill dei pacchetti" v1 (D-040). Il riferimento è
-  `src/swpc_kit/skill/__init__.py` di swpc-kit (PR #11): stesso modulo,
-  stessi comandi e messaggi, cambiano solo le costanti. Poi versione 0.1.0.
-  Prima dei test: `eval "$(scripts/postgres-for-tests.sh)"`, altrimenti i
-  test Postgres vengono saltati.
+- **Stato**: tutte le tappe fatte; versione 0.1.0, non pubblicata. Esistono
+  tre store (memoria, SQLite, Postgres) con la stessa suite di contratto, il
+  Gate, le politiche, i controlli sul contenuto, le richieste condizionali, i
+  byte, quattro adattatori, il kit di test, lo stato per host in JSON e la
+  skill per gli agenti dentro il pacchetto (`python -m politefetch.skill`,
+  schema comune con swpc-kit, D-040 e D-041).
+- **Prossimo passo**: nessuna tappa aperta in `docs/TAPPE.md`. Da decidere
+  con l'utente: pubblicazione su PyPI (e tag `v0.1.0`), nome del repository.
+  Chi cambia l'API pubblica rigenera la skill (`AGENTS.md`). Prima dei test:
+  `eval "$(scripts/postgres-for-tests.sh)"`, altrimenti i test Postgres
+  vengono saltati.
 - **Dubbi aperti**:
   - il repository GitHub si chiama ancora `fetchguard` (D-010);
   - `httpx2` non è supportato (D-032);
-  - la pubblicazione su PyPI si decide dopo 0.1.0.
+  - una modifica al modulo `skill` va concordata con swpc-kit.
 
 ## Log
 
@@ -101,3 +100,12 @@ Una riga per sessione: data, tappa, cosa è entrato, cosa resta.
   swpc-kit la skill per gli agenti dentro il pacchetto (D-040): nuova tappa
   T9, e 0.1.0 passa a T9. 897 test (1 saltato, IPv6), difetti iniettati
   presi tutti dopo un test in più su `reserved_bytes`. Resta: T9.
+- 2026-10-18 — T9. Entrati: la skill in `src/politefetch/skill/politefetch/`
+  (`SKILL.md` a mano, `references/api.md` generato da
+  `tools/build_skill.py`), il modulo `politefetch.skill` dello schema comune
+  (uguale a quello di swpc-kit, costanti a parte), l'entry point
+  `agent_skills`, la sezione del README con l'hook `SessionStart`, la regola
+  in `AGENTS.md`, `__version__` e la versione 0.1.0 (D-041). Provato da capo
+  a fondo con Claude Code e con le wheel dei due pacchetti. 945 test (1
+  saltato, IPv6); difetti iniettati presi tutti dopo un test in più sui
+  parametri delle chiamate. Resta: decidere la pubblicazione.
