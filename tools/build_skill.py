@@ -78,6 +78,7 @@ def _short(text: str) -> str:
     """Drop module prefixes: ``datetime.timedelta`` -> ``timedelta``."""
     text = text.replace("<class '", "").replace("'>", "")
     text = _FUNCTION.sub(r"\1", text)
+    text = re.sub(r"\b(?:Posix|Windows)Path\(", "Path(", text)
     return _QUALIFIED.sub(r"\1", text)
 
 
@@ -99,7 +100,11 @@ def _signature(obj: Any) -> str:
 
 
 def _defined_here(value: Any, module: ModuleType) -> bool:
-    return getattr(value, "__module__", module.__name__) == module.__name__
+    """Whether `module` defines `value`; constants count as defined where
+    they are exported, whatever their type's module."""
+    if not (inspect.isclass(value) or inspect.isfunction(value)):
+        return True
+    return bool(value.__module__ == module.__name__)
 
 
 def _attribute_docs(cls: type) -> dict[str, str]:

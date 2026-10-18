@@ -166,7 +166,9 @@ The body is not what was asked for: HTML instead of JSON or text, or a redirect 
 
 Content checks, as pure functions: truncated or empty bodies, HTML where data was expected, redirects to another host, freshness measured on the data itself, and sources whose data time stopped advancing.
 
-Re-exports: `Expect` (typing).
+### `Expect`
+
+`Literal['json', 'text', 'bytes']`
 
 ### `check_advancing(record: DataTimeRecord, *, stuck_after: int, url: str | None = None) -> None`
 
@@ -740,7 +742,9 @@ Start `target(*args)` in a child process behind the network barrier.
 
 The agent skill bundled with politefetch, and the commands that install it.
 
-Re-exports: `DEFAULT_TARGET` (pathlib).
+### `DEFAULT_TARGET`
+
+`Path('.claude/skills/politefetch')`
 
 ### `ENTRY_POINT_GROUP`
 
@@ -784,7 +788,7 @@ What `sync` did.
 
 Return the directory of the skill shipped with the package.
 
-### `check(target: Path = PosixPath('.claude/skills/politefetch')) -> Status`
+### `check(target: Path = Path('.claude/skills/politefetch')) -> Status`
 
 Compare the copy in ``target`` with the bundled skill.
 
@@ -796,7 +800,7 @@ Return the distributions declaring a skill, whether it loads or not.
 
 Find the skills of the installed packages (``agent_skills`` entry points).
 
-### `install(target: Path = PosixPath('.claude/skills/politefetch'), *, force: bool = False) -> Path`
+### `install(target: Path = Path('.claude/skills/politefetch'), *, force: bool = False) -> Path`
 
 Copy the bundled skill into ``target``.
 
@@ -812,6 +816,6 @@ Return the text of the bundled ``SKILL.md``.
 
 Read name and version from the frontmatter of a ``SKILL.md``.
 
-### `sync(root: Path = PosixPath('.'), sources: Iterable[Source] | None = None, *, keep: Iterable[str] | None = None) -> SyncReport`
+### `sync(root: Path = Path('.'), sources: Iterable[Source] | None = None, *, keep: Iterable[str] | None = None) -> SyncReport`
 
 Make ``<root>/.claude/skills/`` hold the skills of the installed packages.
