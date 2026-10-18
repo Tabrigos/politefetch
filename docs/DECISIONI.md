@@ -866,3 +866,39 @@ alla vecchia e la vecchia prende la riga "Superata da".
   T9, così la prima versione esce con la skill. Il modulo `skill` segue lo
   schema comune e non si cambia da soli: una modifica si concorda con gli
   altri pacchetti.
+
+## D-041 — Come la skill resta vera
+
+- **Data e tappa**: 2026-10-18, T9
+- **Contesto**: D-040 vuole una skill aggiornata a ogni modifica, che un
+  agente possa usare senza leggere il codice.
+- **Decisione**:
+  - `SKILL.md` è scritto a mano (modello mentale, scelte, esiti, stato, test,
+    cosa non fare); `references/api.md` è generato da
+    `tools/build_skill.py` per introspezione: ogni modulo pubblico, ogni nome
+    del suo `__all__`, firme e primo paragrafo delle docstring, i valori
+    degli enum con le loro docstring lette dal sorgente;
+  - i test falliscono se: il riferimento non è quello rigenerato; un modulo
+    pubblico manca dall'elenco del generatore (lo confronta con i moduli
+    trovati nel pacchetto); un nome di `__all__` manca dal riferimento; il
+    riferimento cambia fra due generazioni (niente indirizzi di memoria);
+    la versione della skill non è quella del pacchetto o manca dal
+    CHANGELOG; un nome o un percorso `politefetch.…` citato non esiste; un
+    parametro scritto in una chiamata non appartiene a quella funzione; un
+    motivo di rifiuto, una forma di fallimento o un errore non sono spiegati;
+    un esempio Python non gira (contro il simulatore, con `FakeClock`); un
+    sottocomando citato non esiste;
+  - la versione sta in `politefetch.__version__` e `pyproject.toml` la legge
+    da lì (`dynamic = ["version"]`), come in swpc-kit;
+  - il modulo `politefetch.skill` è quello di swpc-kit con le sole costanti
+    cambiate (verificato con un `diff`).
+  Verificato da capo a fondo con Claude Code 2.1.302: un progetto di prova
+  con le wheel di politefetch e swpc-kit e l'hook `SessionStart` che lancia
+  il `sync` di politefetch riceve le skill di entrambi i pacchetti, git le
+  ignora, e un agente a cui si chiede un job da cron "che non si faccia
+  bannare", senza nominare la libreria, consulta la skill da solo e propone
+  `Gate`, `SqliteStore`, `HostPolicy` e `UrllibFetcher` senza leggere il
+  sorgente.
+- **Alternative scartate**: un riferimento scritto a mano (invecchia in
+  silenzio); generare anche `SKILL.md` (le docstring dicono cosa fa una
+  funzione, non quando usarla e cosa evitare).

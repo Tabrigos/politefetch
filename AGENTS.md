@@ -55,6 +55,14 @@ uv run mypy
 - **Tempo iniettabile**: niente `time.time()` o `datetime.now()` sparsi; un
   orologio passato come dipendenza, così i test controllano il tempo.
 - **Tipi**: `mypy --strict` pulito; date sempre `datetime` con fuso UTC.
+- **La skill segue il codice.** Chi cambia l'API pubblica rigenera
+  `src/politefetch/skill/politefetch/references/api.md` con
+  `uv run python tools/build_skill.py` e rilegge `SKILL.md` (stessa cartella);
+  chi cambia versione la cambia anche in `metadata.version` di `SKILL.md` e
+  nel CHANGELOG. I test (`tests/test_skill.py`) falliscono se uno dei due
+  resta indietro. Il modulo `politefetch/skill/__init__.py` segue lo schema
+  comune dei pacchetti (D-040), uguale a quello di swpc-kit: non si cambia da
+  soli.
 - Ogni tappa tocca i suoi moduli; i file condivisi (`__init__.py`, le
   interfacce) si toccano il minimo, per non creare conflitti fra PR parallele.
 

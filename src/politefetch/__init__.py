@@ -22,6 +22,8 @@ from politefetch.errors import (
 from politefetch.gate import Gate
 from politefetch.policy import HostPolicy
 
+__version__ = "0.1.0"
+
 __all__ = [
     "Clock",
     "ContentError",
@@ -37,4 +39,5 @@ __all__ = [
     "StuckSource",
     "SystemClock",
     "UnexpectedContent",
+    "__version__",
 ]

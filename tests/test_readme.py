@@ -169,7 +169,7 @@ def test_snippets_parse_and_import_real_names(source: str) -> None:
 
 
 def test_the_status_json_has_the_real_shape() -> None:
-    [shown] = blocks("json")
+    [shown] = [block for block in blocks("json") if "may_fetch" in block]
     data = json.loads(shown)
     clock = FakeClock(T)
     gate = make_gate_for_shape(clock)
