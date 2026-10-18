@@ -4,13 +4,19 @@ All notable changes to politefetch. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions follow
 [Semantic Versioning](https://semver.org/).
 
-## Unreleased
+## 0.1.0 — 2026-10-18
 
-The first version, not published yet. It will become 0.1.0 with the agent
-skill (stage T9 in `docs/TAPPE.md`).
+The first version. Not published on PyPI yet.
 
 ### Added
 
+- An agent skill for AI coding assistants, bundled with the package
+  (`politefetch/skill/politefetch/`: `SKILL.md` and a generated
+  `references/api.md`), declared in the `agent_skills` entry point group, and
+  `python -m politefetch.skill install | check | show | path | sync`; `sync`
+  keeps `.claude/skills/` of a project in step with the installed packages,
+  from a `SessionStart` hook.
+- `politefetch.__version__`.
 - `Gate`: one attempt per call, with the cautious promise, the daily cap,
   the byte reservation and the log row written in one atomic store
   operation before the request; sync and async attempts; reconciliation of
