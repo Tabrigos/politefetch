@@ -23,6 +23,13 @@ All notable changes to politefetch. The format follows
   bounds the decoded body.
 - `politefetch.testing.simulator.Drip`, a source that sends its body one
   byte at a time.
+- `max_ahead=` on `get` (default 15 minutes) and `checks.check_not_ahead`: a
+  data time further ahead of now is `UnexpectedContent` and is not kept.
+- `stuck_after=` also takes a duration (`"6h"`): stuck when the data time
+  has not moved for that long since its first read. `DataTimeRecord.since`
+  and `StuckSource.since` say when that was.
+- `StaleData.result` and `StuckSource.result`: the `FetchResult` that came
+  back, for a caller that would rather use old data than none.
 
 ### Changed
 
@@ -55,6 +62,11 @@ All notable changes to politefetch. The format follows
   admitted.
 - Headers of the caller replace ours whatever their case.
 - The source simulator joins a header sent twice into one value.
+- Stale or stuck data is recorded as an answer: the host waits for
+  `min_interval`, failures do not grow and the validators are kept. Before,
+  it counted as a failure of the source.
+- HTML is told by the first tag past a BOM, white space, comments and an
+  XML declaration, within the first kB: `<head>` and `<body>` count too.
 
 ### Fixed
 
@@ -68,6 +80,10 @@ All notable changes to politefetch. The format follows
   `expect="text"` or `"bytes"`.
 - With httpx, a lowercase `user-agent` of the caller was sent next to ours.
 - A Content-Length with non-ASCII digits raised `ValueError`.
+- A single data time from the future (2099) made every later read
+  `StuckSource`, with a growing backoff.
+- An HTML error page starting with a comment, `<head>` or `<body>` passed
+  as text.
 
 - Windows: the pytest plugin failed to import (`socket.socket` has no
   `sendmsg` there), which broke pytest in every Windows project that

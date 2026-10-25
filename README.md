@@ -63,7 +63,7 @@ def poll(gate: Gate, url: str = URL) -> list[dict[str, Any]] | None:
             expect="json",
             data_time=newest_time,
             max_age="6h",  # Kp comes every 3 hours: two missed means trouble
-            stuck_after=36,  # six hours of reads every ten minutes
+            stuck_after="6h",  # the data time has not moved for six hours
         )
     except Refused as refused:  # nothing was sent
         print(f"not now: {refused}")
@@ -101,7 +101,9 @@ conditional headers of the URL's last answer, and returns a `FetchResult`
   for a body still arriving when its time was up, or `http` with `status`);
 - a `ContentError`: truncated (`SourceNotReady`), HTML or redirected
   (`UnexpectedContent`), too large (`BodyTooLarge`), stale (`StaleData`) or
-  stuck (`StuckSource`) data.
+  stuck (`StuckSource`) data. Stale and stuck data are still answers: the
+  source is not slowed down for them, and the error's `result` holds what
+  came back.
 
 Adapters: `politefetch.adapters.urllib.UrllibFetcher` (no extras),
 `politefetch.adapters.httpx.HttpxFetcher` and `AsyncHttpxFetcher` (extra

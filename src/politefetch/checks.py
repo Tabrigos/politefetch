@@ -11,9 +11,11 @@ Each check returns quietly or raises a `ContentError`:
 - `check_redirect`: final URL on another host -> `UnexpectedContent`;
 - `read_data_time`: the caller's extractor, with its failures turned into
   `UnexpectedContent`;
+- `check_not_ahead`: a data time further ahead of now than `max_ahead` ->
+  `UnexpectedContent` (a wrong clock or a wrong field, not data to keep);
 - `check_fresh`: data older than `max_age` -> `StaleData`;
-- `check_advancing`: data time stuck for N reads -> `StuckSource`, from the
-  history the store keeps (`Store.note_data_time`).
+- `check_advancing`: data time stuck for N reads, or for a length of time ->
+  `StuckSource`, from the history the store keeps (`Store.note_data_time`).
 
 A 304 or a recent Last-Modified says nothing about freshness: only the time
 read from the data does (SPEC.md).
@@ -36,6 +38,7 @@ __all__ = [
     "check_body",
     "check_fresh",
     "check_length",
+    "check_not_ahead",
     "check_redirect",
     "read_data_time",
 ]
@@ -43,7 +46,10 @@ __all__ = [
 Expect = Literal["json", "text", "bytes"]
 
 _HTML_TYPES = ("text/html", "application/xhtml+xml")
-_HTML_STARTS = (b"<!doctype html", b"<html")
+_HTML_STARTS = (b"<!doctype html", b"<html", b"<head", b"<body")
+_HTML_LOOK = 1024
+"""How much of the body is read to tell an HTML page: comments and an XML
+declaration before the first tag must fit in it."""
 _BOM = b"\xef\xbb\xbf"
 
 
@@ -73,11 +79,33 @@ def _charset(content_type: str | None) -> str:
     return message.get_content_charset() or "utf-8"
 
 
+def _first_tag(body: bytes) -> bytes:
+    """The body from its first tag on, past a BOM, white space, comments and
+    an XML declaration, within the first `_HTML_LOOK` bytes; lowercase."""
+    head = body[:_HTML_LOOK].removeprefix(_BOM).lower()
+    while True:
+        head = head.lstrip()
+        for opening, closing in ((b"<!--", b"-->"), (b"<?xml", b"?>")):
+            if head.startswith(opening):
+                end = head.find(closing)
+                if end < 0:
+                    return b""
+                head = head[end + len(closing) :]
+                break
+        else:
+            return head
+
+
 def _looks_like_html(body: bytes, content_type: str | None) -> bool:
     if content_type and content_type.split(";")[0].strip().lower() in _HTML_TYPES:
         return True
-    start = body.removeprefix(_BOM).lstrip()[:16].lower()
-    return start.startswith(_HTML_STARTS)
+    tag = _first_tag(body)
+    for start in _HTML_STARTS:
+        if tag.startswith(start):
+            after = tag[len(start) : len(start) + 1]
+            if after in (b"", b">", b"/") or after.isspace():
+                return True
+    return False
 
 
 def _open_at_end(text: str) -> bool:
@@ -171,24 +199,58 @@ def read_data_time(
     return as_utc(data_time, "data time")
 
 
+def check_not_ahead(
+    data_time: datetime, *, now: datetime, max_ahead: timedelta, url: str | None = None
+) -> None:
+    """A data time more than `max_ahead` after now is not a time to keep: a
+    single one would make every later read look stuck. A little ahead is
+    fine (clocks drift), and a source of forecasts can be given more."""
+    ahead = as_utc(data_time, "data_time") - as_utc(now, "now")
+    if ahead > max_ahead:
+        raise UnexpectedContent(
+            f"data time {data_time.isoformat()} is {ahead} ahead of now,"
+            f" over max_ahead {max_ahead}",
+            url=url,
+        )
+
+
 def check_fresh(
     data_time: datetime, *, now: datetime, max_age: timedelta, url: str | None = None
 ) -> None:
-    """Data older than `max_age` is stale. Data from the future passes: some
-    sources publish forecasts."""
+    """Data older than `max_age` is stale. Data a little ahead of now passes
+    (`check_not_ahead` bounds how far)."""
     age = as_utc(now, "now") - as_utc(data_time, "data_time")
     if age > max_age:
         raise StaleData(data_time=data_time, max_age=max_age, age=age, url=url)
 
 
 def check_advancing(
-    record: DataTimeRecord, *, stuck_after: int, url: str | None = None
+    record: DataTimeRecord,
+    *,
+    stuck_after: int | timedelta,
+    now: datetime | None = None,
+    url: str | None = None,
 ) -> None:
-    """A source whose data time has not advanced for `stuck_after`
-    consecutive reads is stuck, even if every request succeeded."""
-    if stuck_after < 2:
-        raise ValueError(f"stuck_after must be at least 2, got {stuck_after}")
-    if record.reads >= stuck_after:
+    """A source whose data time has not advanced is stuck, even if every
+    request succeeded: for `stuck_after` consecutive reads (an `int`, at
+    least 2), or for `stuck_after` of time since the first read of that data
+    time (a `timedelta`; then `now` is needed, and one read is never stuck).
+    A 304 is a read: the data did not move."""
+    if isinstance(stuck_after, timedelta):
+        if stuck_after <= timedelta(0):
+            raise ValueError(f"stuck_after must be positive, got {stuck_after}")
+        if now is None:
+            raise ValueError("a stuck_after of time needs now")
+        waited = as_utc(now, "now") - record.since
+        stuck = record.reads >= 2 and waited >= stuck_after
+    else:
+        if stuck_after < 2:
+            raise ValueError(f"stuck_after must be at least 2, got {stuck_after}")
+        stuck = record.reads >= stuck_after
+    if stuck:
         raise StuckSource(
-            data_time=record.latest, reads=record.reads, url=url or record.url
+            data_time=record.latest,
+            reads=record.reads,
+            since=record.since,
+            url=url or record.url,
         )

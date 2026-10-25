@@ -162,15 +162,15 @@ The body is truncated or empty where data was required.
 
 ### `StaleData`
 
-`StaleData(*, data_time: datetime, max_age: timedelta, age: timedelta, url: str | None = None)` (subclass of `ContentError`)
+`StaleData(*, data_time: datetime, max_age: timedelta, age: timedelta, url: str | None = None, result: 'FetchResult | None' = None)` (subclass of `ContentError`)
 
 The time extracted from the body is older than `max_age`.
 
 ### `StuckSource`
 
-`StuckSource(*, data_time: datetime, reads: int, url: str | None = None)` (subclass of `ContentError`)
+`StuckSource(*, data_time: datetime, reads: int, since: datetime | None = None, url: str | None = None, result: 'FetchResult | None' = None)` (subclass of `ContentError`)
 
-The data time has not advanced for `reads` consecutive reads, even though every request succeeded.
+The data time has not advanced for `reads` consecutive reads, the first of them at `since`, even though every request succeeded.
 
 ### `UnexpectedContent`
 
@@ -186,9 +186,9 @@ Content checks, as pure functions: truncated or empty bodies, HTML where data wa
 
 `Literal['json', 'text', 'bytes']`
 
-### `check_advancing(record: DataTimeRecord, *, stuck_after: int, url: str | None = None) -> None`
+### `check_advancing(record: DataTimeRecord, *, stuck_after: int | timedelta, now: datetime | None = None, url: str | None = None) -> None`
 
-A source whose data time has not advanced for `stuck_after` consecutive reads is stuck, even if every request succeeded.
+A source whose data time has not advanced is stuck, even if every request succeeded: for `stuck_after` consecutive reads (an `int`, at least 2), or for `stuck_after` of time since the first read of that data time (a `timedelta`; then `now` is needed, and one read is never stuck). A 304 is a read: the data did not move.
 
 ### `check_body(body: bytes, *, expect: Literal['json', 'text', 'bytes'] = 'json', content_type: str | None = None, allow_empty: bool = False, url: str | None = None) -> Any`
 
@@ -196,11 +196,15 @@ Check a body against what was expected and return its content: the parsed JSON, 
 
 ### `check_fresh(data_time: datetime, *, now: datetime, max_age: timedelta, url: str | None = None) -> None`
 
-Data older than `max_age` is stale. Data from the future passes: some sources publish forecasts.
+Data older than `max_age` is stale. Data a little ahead of now passes (`check_not_ahead` bounds how far).
 
 ### `check_length(*, content_length: int | None, received: int, url: str | None = None) -> None`
 
 Compare the bytes received on the wire with the declared Content-Length.
+
+### `check_not_ahead(data_time: datetime, *, now: datetime, max_ahead: timedelta, url: str | None = None) -> None`
+
+A data time more than `max_ahead` after now is not a time to keep: a single one would make every later read look stuck. A little ahead is fine (clocks drift), and a source of forecasts can be given more.
 
 ### `check_redirect(requested_url: str, final_url: str | None, *, url: str | None = None) -> None`
 
@@ -256,13 +260,17 @@ What every adapter shares: the fetch cycle, the result, the failure shapes.
 
 `timedelta(seconds=300)`
 
+### `DEFAULT_MAX_AHEAD`
+
+`timedelta(seconds=900)`
+
 ### `AsyncFetcher`
 
 `AsyncFetcher(gate: Gate, transport: AsyncTransport, *, timeout: float | tuple[float, float] = (10.0, 30.0), deadline: timedelta | str = timedelta(seconds=300), user_agent: str = 'politefetch/0.1.0', timer: Callable[[], float] = <built-in function monotonic>)`
 
 Fetch through the gate with an asynchronous transport. Same meaning as `Fetcher`; store work runs in a worker thread.
 
-- `.get(url: str, *, expect: Literal['json', 'text', 'bytes'] = 'json', data_time: Callable[[Any], datetime] | None = None, max_age: timedelta | str | None = None, stuck_after: int | None = None, headers: Mapping[str, str] | None = None, allow_empty: bool = False, max_bytes: int | str | None = None) -> FetchResult`
+- `.get(url: str, *, expect: Literal['json', 'text', 'bytes'] = 'json', data_time: Callable[[Any], datetime] | None = None, max_age: timedelta | str | None = None, max_ahead: timedelta | str = timedelta(seconds=900), stuck_after: int | timedelta | str | None = None, headers: Mapping[str, str] | None = None, allow_empty: bool = False, max_bytes: int | str | None = None) -> FetchResult`
 - `.aclose() -> None`
 
 ### `AsyncRawResponse`
@@ -304,7 +312,7 @@ A fetch that passed every check.
 
 Fetch through the gate with a synchronous transport.
 
-- `.get(url: str, *, expect: Literal['json', 'text', 'bytes'] = 'json', data_time: Callable[[Any], datetime] | None = None, max_age: timedelta | str | None = None, stuck_after: int | None = None, headers: Mapping[str, str] | None = None, allow_empty: bool = False, max_bytes: int | str | None = None) -> FetchResult`: Fetch `url` once, if the gate allows it, and check what comes back.
+- `.get(url: str, *, expect: Literal['json', 'text', 'bytes'] = 'json', data_time: Callable[[Any], datetime] | None = None, max_age: timedelta | str | None = None, max_ahead: timedelta | str = timedelta(seconds=900), stuck_after: int | timedelta | str | None = None, headers: Mapping[str, str] | None = None, allow_empty: bool = False, max_bytes: int | str | None = None) -> FetchResult`: Fetch `url` once, if the gate allows it, and check what comes back.
 - `.close() -> None`
 
 ### `IncompleteBody`
@@ -440,9 +448,9 @@ The store interface, its records, and the rules every store applies.
 
 ### `DataTimeRecord`
 
-`DataTimeRecord(url: str, latest: datetime, reads: int, updated_at: datetime)`
+`DataTimeRecord(url: str, latest: datetime, reads: int, updated_at: datetime, since: datetime)`
 
-The data-time history of one URL: the latest data time seen, and how many consecutive reads have not gone past it (the read that brought it included).
+The data-time history of one URL: the latest data time seen, how many consecutive reads have not gone past it (the read that brought it included), and `since`, when that first read happened.
 
 ### `Freeze`
 
