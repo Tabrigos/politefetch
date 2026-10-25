@@ -12,7 +12,7 @@ fails on any other way.
 import multiprocessing
 import traceback
 from collections.abc import Callable
-from multiprocessing.connection import Connection
+from multiprocessing.connection import Connection, wait
 from typing import Any
 
 from politefetch.testing.barrier import NetworkBarrier
@@ -68,7 +68,8 @@ class Child[T]:
         return self._process.exitcode
 
     def kill(self) -> None:
-        """Kill the child with SIGKILL, as a crash would."""
+        """Kill the child with SIGKILL (TerminateProcess on Windows), as a
+        crash would."""
         self._process.kill()
 
     def join(self, timeout: float) -> T:
@@ -79,14 +80,19 @@ class Child[T]:
         `ChildFailed`.
         """
         try:
-            if not self._receiver.poll(timeout):
+            # Wait for the process too: on Windows a child killed before it
+            # takes over its end of the pipe leaves that end open, and the
+            # pipe never reports EOF.
+            ready = wait([self._receiver, self._process.sentinel], timeout)
+            if not ready:
                 self._process.kill()
                 self._process.join()
                 raise TimeoutError(f"child process still running after {timeout}s")
             message: tuple[str, Any] | None
             try:
-                message = self._receiver.recv()
-            except EOFError:  # the child died without sending anything
+                # Anything the child sent is in the pipe before it exits.
+                message = self._receiver.recv() if self._receiver.poll(0) else None
+            except (EOFError, BrokenPipeError):  # died without sending anything
                 message = None
         finally:
             self._receiver.close()

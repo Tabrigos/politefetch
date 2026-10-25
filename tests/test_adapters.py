@@ -180,7 +180,12 @@ def test_no_answer_and_reset(
     assert (outcome.ok, outcome.failure) == (False, shape.value)
 
 
-def test_a_refused_connection(get: Get, gate: Gate) -> None:
+@pytest.mark.parametrize("kind", KINDS)
+def test_a_refused_connection(kind: str, gate: Gate) -> None:
+    # Windows retries the SYN for about two seconds before it reports a
+    # refusal, even on loopback: a shorter connect timeout would see a timeout
+    # (urllib connects with the read timeout).
+    get = getter(kind, gate, timeout=(10.0, 10.0))
     with pytest.raises(FetchFailed) as failed:
         get(closed_port_url())
     assert failed.value.shape == FailureShape.REFUSED
@@ -188,7 +193,7 @@ def test_a_refused_connection(get: Get, gate: Gate) -> None:
 
 @pytest.fixture
 def plain_port() -> Iterator[int]:
-    """A loopback port that answers in plain HTTP as soon as anyone connects,
+    """A loopback port that answers in plain HTTP to the first bytes it gets,
     as a web server does to a TLS handshake it does not understand."""
     server = socket.create_server(("127.0.0.1", 0))
     server.settimeout(5)
@@ -197,6 +202,10 @@ def plain_port() -> Iterator[int]:
         with contextlib.suppress(OSError):
             conn, _ = server.accept()
             with conn:
+                # Read the handshake first: closing with unread data sends a
+                # reset, and Windows then drops the answer before the client
+                # reads it.
+                conn.recv(4096)
                 conn.sendall(b"HTTP/1.1 400 Bad Request\r\nContent-Length: 0\r\n\r\n")
 
     thread = threading.Thread(target=serve, daemon=True)

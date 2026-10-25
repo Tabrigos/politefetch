@@ -70,7 +70,7 @@ EXTRA = {
 }
 
 _QUALIFIED = re.compile(r"\b(?:[a-z_]\w*\.)+([A-Za-z_]\w*)")
-_FUNCTION = re.compile(r"<function ([\w.]+) at 0x[0-9a-f]+>")
+_FUNCTION = re.compile(r"<function ([\w.]+) at 0x[0-9a-fA-F]+>")
 _ROLE = re.compile(r":(?:class|meth|func|data|mod|attr):`~?(?:[\w.]*\.)?([^`]+)`")
 
 
@@ -240,7 +240,7 @@ def main(argv: list[str] | None = None) -> int:
             print(f"{TARGET} is stale: run `uv run python tools/build_skill.py`")
             return 1
         return 0
-    TARGET.write_text(content, encoding="utf-8")
+    TARGET.write_text(content, encoding="utf-8", newline="\n")
     print(f"wrote {TARGET.relative_to(ROOT)}")
     return 0
 
