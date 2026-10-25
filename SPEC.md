@@ -1,94 +1,93 @@
-# politefetch — specifica
+# politefetch — specification
 
-## Obiettivo
+## Goal
 
-Una libreria Python che sta fra un servizio di ingest e le fonti esterne che
-interroga (API pubbliche, file aggiornati periodicamente, server istituzionali
-senza contratto) e garantisce due cose:
+A Python library that sits between an ingest service and the external
+sources it polls (public APIs, periodically updated files, institutional
+servers with no contract) and guarantees two things:
 
-1. **la fonte non viene mai martellata**, nemmeno se il processo muore a metà,
-   si riavvia in ciclo o il codice di chi chiama ha un bug;
-2. **un dato rotto o vecchio non passa per buono**: troncato, HTML al posto del
-   JSON, fermo da ore anche se la richiesta "riesce".
+1. **the source is never hammered**, not even if the process dies midway,
+   restarts in a loop or the caller's code has a bug;
+2. **broken or stale data does not pass as good**: truncated, HTML instead of
+   JSON, stuck for hours even though the request "succeeds".
 
-Le librerie esistenti (tenacity, stamina, pybreaker, aiolimiter, hishel…)
-partono dall'idea che ritentare sia un bene e tengono lo stato in memoria.
-Questa parte dall'idea opposta, nata da fonti che hanno messo l'indirizzo del
-chiamante nel firewall: **ogni richiesta è un costo, e la memoria di cosa si è
-promesso deve sopravvivere al processo**.
+Existing libraries (tenacity, stamina, pybreaker, aiolimiter, hishel…) start
+from the idea that retrying is good and keep state in memory. This one starts
+from the opposite idea, born from sources that put the caller's address in
+their firewall: **every request is a cost, and the memory of what was
+promised must outlive the process**.
 
-## Le regole che la libreria rende automatiche
+## The rules the library makes automatic
 
-1. **La promessa si scrive prima della chiamata.** Prima di ogni richiesta si
-   annota nello stato persistente "non richiamare questo host prima di T", con
-   T calcolato come se la richiesta fallisse. Una risposta buona accorcia T;
-   un crash a metà lascia la promessa prudente. È l'unico ordine che regge a
-   un processo che muore.
-2. **Un solo tentativo.** Niente retry automatici: un timeout non distingue
-   "la richiesta non è arrivata" da "il firewall della fonte scarta i
-   pacchetti". Chi vuole riprovare richiama più tardi, e la libreria decide se
-   può.
-3. **La pausa dopo un errore cresce** (esponenziale con tetto, configurabile);
-   `Retry-After` è un minimo. **403, 429 e 451 congelano l'host** finché una
-   persona non lo sblocca (o fino a una scadenza configurata): non si ritentano
-   da soli.
-4. **Un tetto giornaliero per host**, nello stato persistente, consumato
-   *prima* della richiesta da un unico punto per cui passa tutto. Non si
-   azzera al riavvio. È la rete di sicurezza che non dipende da nessun'altra
-   logica.
-5. **I test sono un percorso in uscita.** La libreria offre una barriera sul
-   socket per pytest, con la prova che una chiamata vera fallisce e una
-   simulata passa (la prova usa un IP pubblico vero: le reti TEST-NET contano
-   come private).
-6. **Il caso peggiore si conta.** Un simulatore di fonte con scenari (rifiuta,
-   non risponde, 429, risponde troncato, HTML, dato fermo, processo ucciso a
-   richiesta partita, riavvii in ciclo) e un contatore che verifica quante
-   richieste partono davvero in ciascuno.
-7. **Una richiesta aperta non è invisibile.** Ogni richiesta ha uno stato
-   `in-flight` che si chiude in un `finally`; quelle che nessun `finally` può
-   chiudere (processo ucciso, cancellazione) le chiude una **riconciliazione**
-   con soglia larga, e contano come fallite. Nessuna statistica le esclude.
+1. **The promise is written before the call.** Before each request, the
+   persistent state records "do not call this host again before T", with T
+   computed as if the request failed. A good response shortens T; a crash
+   midway leaves the cautious promise. It is the only order that holds up
+   against a process that dies.
+2. **A single attempt.** No automatic retries: a timeout does not distinguish
+   "the request did not arrive" from "the source's firewall drops the
+   packets". Whoever wants to try again calls again later, and the library
+   decides whether it can.
+3. **The pause after an error grows** (exponential with a cap, configurable);
+   `Retry-After` is a minimum. **403, 429 and 451 freeze the host** until a
+   person unblocks it (or until a configured expiry): they are not retried on
+   their own.
+4. **A daily cap per host**, in the persistent state, consumed *before* the
+   request by a single point that everything passes through. It is not reset
+   on restart. It is the safety net that does not depend on any other logic.
+5. **Tests are an outbound path.** The library offers a socket barrier for
+   pytest, with proof that a real call fails and a simulated one passes (the
+   proof uses a real public IP: the TEST-NET networks count as private).
+6. **The worst case is counted.** A source simulator with scenarios (refuses,
+   does not respond, 429, responds truncated, HTML, stuck data, process
+   killed with the request already sent, restarts in a loop) and a counter
+   that checks how many requests actually go out in each one.
+7. **An open request is not invisible.** Every request has an `in-flight`
+   state that is closed in a `finally`; those that no `finally` can close
+   (killed process, cancellation) are closed by a **reconciliation** with a
+   wide threshold, and they count as failed. No statistic excludes them.
 
-## Controlli sul contenuto
+## Content checks
 
-- **Troncato**: corpo più corto di `Content-Length`, JSON che finisce a metà,
-  corpo vuoto dove serve un dato → `SourceNotReady` (transitorio).
-- **Contenuto inatteso**: HTML (per `Content-Type` o per l'inizio del corpo)
-  dove ci si aspetta JSON o testo, redirect verso un altro host →
+- **Truncated**: body shorter than `Content-Length`, JSON that ends midway,
+  empty body where data is needed → `SourceNotReady` (transient).
+- **Unexpected content**: HTML (by `Content-Type` or by the start of the
+  body) where JSON or text is expected, redirect to another host →
   `UnexpectedContent`.
-- **Freschezza sul contenuto**: chi chiama dà una funzione che estrae dal
-  corpo il tempo del dato; la libreria lo confronta con `max_age`. Un `304`
-  o un `Last-Modified` recente non dicono che il dato è nuovo.
-- **Fonte ferma**: se il tempo del dato non avanza per N letture consecutive,
-  la libreria lo segnala (`StuckSource`), anche se ogni richiesta è riuscita.
+- **Freshness on the content**: the caller provides a function that extracts
+  the data's time from the body; the library compares it with `max_age`. A
+  `304` or a recent `Last-Modified` does not mean that the data is new.
+- **Stuck source**: if the data's time does not advance for N consecutive
+  reads, the library reports it (`StuckSource`), even if every request
+  succeeded.
 
-## Traffico
+## Traffic
 
-- Richieste condizionali: ETag e Last-Modified salvati per URL e rimandati.
-- Byte per host e per giorno, sia sul filo (compressi) sia decodificati.
-- Budget di byte per host, consumato come il tetto delle richieste.
+- Conditional requests: ETag and Last-Modified saved per URL and sent back.
+- Bytes per host and per day, both on the wire (compressed) and decoded.
+- Byte budget per host, consumed like the request cap.
 
-## Architettura
+## Architecture
 
-- **Core** (solo libreria standard): `Gate` decide se una richiesta può
-  partire, apre e chiude le righe del registro, applica le politiche; i
-  controlli sul contenuto sono funzioni pure.
-- **Store**: interfaccia con tre implementazioni: memoria (test), SQLite
-  (default, `sqlite3` della libreria standard), Postgres (extra `postgres`).
-  Le operazioni critiche sono atomiche: due processi che condividono lo store
-  non superano insieme il tetto.
-- **Adattatori di trasporto**: `urllib` (libreria standard, nel core), `httpx`
-  e `requests` (extra). Il core non importa nessun client HTTP: cambiare
-  libreria tocca solo l'adattatore.
-- **Kit di test** (`politefetch.testing`): barriera sul socket, simulatore di
-  fonte, contatore del caso peggiore.
-- **Stato leggibile**: per ogni host, prossima richiesta consentita, motivo
-  dell'eventuale blocco, conteggi e byte di oggi, ultime righe; serializzabile
-  in JSON per una dashboard.
+- **Core** (standard library only): `Gate` decides whether a request can go
+  out, opens and closes the ledger rows, applies the policies; the content
+  checks are pure functions.
+- **Store**: an interface with three implementations: memory (tests), SQLite
+  (default, the standard library's `sqlite3`), Postgres (`postgres` extra).
+  The critical operations are atomic: two processes sharing the store do not
+  exceed the cap together.
+- **Transport adapters**: `urllib` (standard library, in the core), `httpx`
+  and `requests` (extras). The core imports no HTTP client: changing library
+  touches only the adapter.
+- **Test kit** (`politefetch.testing`): socket barrier, source simulator,
+  worst-case counter.
+- **Readable state**: for each host, next allowed request, reason for any
+  block, today's counts and bytes, latest rows; serializable to JSON for a
+  dashboard.
 
-Sincrono e asincrono con la stessa semantica. Durante una cancellazione
-asincrona non si può attendere in sicurezza: la chiusura della riga in quel
-caso la fa la riconciliazione, e la specifica lo dichiara invece di fingere.
+Synchronous and asynchronous with the same semantics. During an asynchronous
+cancellation it is not safe to await: in that case the row is closed by the
+reconciliation, and the specification states this instead of pretending.
 
 ```python
 from politefetch import Gate, HostPolicy
@@ -103,27 +102,27 @@ fetch = HttpxFetcher(gate)
 result = fetch.get(url, expect="json", data_time=lambda body: ..., max_age="3h")
 ```
 
-I nomi esatti si decidono nelle tappe; questo è l'impianto.
+The exact names are decided in the stages; this is the overall design.
 
-## Cosa non fa
+## What it does not do
 
-- Non è un crawler e non pianifica: chi chiama decide quando provare, la
-  libreria dice se può.
-- Non mette in cache i corpi (per quello c'è hishel): ricorda solo validatori,
-  promesse e conteggi.
-- Niente autenticazione, niente proxy rotanti, niente aggiramento dei limiti
-  di una fonte: lo scopo è l'opposto.
-- Non distingue da sola un blocco da un disservizio (servirebbe una verifica
-  da più reti): registra la forma del fallimento (timeout di connessione,
-  reset, rifiuto, TLS, codice HTTP) in modo che una persona o uno strumento
-  esterno possa farlo.
+- It is not a crawler and does not schedule: the caller decides when to try,
+  the library says whether it can.
+- It does not cache bodies (hishel exists for that): it only remembers
+  validators, promises and counts.
+- No authentication, no rotating proxies, no circumventing a source's
+  limits: the purpose is the opposite.
+- It does not tell a block from an outage on its own (that would need a check
+  from several networks): it records the shape of the failure (connection
+  timeout, reset, refusal, TLS, HTTP code) so that a person or an external
+  tool can do it.
 
-## Qualità
+## Quality
 
-- Python 3.12 o successivo; `uv` e `hatchling`; `mypy --strict`, `ruff`,
-  `pytest`, CI su GitHub Actions.
-- Le invarianti (il tetto non si supera, una promessa non si accorcia senza
-  una risposta buona, ogni riga si chiude) hanno test basati su proprietà
-  (`hypothesis`), con crash e riavvii simulati.
-- Lo store Postgres si prova contro un Postgres vero (nell'ambiente cloud c'è
-  PostgreSQL 16).
+- Python 3.12 or later; `uv` and `hatchling`; `mypy --strict`, `ruff`,
+  `pytest`, CI on GitHub Actions.
+- The invariants (the cap is not exceeded, a promise is not shortened without
+  a good response, every row is closed) have property-based tests
+  (`hypothesis`), with simulated crashes and restarts.
+- The Postgres store is tested against a real Postgres (the cloud
+  environment has PostgreSQL 16).

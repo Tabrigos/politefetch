@@ -16,7 +16,7 @@ re-raised. The gate never retries (rule 2).
 `async with gate.attempt(url)` has the same meaning; the store is called in a
 worker thread. If the task is cancelled the row is not closed, because a
 cancelled task cannot safely wait: the reconciliation closes it later, as
-failed (SPEC.md, "Sincrono e asincrono").
+failed (SPEC.md, "Architecture").
 
 If the store itself fails (for SQLite, a lock that stays taken past the busy
 timeout), its exception propagates from entering the attempt and nothing is
