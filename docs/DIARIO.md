@@ -12,9 +12,9 @@ Riscritto da capo a ogni fine sessione, mai accodato.
   schema comune con swpc-kit, D-040 e D-041).
 - **Prossimo passo**: R1 è fatta (D-046) sul ramo `r1-esiti`; la prossima
   è R2, gli adattatori: scadenza totale, limite di dimensione, decodifica nel
-  core, retry dei client. La decisione 1 di `docs/TAPPE.md` è presa
-  (intervallo per host, documentato), le decisioni 2 e 3 vanno prese prima
-  di R2. Poi R3, R4, la T11 (skill v2) e la pubblicazione (D-043). Prima
+  core, retry dei client. Le tre decisioni di `docs/TAPPE.md` sono prese:
+  intervallo per host, `ValueError` per i client con retry, dati vecchi o
+  fermi come risposte arrivate. Poi R3, R4, la T11 (skill v2) e la pubblicazione (D-043). Prima
   dei test: `eval "$(scripts/postgres-for-tests.sh)"`, altrimenti i test
   Postgres vengono saltati (su Windows lo script non c'è: lì i test
   Postgres si saltano, girano nel job Linux).

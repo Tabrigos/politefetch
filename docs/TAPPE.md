@@ -381,19 +381,26 @@ blocco letto.
    esempio di cron che legge più endpoint. È la scelta più cauta per la
    fonte. Il trasporto educato di swpc-kit aspetterà l'intervallo dell'host
    fra un prodotto e l'altro. Scartati i gruppi o le promesse per URL.
-2. **Client con retry.** Proposta: `ValueError` alla costruzione del
-   `Fetcher` quando i retry del client sono riconoscibili, e un avvertimento
-   nella documentazione per i trasporti scritti a mano. L'alternativa è un
-   solo avviso.
-3. **Dati vecchi o fermi.** Proposta:
+2. **Client con retry.** *Deciso da Paolo il 2026-10-25:* `ValueError` alla
+   costruzione del `Fetcher` quando i retry del client sono riconoscibili
+   (anche i soli retry di connessione di httpx: una regola senza eccezioni),
+   e un avvertimento nella documentazione per i trasporti scritti a mano.
+   Scartati il solo avviso (in produzione non si vede) e l'azzeramento dei
+   retry sul client dell'utente (effetto nascosto su un oggetto suo).
+3. **Dati vecchi o fermi.** *Deciso da Paolo il 2026-10-25:*
    - contano come risposte arrivate: vale `min_interval`, il backoff non
      cresce, i validatori si salvano;
    - l'eccezione porta il `FetchResult`, così chi vuole può usare il dato
      vecchio;
    - `stuck_after` accetta anche una durata (`"6h"`).
 
-   L'alternativa è lasciare il backoff: meno richieste, ma una fonte ferma
-   per un giorno si rilegge sempre più di rado anche quando riparte.
+   Scartati il backoff di oggi (meno richieste, ma una fonte ferma per un
+   giorno si rilegge sempre più di rado anche quando riparte, e senza
+   validatori ogni lettura riscarica il corpo) e un intervallo dedicato ai
+   dati vecchi (un parametro in più per poco: con le richieste condizionali
+   le letture di una fonte ferma sono 304). Non è la scelta che manda meno
+   richieste: il dubbio riguarda la freschezza del dato, non il carico della
+   fonte, e il ritmo resta quello che la policy considera educato.
 
 ## T11 — La skill v2
 
