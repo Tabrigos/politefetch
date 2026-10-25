@@ -1254,3 +1254,41 @@ alla vecchia e la vecchia prende la riga "Superata da".
 - **Conseguenze**: `NoPolicy` e `FetchFailed.note` sono nuovi; un'app che usa
   l'extra `postgres` deve aggiungere una libpq; `PostgresStore` ha `clock` e
   `max_clock_skew`. La pulizia del registro (`prune`) resta per la 0.2.
+
+## D-050 — La skill v2 (T11)
+
+- **Data e tappa**: 2026-10-26, T11
+- **Contesto**: lo schema v1 della skill (D-040: entry point
+  `agent_skills`, `sync` da un hook, copie ignorate da git, confronto per
+  versione) faceva entrare nel contesto le istruzioni di qualunque
+  dipendenza senza revisione. Lo standard comune `skill-di-libreria` lo
+  sostituisce, e swpc-kit è già passato (in `main`, nota in inbox del
+  2026-10-25).
+- **Decisione**:
+  - `politefetch/skill/__init__.py`, `tools/build_skill.py` e
+    `tests/test_skill.py` sono copie del modello, con le sole costanti di
+    politefetch sopra la riga; sotto la riga il modulo è identico a quello
+    di swpc-kit (verificato con `diff`), quindi l'accordo di D-040 regge
+    senza un altro scambio;
+  - il generatore è quello generico: confrontato con il nostro, non perde
+    nessun nome pubblico e aggiunge le tabelle dei campi; il modulo `skill`
+    esce dal riferimento, come vuole il modello;
+  - i test di dominio (esempi della skill eseguiti contro il simulatore,
+    ogni motivo di rifiuto, forma di fallimento ed errore nelle tabelle, le
+    keyword che appartengono alla loro chiamata) stanno in
+    `tests/test_skill_examples.py`;
+  - i valori degli enum nella SKILL.md si scrivono come stringhe
+    (`"connect_timeout"`): sono i testi registrati, e il controllo dei nomi
+    del modello salta le stringhe;
+  - aggiunte le sezioni "Not covered" e il paragrafo "For coding agents" del
+    README; la CI costruisce la wheel in ogni job e la passa al test
+    (`SKILL_WHEEL`), che in CI non si salta. In locale la wheel non si
+    costruisce (CLAUDE.md), quindi quel test lì si salta.
+- **Lasciato fuori, con il motivo**:
+  - il symlink di dogfooding `.claude/skills/politefetch`: `.claude/` del
+    repo è locale, e su Windows un symlink chiede la Modalità sviluppatore;
+  - `source_simulator` in `NOT_API`: il generatore elenca le fixture, ma il
+    controllo dei nomi del modello non le conta fra i nomi noti. È un
+    difetto del modello: va corretto lì e ricopiato, non qui;
+  - la prova d'attivazione con un agente nuovo e la trigger eval: da fare
+    quando la skill cambia descrizione o tabella, prima della release.
