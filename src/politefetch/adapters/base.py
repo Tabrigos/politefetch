@@ -64,7 +64,7 @@ from politefetch.errors import (
     StuckSource,
     UnexpectedContent,
 )
-from politefetch.gate import Attempt, Gate
+from politefetch.gate import Attempt, Gate, host_of
 from politefetch.policy import parse_duration, parse_size
 
 __all__ = [
@@ -574,6 +574,26 @@ def _deliver(
     raise judged
 
 
+def _note_freeze(gate: Gate, url: str, failed: FetchFailed) -> None:
+    """If the answer left the host frozen, say so on the error, and how to
+    lift it."""
+    if failed.status is None:
+        return
+    host = host_of(url)
+    now = gate.clock.now()
+    freeze = gate.store.host_state(host, now).freeze
+    if freeze is None or not freeze.active(now):
+        return
+    lift = f"gate.unfreeze({host!r}, by=...)"
+    if freeze.until is None:
+        note = f"the host is now frozen until a person lifts it: {lift}"
+    else:
+        until = freeze.until.isoformat()
+        note = f"the host is now frozen until {until}; {lift} lifts it sooner"
+    failed.note = note
+    failed.args = (failed.url, failed.shape, failed.status, note)
+
+
 # --- the fetchers ---------------------------------------------------------------------
 
 
@@ -624,22 +644,27 @@ class Fetcher:
         answers and carry the result. `max_bytes` bounds the body, as
         transferred and as decoded; reading also stops at what is left of the
         host's byte budget. `headers` are sent too, and replace ours of the
-        same name. Raises `Refused`, `FetchFailed` or a `ContentError`.
+        same name. Raises `Refused`, `FetchFailed` (whose message says if the
+        answer froze the host, and how to lift it) or a `ContentError`.
         """
         options = _Options.build(
             expect, data_time, max_age, max_ahead, stuck_after, allow_empty, max_bytes
         )
-        with self.gate.attempt(url) as attempt:
-            sent = _request_headers(attempt, self.user_agent, headers)
-            limit = _limit(attempt, options.max_bytes)
-            reading = _Reading(self.timer, self.deadline, limit)
-            try:
-                _read(self.transport, url, sent, self.timeout, reading)
-            except TransportError as error:
-                raise _lost(attempt, url, reading, error) from error
-            except IncompleteBody as incomplete:
-                raise _incomplete(attempt, url, reading) from incomplete
-            return _finish(self.gate, attempt, url, reading, options)
+        try:
+            with self.gate.attempt(url) as attempt:
+                sent = _request_headers(attempt, self.user_agent, headers)
+                limit = _limit(attempt, options.max_bytes)
+                reading = _Reading(self.timer, self.deadline, limit)
+                try:
+                    _read(self.transport, url, sent, self.timeout, reading)
+                except TransportError as error:
+                    raise _lost(attempt, url, reading, error) from error
+                except IncompleteBody as incomplete:
+                    raise _incomplete(attempt, url, reading) from incomplete
+                return _finish(self.gate, attempt, url, reading, options)
+        except FetchFailed as failed:
+            _note_freeze(self.gate, url, failed)
+            raise
 
     def close(self) -> None:
         self.transport.close()
@@ -693,19 +718,23 @@ class AsyncFetcher:
         options = _Options.build(
             expect, data_time, max_age, max_ahead, stuck_after, allow_empty, max_bytes
         )
-        async with self.gate.attempt(url) as attempt:
-            sent = _request_headers(attempt, self.user_agent, headers)
-            limit = _limit(attempt, options.max_bytes)
-            reading = _Reading(self.timer, self.deadline, limit)
-            try:
-                await _aread(self.transport, url, sent, self.timeout, reading)
-            except TransportError as error:
-                raise _lost(attempt, url, reading, error) from error
-            except IncompleteBody as incomplete:
-                raise _incomplete(attempt, url, reading) from incomplete
-            return await asyncio.to_thread(
-                _finish, self.gate, attempt, url, reading, options
-            )
+        try:
+            async with self.gate.attempt(url) as attempt:
+                sent = _request_headers(attempt, self.user_agent, headers)
+                limit = _limit(attempt, options.max_bytes)
+                reading = _Reading(self.timer, self.deadline, limit)
+                try:
+                    await _aread(self.transport, url, sent, self.timeout, reading)
+                except TransportError as error:
+                    raise _lost(attempt, url, reading, error) from error
+                except IncompleteBody as incomplete:
+                    raise _incomplete(attempt, url, reading) from incomplete
+                return await asyncio.to_thread(
+                    _finish, self.gate, attempt, url, reading, options
+                )
+        except FetchFailed as failed:
+            await asyncio.to_thread(_note_freeze, self.gate, url, failed)
+            raise
 
     async def aclose(self) -> None:
         await self.transport.aclose()

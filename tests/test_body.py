@@ -396,3 +396,48 @@ def test_a_content_length_longer_than_the_body_is_not_ready(gate: Gate) -> None:
     transport = Scripted([b"{}"], headers={"content-length": "20"})
     with pytest.raises(SourceNotReady):
         Fetcher(gate, transport).get(URL)
+
+
+# --- what a failure says --------------------------------------------------------------
+
+
+def test_a_403_says_the_host_is_frozen_and_how_to_lift_it(gate: Gate) -> None:
+    with pytest.raises(FetchFailed) as failed:
+        Fetcher(gate, Scripted([b"no"], status=403)).get(URL)
+    text = str(failed.value)
+    assert "HTTP 403" in text
+    assert "frozen until a person lifts it" in text
+    assert "gate.unfreeze('example.org', by=" in text
+
+
+def test_a_freeze_that_expires_says_when(clock: FakeClock) -> None:
+    gate = make_gate(clock, freeze_for="1h")
+    with pytest.raises(FetchFailed) as failed:
+        Fetcher(gate, Scripted([b"slow down"], status=429)).get(URL)
+    assert f"frozen until {(T + timedelta(hours=1)).isoformat()}" in str(failed.value)
+
+
+@pytest.mark.parametrize("status", [503, 404])
+def test_a_failure_that_does_not_freeze_says_nothing_of_it(
+    gate: Gate, status: int
+) -> None:
+    with pytest.raises(FetchFailed) as failed:
+        Fetcher(gate, Scripted([b"x"], status=status)).get(URL)
+    assert "frozen" not in str(failed.value)
+
+
+def test_a_first_429_that_is_honoured_does_not_say_frozen(clock: FakeClock) -> None:
+    gate = make_gate(clock, respect_retry_after_429=True)
+    transport = Scripted([b"x"], status=429, headers={"retry-after": "60"})
+    with pytest.raises(FetchFailed) as failed:
+        Fetcher(gate, transport).get(URL)
+    assert "frozen" not in str(failed.value)
+
+
+def test_the_async_fetcher_says_so_too(gate: Gate) -> None:
+    async def run() -> None:
+        await AsyncFetcher(gate, AsyncScripted([b"no"], status=451)).get(URL)
+
+    with pytest.raises(FetchFailed) as failed:
+        asyncio.run(run())
+    assert "frozen until a person lifts it" in str(failed.value)

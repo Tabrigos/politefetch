@@ -19,11 +19,11 @@ from typing import Any
 
 import pytest
 
-from politefetch import Gate
+from politefetch import Gate, HostPolicy, Refused
 from politefetch.clock import FakeClock, SystemClock
 from politefetch.gate import host_of
 from politefetch.store import MemoryStore
-from politefetch.testing.simulator import Html, Respond, SourceSimulator
+from politefetch.testing.simulator import Html, Respond, SourceSimulator, Validated
 
 README = (Path(__file__).resolve().parent.parent / "README.md").read_text("utf-8")
 BLOCK = re.compile(r"^( *)```(\w+)\n(.*?)^\1```", re.DOTALL | re.MULTILINE)
@@ -186,3 +186,48 @@ def test_the_status_json_has_the_real_shape() -> None:
 def make_gate_for_shape(clock: FakeClock) -> Gate:
     namespace, _ = run(EXAMPLE, "readme")
     return Gate(MemoryStore(), namespace["POLICIES"], clock=clock)
+
+
+def snippet(marker: str) -> dict[str, Any]:
+    [source] = [block for block in blocks("python") if marker in block]
+    namespace, _ = run(source, "readme")
+    return namespace
+
+
+def test_the_gate_attempt_snippet_runs(source_simulator: SourceSimulator) -> None:
+    import httpx
+
+    fetch = snippet("def fetch(gate")["fetch"]
+    source_simulator.scenario = Validated(b'{"a": 1}', etag='"v1"')
+    url = source_simulator.url("/data.json")
+    clock = FakeClock(T)
+    gate = Gate(
+        MemoryStore(), {host_of(url): HostPolicy(5, min_interval="1h")}, clock=clock
+    )
+    with httpx.Client() as client:
+        assert fetch(gate, client, url) == b'{"a": 1}'
+        with pytest.raises(Refused):
+            fetch(gate, client, url)  # too soon: nothing is sent
+        clock.advance(timedelta(hours=1))
+        assert fetch(gate, client, url) is None  # 304: nothing new
+    assert source_simulator.counter.requests[1].headers["if-none-match"] == '"v1"'
+    row = gate.store.rows()[-1]
+    assert row.outcome is not None
+    assert row.outcome.status == 304
+
+
+def test_several_endpoints_take_turns(source_simulator: SourceSimulator) -> None:
+    namespace = snippet("def next_endpoint")
+    urls = [source_simulator.url("/kp.json"), source_simulator.url("/wind.json")]
+    clock = FakeClock(T)
+    gate = Gate(
+        MemoryStore(),
+        {host_of(urls[0]): HostPolicy(50, min_interval="10m")},
+        clock=clock,
+    )
+    for _ in range(5):  # cron, every ten minutes
+        namespace["run"].__globals__["ENDPOINTS"] = urls
+        namespace["run"](gate)
+        clock.advance(timedelta(minutes=10))
+    paths = [request.path for request in source_simulator.counter.requests]
+    assert paths == ["/kp.json", "/wind.json", "/kp.json", "/wind.json", "/kp.json"]

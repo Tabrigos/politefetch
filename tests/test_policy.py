@@ -56,6 +56,23 @@ def test_parse_duration_rejects_ambiguous_text(text: str) -> None:
         parse_duration(text)
 
 
+@pytest.mark.parametrize("value", [60, 1.5, True, None, b"60s"])
+def test_a_duration_of_another_type_says_what_it_needs(value: object) -> None:
+    with pytest.raises(TypeError, match="unit"):
+        parse_duration(value)  # type: ignore[arg-type]
+
+
+@pytest.mark.parametrize("value", [1.5, None, b"5MB"])
+def test_a_size_of_another_type_says_what_it_needs(value: object) -> None:
+    with pytest.raises(TypeError, match="size"):
+        parse_size(value)  # type: ignore[arg-type]
+
+
+def test_a_policy_with_a_bare_number_fails_when_built() -> None:
+    with pytest.raises(TypeError, match="'60s'"):
+        HostPolicy(daily_cap=5, min_interval=60)  # type: ignore[arg-type]
+
+
 def test_parse_duration_passes_timedeltas_through() -> None:
     assert parse_duration(timedelta(minutes=3)) == timedelta(minutes=3)
 

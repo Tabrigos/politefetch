@@ -30,6 +30,14 @@ All notable changes to politefetch. The format follows
   and `StuckSource.since` say when that was.
 - `StaleData.result` and `StuckSource.result`: the `FetchResult` that came
   back, for a caller that would rather use old data than none.
+- `NoPolicy`, raised for a host without a policy (a `ValueError` too).
+- `FetchFailed.note`: when the answer froze the host, the error says until
+  when and how to lift it.
+- `PostgresStore(clock=, max_clock_skew="1m")`: the store refuses to open
+  when the machine's clock is that far from the server's.
+- A CI job with the lowest versions the extras allow.
+- README: several endpoints of one host, read one per run; the
+  `gate.attempt` snippet runs, checked by a test.
 
 ### Changed
 
@@ -67,6 +75,16 @@ All notable changes to politefetch. The format follows
   it counted as a failure of the source.
 - HTML is told by the first tag past a BOM, white space, comments and an
   XML declaration, within the first kB: `<head>` and `<body>` count too.
+- The `requests` extra requires `urllib3>=2.2`, the first with the `read1`
+  the adapter uses.
+- The `postgres` extra requires `psycopg` without `[binary]`: add
+  `psycopg[binary]`, `psycopg[c]` or a system libpq to the application.
+- `parse_duration` and `parse_size` raise `TypeError` for a value that is
+  not text, a `timedelta` or an `int`, saying what to write.
+- `PostgresStore` keeps nothing in the session: schema, time zone and lock
+  timeout are set in every transaction, and statements are not prepared,
+  so a pooler in transaction mode works. A connection found lost when a
+  transaction starts is opened again.
 
 ### Fixed
 
@@ -84,6 +102,9 @@ All notable changes to politefetch. The format follows
   `StuckSource`, with a growing backoff.
 - An HTML error page starting with a comment, `<head>` or `<body>` passed
   as text.
+- `HostPolicy(min_interval=60)` failed with `AttributeError`.
+- Behind pgbouncer in transaction mode, `PostgresStore` could lose its
+  schema and its time zone between transactions.
 
 - Windows: the pytest plugin failed to import (`socket.socket` has no
   `sendmsg` there), which broke pytest in every Windows project that

@@ -13,7 +13,7 @@ Modules: `politefetch` · `politefetch.gate` · `politefetch.policy` · `politef
 
 politefetch: a polite, crash-safe gate between an ingest service and the external sources it polls.
 
-Re-exports: `BodyTooLarge` (politefetch.errors), `Clock` (politefetch.clock), `ContentError` (politefetch.errors), `FakeClock` (politefetch.clock), `FetchFailed` (politefetch.errors), `Gate` (politefetch.gate), `HostPolicy` (politefetch.policy), `OutcomeNotSaved` (politefetch.errors), `PoliteFetchError` (politefetch.errors), `RefusalReason` (politefetch.errors), `Refused` (politefetch.errors), `SourceNotReady` (politefetch.errors), `StaleData` (politefetch.errors), `StuckSource` (politefetch.errors), `SystemClock` (politefetch.clock), `UnexpectedContent` (politefetch.errors).
+Re-exports: `BodyTooLarge` (politefetch.errors), `Clock` (politefetch.clock), `ContentError` (politefetch.errors), `FakeClock` (politefetch.clock), `FetchFailed` (politefetch.errors), `Gate` (politefetch.gate), `HostPolicy` (politefetch.policy), `NoPolicy` (politefetch.errors), `OutcomeNotSaved` (politefetch.errors), `PoliteFetchError` (politefetch.errors), `RefusalReason` (politefetch.errors), `Refused` (politefetch.errors), `SourceNotReady` (politefetch.errors), `StaleData` (politefetch.errors), `StuckSource` (politefetch.errors), `SystemClock` (politefetch.clock), `UnexpectedContent` (politefetch.errors).
 
 ### `__version__`
 
@@ -121,9 +121,15 @@ A request was sent and answered, but the answer cannot be used.
 
 ### `FetchFailed`
 
-`FetchFailed(url: str, shape: str, status: int | None = None)` (subclass of `PoliteFetchError`)
+`FetchFailed(url: str, shape: str, status: int | None = None, note: str = '')` (subclass of `PoliteFetchError`)
 
 A request was sent but no usable HTTP answer came back.
+
+### `NoPolicy`
+
+`NoPolicy(host: str)` (subclass of `PoliteFetchError`, `ValueError`)
+
+The gate has no policy for `host` and no default one: no request was sent. A `ValueError` too, as it was before it had a class of its own.
 
 ### `OutcomeNotSaved`
 
@@ -606,7 +612,7 @@ Postgres store, behind the `postgres` extra (psycopg 3).
 
 ### `PostgresStore`
 
-`PostgresStore(conninfo: str, *, schema: str = 'politefetch', lock_timeout: float = 30.0)`
+`PostgresStore(conninfo: str, *, schema: str = 'politefetch', lock_timeout: float = 30.0, clock: Clock | None = None, max_clock_skew: timedelta | str | None = '1m')`
 
 A `Store` in a Postgres schema, shareable between processes.
 

@@ -6,6 +6,8 @@
     │                        past its deadline
     ├── OutcomeNotSaved      a request was sent: the store could not save how
     │                        it ended
+    ├── NoPolicy             a host without a policy, and no default: nothing
+    │                        was sent (also a ValueError)
     └── ContentError         a request was sent, but its response is unusable
         ├── SourceNotReady   truncated or empty body; transient
         ├── UnexpectedContent  HTML where data was expected, foreign redirect
@@ -31,6 +33,7 @@ __all__ = [
     "BodyTooLarge",
     "ContentError",
     "FetchFailed",
+    "NoPolicy",
     "OutcomeNotSaved",
     "PoliteFetchError",
     "RefusalReason",
@@ -108,18 +111,23 @@ class FetchFailed(PoliteFetchError):
     connection, TLS, DNS, another connection error, `deadline` for an answer
     still arriving when its time was up, or `http` for an error status.
     `status` is the HTTP status, when an answer had started. The gate has
-    already recorded it.
+    already recorded it. `note` says what the failure did to the host, such
+    as a freeze and how to lift it.
     """
 
     url: str
     shape: str
     status: int | None
+    note: str
 
-    def __init__(self, url: str, shape: str, status: int | None = None) -> None:
-        super().__init__(url, shape, status)
+    def __init__(
+        self, url: str, shape: str, status: int | None = None, note: str = ""
+    ) -> None:
+        super().__init__(url, shape, status, note)
         self.url = url
         self.shape = shape
         self.status = status
+        self.note = note
 
     def __str__(self) -> str:
         if self.status is None:
@@ -128,7 +136,25 @@ class FetchFailed(PoliteFetchError):
             what = f"HTTP {self.status}"
         else:
             what = f"{self.shape} after HTTP {self.status}"
-        return f"{self.url}: request failed ({what})"
+        note = f": {self.note}" if self.note else ""
+        return f"{self.url}: request failed ({what}){note}"
+
+
+class NoPolicy(PoliteFetchError, ValueError):
+    """The gate has no policy for `host` and no default one: no request was
+    sent. A `ValueError` too, as it was before it had a class of its own."""
+
+    host: str
+
+    def __init__(self, host: str) -> None:
+        super().__init__(host)
+        self.host = host
+
+    def __str__(self) -> str:
+        return (
+            f"no policy for host {self.host!r} and no default policy: add one to"
+            " the gate's policies, or give the gate a default"
+        )
 
 
 class OutcomeNotSaved(PoliteFetchError):

@@ -59,6 +59,12 @@ def parse_duration(value: timedelta | str) -> timedelta:
         if value < timedelta(0):
             raise ValueError(f"a duration cannot be negative, got {value}")
         return value
+    if not isinstance(value, str):
+        raise TypeError(
+            f"a duration is a text with a unit or a timedelta, got {value!r}"
+            f" ({type(value).__name__}): write e.g. '60s', '15m' or"
+            " timedelta(seconds=60); a bare number could mean seconds or minutes"
+        )
     text = value.strip()
     match = _DURATION.fullmatch(text)
     if not text or match is None or not any(match.groupdict().values()):
@@ -87,6 +93,11 @@ def parse_size(value: int | str) -> int:
         if value < 0:
             raise ValueError(f"a size cannot be negative, got {value}")
         return value
+    if not isinstance(value, str):
+        raise TypeError(
+            f"a size is an int of bytes or a text with a unit, got {value!r}"
+            f" ({type(value).__name__}): write e.g. 1500, '500kB' or '50MB'"
+        )
     match = _SIZE.fullmatch(value.strip())
     if match is None:
         raise ValueError(f"not a size: {value!r} (use e.g. '500kB', '50MB', '1GiB')")
