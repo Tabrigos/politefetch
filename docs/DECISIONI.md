@@ -1198,3 +1198,59 @@ alla vecchia e la vecchia prende la riga "Superata da".
   `check_not_ahead` e nuovo argomento `max_ahead` di `get`. Un chiamante che
   contava sui fallimenti per rallentare una fonte ferma ora vede il ritmo
   di `min_interval`.
+
+## D-049 — Integrazione e dipendenze (R4)
+
+- **Data e tappa**: 2026-10-26, R4
+- **Contesto**: la revisione di D-045 ha trovato attriti per chi adotta la
+  libreria: dipendenze più larghe del codice, un cron che legge due
+  endpoint dello stesso host e non legge mai il secondo, messaggi che non
+  dicono cosa è successo all'host, uno store Postgres che dipende dallo
+  stato della sessione.
+- **Decisione**:
+  - **dipendenze**: l'extra `requests` porta `urllib3>=2.2,<3`. Il 2.2 è il
+    primo con `HTTPResponse.read1`, che l'adattatore usa da R2 (provato: 2.0
+    e 2.1 non l'hanno); `NameResolutionError` c'è dal 2.0. L'extra
+    `postgres` dipende da `psycopg` senza `[binary]`, come psycopg chiede
+    alle librerie; il README dice come aggiungere la libpq, e i test usano
+    `psycopg[binary]` dal gruppo dev. Un job CI nuovo (`lowest`) installa le
+    versioni minime con `--resolution lowest-direct`, con Postgres. Il limite
+    `httpx<1` si rivede prima di ogni release: lo dice `AGENTS.md`;
+  - **più endpoint dello stesso host** (decisione 1, presa da Paolo):
+    restano un intervallo e un blocco per host. Il README ha un esempio
+    eseguito da un test: ogni giro del cron legge l'endpoint letto meno di
+    recente, preso dalle righe recenti di `gate.status`;
+  - **messaggi**: `FetchFailed` ha `note`, e la fetch la riempie quando la
+    risposta ha congelato l'host: fino a quando, e la chiamata
+    `gate.unfreeze(host, by=...)`. Un host senza politica solleva
+    `NoPolicy`, che resta anche un `ValueError` per chi lo catturava.
+    `parse_duration` e `parse_size` rifiutano con `TypeError`, e un messaggio
+    con un esempio, un tipo che non sia testo, `timedelta` o `int`: prima
+    `HostPolicy(min_interval=60)` cadeva su un `AttributeError`;
+  - **Postgres**: niente più stato di sessione. Ogni transazione imposta
+    con `SET LOCAL` schema, fuso orario e `lock_timeout`, e le istruzioni
+    non si preparano (`prepare_threshold=None`): con pgbouncer in modalità
+    transazione la connessione del server può essere azzerata fra due
+    transazioni. Ho scelto `SET LOCAL` al posto dei nomi qualificati che
+    TAPPE proponeva: stesso effetto, e nessuna delle venti istruzioni SQL da
+    riscrivere. Una connessione trovata persa all'inizio di una transazione
+    si riapre e la transazione parte su quella nuova: non era partito nulla,
+    quindi è sicuro. Una persa a metà solleva, e l'operazione dopo apre una
+    connessione nuova. All'apertura lo store confronta l'orologio della
+    macchina con quello del server e rifiuta oltre `max_clock_skew` (un
+    minuto): le macchine che condividono lo store scrivono le promesse con
+    il proprio orologio, e una in anticipo chiederebbe alla fonte troppo
+    presto. Rifiutare di aprire è la scelta più cauta; `None` toglie il
+    controllo;
+  - **riprodotti prima**: i test Postgres sono entrati da soli in una PR in
+    bozza e la CI li ha visti rossi (`UndefinedTable` dopo `DISCARD ALL`,
+    offset `+02:00` con un altro fuso, `AdminShutdown` dopo
+    `pg_terminate_backend`).
+- **Alternative scartate**:
+  - promesse o gruppi per URL: più richieste alla stessa fonte (decisione 1);
+  - un semplice avviso sull'orologio: in produzione non lo legge nessuno;
+  - ritentare una transazione interrotta a metà: se il commit era arrivato
+    al server, la si applicherebbe due volte.
+- **Conseguenze**: `NoPolicy` e `FetchFailed.note` sono nuovi; un'app che usa
+  l'extra `postgres` deve aggiungere una libpq; `PostgresStore` ha `clock` e
+  `max_clock_skew`. La pulizia del registro (`prune`) resta per la 0.2.
