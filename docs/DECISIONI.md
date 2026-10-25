@@ -1021,3 +1021,62 @@ alla vecchia e la vecchia prende la riga "Superata da".
 - **Conseguenze**: la prima versione su PyPI esce dopo R1–R4 e T11. Le tappe
   R2 e R3 cambiano l'API pubblica (`Transport`, `Fetcher`, le eccezioni di
   contenuto), e la T11 la descrive già cambiata.
+
+## D-046 — Esiti che non si perdono (R1)
+
+- **Data e tappa**: 2026-10-25, R1
+- **Contesto**: la revisione di D-045 ha trovato più strade per cui un
+  403/429 non congelava l'host o la fonte riceveva più richieste di quelle
+  promesse. Ognuna è entrata come test rosso prima della correzione.
+- **Decisione**:
+  - **chiusura tardiva**: `close_request` su una riga riconciliata come
+    abbandonata non è più una no-op. L'esito vero si scrive sulla riga, che
+    resta `RECONCILED`, e l'host cambia solo con `apply_late_close`: la
+    promessa più lontana, il congelamento più lungo, un 429 in più. I
+    fallimenti non crescono di nuovo, perché la riconciliazione li ha già
+    contati, e un esito buono non azzera nulla. Non si salvano validatori; i
+    byte veri si aggiungono solo se superano la prenotazione. Una seconda
+    chiusura tardiva non cambia nulla. Questo corregge D-017: lì una
+    chiusura tardiva non rovesciava la riconciliazione, qui può solo
+    renderla più prudente;
+  - **`Retry-After`**: la forma in secondi accetta solo cifre ASCII (RFC
+    9110). `"²".isdigit()` è vero, ma `int("²")` solleva: prima l'errore
+    usciva da `Attempt.response` e lo stato HTTP si perdeva. Il parsing non
+    solleva mai, provato con hypothesis su testo qualsiasi;
+  - **chiusura che fallisce**: si ritenta `CLOSE_TRIES` volte (3). Lo store
+    è il nostro database, non la fonte: ritentare non manda nulla. Se tutti i
+    tentativi falliscono, `OutcomeNotSaved` porta URL, riga, forma e stato,
+    con l'errore dello store come `__cause__` e quello del blocco come
+    `__context__`. La riga resta in volo e l'host bloccato fino alla
+    riconciliazione;
+  - **cancellazione asincrona**: la riga si chiude anche durante una
+    cancellazione, con l'esito registrato o come `cancelled`. La chiusura
+    gira in un thread tenuto vivo da un riferimento, e si aspetta con
+    `asyncio.shield`: una seconda cancellazione interrompe l'attesa, non la
+    chiusura. Se la chiusura fallisce, la cancellazione resta una
+    cancellazione e la riga va alla riconciliazione. Corregge D-022 e la
+    frase di `SPEC.md`;
+  - **3xx**: in `Attempt.response` sono buone risposte solo i 2xx e il 304.
+    Un redirect seguito sarebbe un'altra richiesta;
+  - **host**: `normalize_host` mette in minuscolo, toglie il punto finale e
+    passa i nomi internazionali in IDNA. Lo usano le chiavi delle politiche,
+    gli URL, `status` e `unfreeze`, e rifiuta nomi con etichette vuote.
+    `localhost` e `127.0.0.1` restano due host;
+  - **`Retry-After` lunghissimo**: oltre la pausa più lunga della politica
+    (`max(min_interval, backoff_max)`) diventa un congelamento con scadenza
+    pari al `Retry-After`, dopo qualunque risposta, un 200 compreso. Si
+    rispetta fino in fondo, ma `status` lo mostra come `frozen` e `unfreeze`
+    lo toglie. Una risposta buona può quindi congelare, ma solo a tempo.
+- **Alternative scartate**:
+  - ignorare un `Retry-After` su un 200, o accorciarlo: più richieste di
+    quelle che la fonte ha chiesto;
+  - far togliere a `unfreeze` la promessa, che contraddice D-023;
+  - chiudere sincrono sul loop durante la cancellazione: bloccherebbe il loop
+    per tutto il `busy_timeout`;
+  - lasciare la cancellazione alla riconciliazione: un esito già registrato,
+    anche un 403, si perdeva.
+- **Conseguenze**: un task cancellato ora libera l'host con la pausa di un
+  fallimento, come un timeout di lettura, invece di tenerlo in volo per
+  `reconcile_after`. Nuovo errore pubblico `OutcomeNotSaved`; nuova funzione
+  `politefetch.gate.normalize_host`. La scadenza totale della richiesta, che
+  evita le chiusure tardive, arriva in R2.

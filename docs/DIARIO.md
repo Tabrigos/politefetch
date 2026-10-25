@@ -10,13 +10,13 @@ Riscritto da capo a ogni fine sessione, mai accodato.
   byte, quattro adattatori, il kit di test, lo stato per host in JSON e la
   skill per gli agenti dentro il pacchetto (`python -m politefetch.skill`,
   schema comune con swpc-kit, D-040 e D-041).
-- **Prossimo passo**: la revisione scettica del 2026-10-25 (D-045) ha
-  aperto quattro tappe in `docs/TAPPE.md`: R1 esiti che non si perdono, R2
-  adattatori, R3 contenuto, R4 integrazione. Si fanno in fila, prima della
-  T11 (skill v2) e della pubblicazione (D-043). Si parte da R1. Prima di R2
-  il maintainer sceglie fra le tre proposte della sezione "Da decidere".
-  Prima dei test: `eval "$(scripts/postgres-for-tests.sh)"`, altrimenti i
-  test Postgres vengono saltati (su Windows lo script non c'è: lì i test
+- **Prossimo passo**: R1 è fatta (D-046) sul ramo `r1-esiti`; la prossima
+  è R2, gli adattatori: scadenza totale, limite di dimensione, decodifica nel
+  core, retry dei client. La decisione 1 di `docs/TAPPE.md` è presa
+  (intervallo per host, documentato), le decisioni 2 e 3 vanno prese prima
+  di R2. Poi R3, R4, la T11 (skill v2) e la pubblicazione (D-043). Prima
+  dei test: `eval "$(scripts/postgres-for-tests.sh)"`, altrimenti i test
+  Postgres vengono saltati (su Windows lo script non c'è: lì i test
   Postgres si saltano, girano nel job Linux).
 - **Dubbi aperti**:
   - `httpx2` non è supportato (D-032);
@@ -125,3 +125,10 @@ Una riga per sessione: data, tappa, cosa è entrato, cosa resta.
   lenta oltre `reconcile_after`, un `Retry-After` non ASCII, la chiusura
   fallita o cancellata, i retry del client, gzip troncato e tempi nel
   futuro. Quattro tappe R1–R4 prima della T11.
+- 2026-10-25 — R1 (D-046): una risposta arrivata dopo la riconciliazione
+  può solo stringere l'host; `Retry-After` solo ASCII, mai un'eccezione; la
+  chiusura si ritenta, poi `OutcomeNotSaved`; un task cancellato chiude la
+  sua riga; 3xx come fallimento; host normalizzati; `Retry-After` oltre
+  `backoff_max` come congelamento a tempo. Su Windows 901 test passati, 168
+  saltati (Postgres, in CI); difetti iniettati 20, sopravvissuti 1, poi
+  coperto da un test di confine.

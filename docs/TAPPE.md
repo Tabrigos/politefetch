@@ -222,7 +222,7 @@ alle quattro tappe:
 
 ## R1 — Esiti che non si perdono
 
-- [ ] Fatta
+- [x] Fatta (D-046)
 
 Gate, politiche e store: un 403/429/451 congela sempre, e una riga in volo
 non viene mai chiusa mentre la richiesta è viva.
@@ -376,10 +376,11 @@ blocco letto.
 
 ### Da decidere prima di R2–R4
 
-1. **Endpoint dello stesso host.** Proposta: un solo intervallo per host,
-   documentato, con un esempio di cron che legge più endpoint. È la scelta
-   più cauta per la fonte. L'alternativa è introdurre gruppi o promesse per
-   URL.
+1. **Endpoint dello stesso host.** *Deciso da Paolo il 2026-10-25, insieme
+   alla sessione swpc-kit:* un solo intervallo per host, documentato, con un
+   esempio di cron che legge più endpoint. È la scelta più cauta per la
+   fonte. Il trasporto educato di swpc-kit aspetterà l'intervallo dell'host
+   fra un prodotto e l'altro. Scartati i gruppi o le promesse per URL.
 2. **Client con retry.** Proposta: `ValueError` alla costruzione del
    `Fetcher` quando i retry del client sono riconoscibili, e un avvertimento
    nella documentazione per i trasporti scritti a mano. L'alternativa è un
