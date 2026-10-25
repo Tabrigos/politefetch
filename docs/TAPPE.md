@@ -15,6 +15,15 @@ T0, T1, T2 in fila (sono le fondamenta); poi T3, T4, T6 anche in parallelo;
 T5 dopo T2, T4 e T6 (i suoi test usano il simulatore); T7 dopo T3 e T4
 (implementa lo store completo); T8 e T9 per ultime.
 
+Dopo la revisione del 2026-10-25 (D-045), prima della prima pubblicazione:
+
+```
+R1 → R2 → R3 → R4 → T11 → TestPyPI → tag
+```
+
+In fila: R1 e R2 toccano entrambe la chiusura del tentativo, R3 e R4
+cambiano l'API che la T11 descrive.
+
 ## T0 — Impianto e ricognizione
 
 - [x] Fatta
@@ -194,3 +203,202 @@ swpc-kit):
   `AGENTS.md`: chi cambia l'API pubblica aggiorna la skill;
 - versione 0.1.0 (pacchetto, `metadata.version`, CHANGELOG). Niente
   pubblicazione su PyPI.
+
+## Revisione prima della pubblicazione
+
+Due revisioni scettiche del 2026-10-25 sul commit `109a674`: chi adotta la
+libreria in un progetto (dipendenze, integrazione, facilità d'uso) e chi
+cerca di romperla (affidabilità). Ogni difetto è stato provato con uno
+script contro il simulatore o gli store veri; quelli segnati *riprodotto*
+sono stati rieseguiti a parte e danno lo stesso risultato. Regole comuni
+alle quattro tappe:
+
+- ogni difetto diventa prima un test di regressione rosso sul codice di
+  oggi, poi la correzione (`AGENTS.md`, "Tests first");
+- ciò che cambia lo store entra nella suite di contratto dei tre store e
+  nelle proprietà con crash;
+- quando un punto lascia aperte più strade, vale la più cauta per la fonte,
+  scritta in `docs/DECISIONI.md`.
+
+## R1 — Esiti che non si perdono
+
+- [ ] Fatta
+
+Gate, politiche e store: un 403/429/451 congela sempre, e una riga in volo
+non viene mai chiusa mentre la richiesta è viva.
+
+1. **La chiusura tardiva rende l'host più prudente, mai meno.** Oggi
+   `close_request` su una riga già riconciliata non fa nulla
+   (`store/sqlite.py:446`, lo stesso negli altri due store): se la risposta
+   arriva dopo `reconcile_after`, il 403 si perde. Riprodotto: con una fonte
+   lenta, due richieste in parallelo e nessun congelamento dopo il 403. Ora
+   la chiusura tardiva registra l'esito sulla riga e applica all'host solo
+   ciò che stringe: congelamento, Retry-After, promessa più lontana,
+   fallimento in più. Un esito buono tardivo non azzera nulla. La scadenza
+   che impedisce alla richiesta di durare tanto arriva in R2: questa è la
+   seconda difesa.
+2. **Un header illeggibile non butta via lo stato HTTP.** `"²".isdigit()` è
+   vero e `int("²")` fallisce: `parse_retry_after` (`policy.py:106`) solleva
+   `ValueError` dentro `Attempt.response`/`failure`, la riga si chiude come
+   `exception:ValueError` senza stato, e il 403 non congela. Riprodotto con
+   i tre client, su 403 e su 429. Solo cifre ASCII. In più, un test di
+   proprietà con hypothesis: su testo qualsiasi il parsing degli header non
+   solleva mai, e un 403 congela qualunque header porti.
+3. **La chiusura che fallisce.** Uno store occupato oltre il `busy_timeout`
+   fa fallire `close_request`. Il chiamante riceve `OperationalError` al
+   posto del `FetchFailed`, la riga resta in volo, viene poi riconciliata
+   senza stato e il congelamento si perde (riprodotto). La chiusura si
+   ritenta sullo store, che è il nostro database e non la fonte, con un
+   limite. Se fallisce ancora, il chiamante riceve un errore di politefetch
+   che porta l'esito HTTP e la causa, invece di vederli mascherati. La riga
+   resta in volo e l'host bloccato fino alla riconciliazione, come scrive la
+   documentazione.
+4. **La cancellazione asincrona chiude la riga.** Su `CancelledError`,
+   `Attempt.__aexit__` (`gate.py:376`) esce senza chiudere. Un `wait_for`
+   scaduto, o `asyncio.timeout`, tiene così l'host `in_flight` per tutto
+   `reconcile_after` e perde un esito già registrato (riprodotto: oltre 60
+   minuti). La chiusura va in un thread protetto da `asyncio.shield`, poi la
+   cancellazione riprende. Senza esito la riga si chiude come `cancelled`:
+   un fallimento, perché la richiesta può essere arrivata.
+5. **Un 3xx diverso da 304 non è una risposta buona** in `Attempt.response`
+   (oggi lo è, se si usa il Gate senza adattatore). Gli adattatori lo
+   rifiutano già.
+6. **La chiave dell'host si normalizza**: minuscole, senza punto finale,
+   IDNA. Lo stesso vale per le chiavi delle politiche, altrimenti
+   `example.org.` ha un tetto suo accanto a `example.org`. `localhost` e
+   `127.0.0.1` restano host diversi, e la documentazione lo dice.
+7. **Un Retry-After lunghissimo si vede e si toglie.** Resta onorato anche
+   su un 200, perché significa meno richieste. Oggi però blocca fino a 365
+   giorni (`_LONGEST_RETRY_AFTER`) e `unfreeze` non lo toglie: `unfreeze` lo
+   toglie, con la sua traccia, e `status` lo mostra.
+
+## R2 — Adattatori: scadenza, dimensione, decodifica
+
+- [ ] Fatta
+
+I trasporti leggono il corpo in un colpo solo (`response.read()`,
+`response.content`, `stream.read()`), con un timeout che vale per ogni
+blocco letto.
+
+1. **Una scadenza totale per richiesta.** Una fonte che manda un byte ogni
+   pochi secondi tiene viva la richiesta per sempre (riprodotto oltre
+   `reconcile_after`). I trasporti leggono a blocchi con una scadenza totale
+   (`deadline`, default da scrivere in `docs/DECISIONI.md`). Il `Fetcher`
+   rifiuta, alla costruzione, una scadenza che non sia minore di
+   `gate.reconcile_after`. L'orologio della scadenza è iniettabile, come
+   quello del Gate.
+2. **Un limite alla dimensione del corpo.** Con `byte_budget="1kB"` la prima
+   risposta ha scaricato 5 MB: il budget si consuma solo dopo. La lettura si
+   ferma al limite, che per default è il byte budget rimasto quando c'è, e
+   l'esito è un fallimento con i byte davvero letti.
+3. **La decodifica in un posto solo, nel core.** Un gzip troncato con
+   framing corretto passa per buono con `expect="text"` o `"bytes"`
+   (riprodotto con httpx e requests: 145 byte su 545). I trasporti
+   chiedono e restituiscono il corpo grezzo; il core lo decodifica con la
+   libreria standard (`gzip`, `deflate`, `Accept-Encoding` di conseguenza)
+   e controlla la fine dello stream. Uno stream che non finisce è
+   `SourceNotReady`. Così i byte sul filo e quelli decodificati si contano
+   allo stesso modo nei tre client, e urllib smette di chiedere il corpo
+   non compresso.
+4. **`Content-Length` con cifre non ASCII** (`adapters/base.py:257`): lo
+   stesso difetto di R1.2.
+5. **Un client con retry propri** (decisione 2 sotto). Una `Session` di
+   requests con `HTTPAdapter(max_retries=…)`, o un `httpx.Client` con
+   `HTTPTransport(retries=…)`, ripete la richiesta sotto il Gate: con
+   `daily_cap=1` sono arrivate alla fonte 5 richieste, e un 503 diventa
+   `connection` (riprodotto). `SKILL.md` invita a passare il proprio client
+   senza avvertire.
+6. **Un `User-Agent` solo**: con httpx un `user-agent` minuscolo passato
+   dall'utente si aggiunge al nostro invece di sostituirlo. Gli header si
+   uniscono senza distinguere maiuscole e minuscole.
+
+## R3 — Contenuto: tempi, dati vecchi, HTML
+
+- [ ] Fatta
+
+1. **Un tempo del dato nel futuro non avvelena lo storico.** Oggi
+   `apply_data_time` (`store/base.py:458`) tiene il massimo, quindi un solo
+   tempo del 2099 rende `StuckSource` ogni lettura successiva, con un
+   backoff che cresce (riprodotto). Un tempo oltre `now` più una tolleranza
+   (default da decidere, per gli orologi un po' avanti) è
+   `UnexpectedContent` e non entra nello storico.
+2. **`StaleData` e `StuckSource`** (decisione 3 sotto). Oggi contano come
+   fallimenti di trasporto: fanno crescere il backoff, non salvano i
+   validatori e non portano con sé il contenuto. In più i 304 contano come
+   letture per `stuck_after`, che si esprime in letture e non in tempo.
+3. **Riconoscere l'HTML senza fermarsi al primo byte.** Oggi lo riconosce
+   solo se il corpo comincia con `<!doctype html` o `<html`
+   (`checks.py:46`), quindi una pagina d'errore che comincia con `<!--`,
+   `<head>` o `<body>` passa per testo. Si saltano BOM, spazi e commenti e si
+   guarda il primo kB.
+
+## R4 — Integrazione e dipendenze
+
+- [ ] Fatta
+
+1. **Dipendenze**:
+   - `requests` porta `urllib3>=2`, perché l'adattatore usa
+     `NameResolutionError`;
+   - un job CI con le versioni minime (`uv sync --resolution
+     lowest-direct`);
+   - l'extra `postgres` dipende da `psycopg` senza `[binary]`, come psycopg
+     raccomanda alle librerie, e il README spiega come aggiungerlo;
+   - il limite `httpx<1` si rivede a ogni versione.
+2. **Più endpoint dello stesso host** (decisione 1 sotto). Promessa e
+   `in_flight` valgono per host: un cron che legge `/kp.json` e poi
+   `/wind.json` dello stesso host non legge mai il secondo (riprodotto).
+3. **Messaggi d'errore**:
+   - un 403/429 dice che l'host ora è congelato, e come lo si sblocca;
+   - un host senza politica dà un errore di politefetch, non un
+     `ValueError` qualsiasi;
+   - `HostPolicy(min_interval=60)` fallisce alla costruzione con un
+     messaggio chiaro, non con `AttributeError` alla prima richiesta.
+4. **Postgres**:
+   - nomi qualificati dallo schema al posto di `SET search_path` di sessione,
+     che con pgbouncer in modalità transazione si perde;
+   - una connessione caduta si riapre;
+   - all'apertura, un controllo della distanza fra l'orologio della macchina
+     e quello del server.
+
+   Non verificati dal vivo: vanno prima riprodotti.
+5. **Documentazione**:
+   - con il plugin pytest disattivato (`-p no:politefetch`), il marker non è
+     registrato;
+   - su Windows un rifiuto su loopback si presenta come timeout di
+     connessione (D-044);
+   - il tetto riparte a mezzanotte UTC;
+   - il `User-Agent` con un contatto è responsabilità di chi usa la
+     libreria;
+   - lo snippet `gate.attempt` del README diventa eseguibile e verificato da
+     un test.
+6. **Può aspettare la 0.2**: la pulizia del registro delle richieste
+   (`prune`), che oggi cresce senza limiti.
+
+### Da decidere prima di R2–R4
+
+1. **Endpoint dello stesso host.** Proposta: un solo intervallo per host,
+   documentato, con un esempio di cron che legge più endpoint. È la scelta
+   più cauta per la fonte. L'alternativa è introdurre gruppi o promesse per
+   URL.
+2. **Client con retry.** Proposta: `ValueError` alla costruzione del
+   `Fetcher` quando i retry del client sono riconoscibili, e un avvertimento
+   nella documentazione per i trasporti scritti a mano. L'alternativa è un
+   solo avviso.
+3. **Dati vecchi o fermi.** Proposta:
+   - contano come risposte arrivate: vale `min_interval`, il backoff non
+     cresce, i validatori si salvano;
+   - l'eccezione porta il `FetchResult`, così chi vuole può usare il dato
+     vecchio;
+   - `stuck_after` accetta anche una durata (`"6h"`).
+
+   L'alternativa è lasciare il backoff: meno richieste, ma una fonte ferma
+   per un giorno si rilegge sempre più di rado anche quando riparte.
+
+## T11 — La skill v2
+
+- [ ] Fatta
+
+La skill secondo lo schema comune aggiornato, lo stesso della T11 di
+swpc-kit: toglie `sync` e l'entry point `agent_skills` prima che qualcuno li
+adotti. Dopo R1–R4, perché la skill descrive l'API che quelle tappe
+cambiano. Il modulo `skill` si cambia d'accordo con swpc-kit (D-040).

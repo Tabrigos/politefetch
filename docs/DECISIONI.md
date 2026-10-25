@@ -990,3 +990,34 @@ alla vecchia e la vecchia prende la riga "Superata da".
   `windows (3.13)`. Su Windows, con un timeout di connessione sotto i 2 s, un
   rifiuto su loopback si presenta come `connect_timeout`: il default di 10 s
   non lo vede.
+
+## D-045 — Prima di pubblicare, quattro tappe dalla revisione scettica
+
+- **Data e tappa**: 2026-10-25, fuori dalle tappe (sessione locale)
+- **Contesto**: prima della prima pubblicazione, due revisioni scettiche
+  con script contro il simulatore e gli store veri. Il tetto fra processi,
+  i crash fra apertura e chiusura e i congelamenti normali reggono. Restano
+  però strade per cui la fonte riceve più di quanto promesso, o un 403/429
+  non congela:
+  - una richiesta lenta riconciliata mentre è viva;
+  - un `Retry-After` con cifre non ASCII;
+  - una chiusura che fallisce o viene cancellata;
+  - i retry del client sotto il Gate.
+
+  Ci sono poi dati sbagliati accettati (gzip troncato, tempi nel futuro) e
+  attriti d'integrazione.
+- **Decisione**: quattro tappe in `docs/TAPPE.md` (R1 esiti, R2 adattatori,
+  R3 contenuto, R4 integrazione), in fila e prima della T11 e della
+  pubblicazione. Ogni difetto riprodotto entra come test di regressione
+  prima della correzione. Tre scelte di comportamento restano al
+  maintainer, con una proposta scritta nella sezione delle tappe:
+  - endpoint dello stesso host;
+  - client con retry;
+  - dati vecchi o fermi.
+- **Alternative scartate**: pubblicare la 0.1.0 così e correggere nella 0.2.
+  I difetti di R1 e R2 toccano la promessa principale della libreria, che
+  la fonte non riceva più di quanto promesso: una versione su PyPI con quei
+  buchi verrebbe adottata così com'è.
+- **Conseguenze**: la prima versione su PyPI esce dopo R1–R4 e T11. Le tappe
+  R2 e R3 cambiano l'API pubblica (`Transport`, `Fetcher`, le eccezioni di
+  contenuto), e la T11 la descrive già cambiata.
