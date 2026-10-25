@@ -404,7 +404,7 @@ blocco letto.
 
 ## T11 — La skill v2
 
-- [ ] Fatta
+- [x] Fatta (D-050)
 
 La skill secondo lo schema comune aggiornato, lo stesso della T11 di
 swpc-kit: toglie `sync` e l'entry point `agent_skills` prima che qualcuno li

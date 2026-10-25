@@ -40,8 +40,13 @@ jobs:
           python-version: ${{ matrix.python }}
       - name: uv sync --all-extras
         run: uv sync --all-extras --locked
+      - name: uv build --wheel
+        # tests/test_skill.py checks that the wheel ships the skill.
+        run: uv build --wheel
       - name: pytest
         run: uv run pytest
+        env:
+          SKILL_WHEEL: dist/*.whl
       - name: ruff check
         run: uv run ruff check .
       - name: ruff format --check
@@ -77,8 +82,13 @@ jobs:
           python-version: "3.12"
       - name: uv sync --all-extras --resolution lowest-direct
         run: uv sync --all-extras --resolution lowest-direct
+      - name: uv build --wheel
+        # tests/test_skill.py checks that the wheel ships the skill.
+        run: uv build --wheel
       - name: pytest
         run: uv run --no-sync pytest
+        env:
+          SKILL_WHEEL: dist/*.whl
 
   windows:
     # The pytest plugin loads in every project that installs politefetch, so
@@ -97,7 +107,12 @@ jobs:
           python-version: ${{ matrix.python }}
       - name: uv sync --all-extras
         run: uv sync --all-extras --locked
+      - name: uv build --wheel
+        # tests/test_skill.py checks that the wheel ships the skill.
+        run: uv build --wheel
       - name: pytest
         run: uv run pytest
+        env:
+          SKILL_WHEEL: dist/*.whl
       - name: mypy
         run: uv run mypy

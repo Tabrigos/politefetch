@@ -70,6 +70,16 @@ All notable changes to politefetch. The format follows
   admitted.
 - Headers of the caller replace ours whatever their case.
 - The source simulator joins a header sent twice into one value.
+- The agent skill follows the common library-skill schema: `python -m
+  politefetch.skill path | show | check | install --target DIR`, copies
+  compared by content hash (line endings normalised) and marked with
+  `.skill-libreria.json`; `install` writes only into
+  `.claude/skills/politefetch` or `.agents/skills/politefetch`. `sync`, the
+  `agent_skills` entry point and the git-ignored copies are gone: a project
+  that used `sync` removes the hook and its ignored copy, then installs the
+  skill with `install --target` and keeps it in git.
+- `references/api.md` comes from the common generator: one section per
+  module and field tables for the data classes.
 - Stale or stuck data is recorded as an answer: the host waits for
   `min_interval`, failures do not grow and the validators are kept. Before,
   it counted as a failure of the source.

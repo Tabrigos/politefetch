@@ -1,7 +1,3 @@
-"""Entry point of ``python -m politefetch.skill``."""
+from . import main
 
-import sys
-
-from politefetch.skill import main
-
-sys.exit(main())
+raise SystemExit(main())

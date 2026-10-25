@@ -29,10 +29,6 @@ Changelog = "https://github.com/Tabrigos/politefetch/blob/main/CHANGELOG.md"
 [project.entry-points.pytest11]
 politefetch = "politefetch.testing.plugin"
 
-# The bundled agent skill, found by `python -m <package>.skill sync` of any
-# package that follows the same scheme (see politefetch/skill/__init__.py).
-[project.entry-points.agent_skills]
-politefetch = "politefetch.skill"
 
 [project.optional-dependencies]
 # The core never imports them. httpx stays below 1.0 until 1.0 is released:

@@ -10,16 +10,20 @@ Riscritto da capo a ogni fine sessione, mai accodato.
   byte, quattro adattatori, il kit di test, lo stato per host in JSON e la
   skill per gli agenti dentro il pacchetto (`python -m politefetch.skill`,
   schema comune con swpc-kit, D-040 e D-041).
-- **Prossimo passo**: R4 è fatta (D-049) sul ramo `r4-integrazione`; le
-  quattro tappe di D-045 sono chiuse. La prossima è la T11 (skill v2),
-  d'accordo con la sessione swpc-kit, poi la pubblicazione (D-043):
-  TestPyPI e tag, solo su richiesta di Paolo. Prima dei test:
+- **Prossimo passo**: T11 è fatta (D-050) sul ramo `t11-skill-v2`; gli
+  sviluppi pianificati prima della pubblicazione sono chiusi. Resta la
+  pubblicazione (D-043): decidere con Paolo il numero di versione (0.1.0 non
+  è mai uscita), fare la prova d'attivazione della skill, poi TestPyPI e
+  tag, solo su sua richiesta. Prima dei test:
   `eval "$(scripts/postgres-for-tests.sh)"`, altrimenti i test Postgres
   vengono saltati (su Windows lo script non c'è: lì i test Postgres si
   saltano, girano nel job Linux).
 - **Dubbi aperti**:
   - `httpx2` non è supportato (D-032);
-  - una modifica al modulo `skill` va concordata con swpc-kit.
+  - una modifica al modulo `skill` va concordata con swpc-kit: ora è la
+    copia del modello comune, e si corregge nel modello;
+  - il controllo dei nomi del modello non conta le fixture (`NOT_API`
+    tiene `source_simulator`): da correggere nel modello.
 
 ## Log
 
@@ -152,3 +156,9 @@ Una riga per sessione: data, tappa, cosa è entrato, cosa resta.
   dell'orologio (rossi in CI prima della correzione). Su Windows 1056 test
   passati, 173 saltati (Postgres, in CI); difetti iniettati 8 (quelli
   eseguibili senza Postgres), sopravvissuti 1, poi coperto da un test.
+- 2026-10-26 — T11 (D-050): skill allo schema comune, come swpc-kit:
+  modulo, generatore e test copiati dal modello, `sync` ed entry point
+  tolti, test di dominio in `test_skill_examples.py`, wheel controllata in
+  CI, sezione "Not covered". Su Windows 1035 test passati, 174 saltati
+  (Postgres e wheel, in CI); difetti iniettati 8, uno per famiglia,
+  sopravvissuti 0.
