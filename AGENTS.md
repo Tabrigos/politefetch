@@ -80,3 +80,18 @@ uv run mypy
 - No secrets in the repo; the library does not need any.
 - If the maintainer corrects you twice on the same thing, stop and summarize
   what you have understood.
+
+## Releases
+
+- Published on PyPI only by `.github/workflows/release.yml`, never from a
+  local machine, and with no token in the repo (Trusted Publishing).
+- Prepare a release with a commit `Version X.Y.Z`: `__version__`,
+  `metadata.version` of `SKILL.md` and the `CHANGELOG.md` section. Then the
+  tag `vX.Y.Z`. Push them only when the maintainer asks.
+- The tag starts the workflow: it builds, checks the files and the wheel,
+  waits for the maintainer's approval in the `pypi` environment, publishes,
+  and creates the GitHub release with the notes of that `CHANGELOG.md`
+  section. A manual run of the workflow publishes to TestPyPI instead.
+- The sdist holds an explicit list of files (`only-include` in
+  `pyproject.toml`, checked again by the workflow): a new top-level folder
+  that must ship goes in both places.

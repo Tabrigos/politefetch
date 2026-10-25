@@ -55,6 +55,21 @@ path = "src/politefetch/__init__.py"
 [tool.hatch.build.targets.wheel]
 packages = ["src/politefetch"]
 
+# An explicit list, so that no local file ends up in the sdist.
+[tool.hatch.build.targets.sdist]
+only-include = [
+    "src",
+    "tests",
+    "tools",
+    "scripts",
+    "docs",
+    "AGENTS.md",
+    "CHANGELOG.md",
+    "LICENSE",
+    "README.md",
+    "SPEC.md",
+]
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["tools"]
