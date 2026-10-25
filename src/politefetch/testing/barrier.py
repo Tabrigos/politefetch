@@ -7,11 +7,14 @@ connections, unconnected UDP sends and DNS lookups. Loopback addresses
 simulator and a local Postgres keep working.
 
 The barrier patches the `socket` module process-wide, so only one can be
-active at a time. It does not reach child processes.
+active at a time. It does not reach child processes. On Windows it also
+patches the proactor of asyncio's default event loop, which connects and
+sends without going through `socket.socket`.
 """
 
 import ipaddress
 import socket
+import sys
 from collections.abc import Callable
 from types import TracebackType
 from typing import Any, Self
@@ -20,7 +23,12 @@ __all__ = ["NetworkBarrier", "NetworkBlockedError", "is_allowed_address"]
 
 _AF_UNIX: int | None = getattr(socket, "AF_UNIX", None)
 
-_SOCKET_METHODS = ("connect", "connect_ex", "sendto", "sendmsg")
+# Windows sockets have no sendmsg: guard the methods this platform has.
+_SOCKET_METHODS = tuple(
+    name
+    for name in ("connect", "connect_ex", "sendto", "sendmsg")
+    if hasattr(socket.socket, name)
+)
 _MODULE_FUNCTIONS = (
     "getaddrinfo",
     "gethostbyname",
@@ -32,6 +40,21 @@ _ORIGINALS: dict[str, Callable[..., Any]] = {
     **{name: getattr(socket.socket, name) for name in _SOCKET_METHODS},
     **{name: getattr(socket, name) for name in _MODULE_FUNCTIONS},
 }
+
+_PROACTOR: type[Any] | None = None
+if sys.platform == "win32":
+    # The proactor connects with ConnectEx/WSAConnect and sends with
+    # WSASendTo, straight from _overlapped.
+    from asyncio.windows_events import IocpProactor
+
+    _PROACTOR = IocpProactor
+
+_PROACTOR_METHODS = ("connect", "sendto")
+_PROACTOR_ORIGINALS: dict[str, Callable[..., Any]] = (
+    {name: getattr(_PROACTOR, name) for name in _PROACTOR_METHODS}
+    if _PROACTOR is not None
+    else {}
+)
 
 
 class NetworkBlockedError(RuntimeError):
@@ -144,6 +167,9 @@ class NetworkBarrier:
             setattr(socket, name, self._guard_lookup(name, _is_ip_literal))
         # A reverse lookup of a literal still asks a DNS server.
         socket.gethostbyaddr = self._guard_lookup("gethostbyaddr", _never)
+        if _PROACTOR is not None:
+            for name in _PROACTOR_METHODS:
+                setattr(_PROACTOR, name, self._guard_proactor(name))
         NetworkBarrier._active = self
 
     def disable(self) -> None:
@@ -153,6 +179,9 @@ class NetworkBarrier:
             setattr(socket.socket, name, _ORIGINALS[name])
         for name in _MODULE_FUNCTIONS:
             setattr(socket, name, _ORIGINALS[name])
+        if _PROACTOR is not None:
+            for name in _PROACTOR_METHODS:
+                setattr(_PROACTOR, name, _PROACTOR_ORIGINALS[name])
         NetworkBarrier._active = None
 
     def __enter__(self) -> Self:
@@ -183,6 +212,23 @@ class NetworkBarrier:
                     sock.close()
                 raise self._block(_describe(address))
             return original(sock, *args)
+
+        guarded.__name__ = name
+        guarded.__doc__ = original.__doc__
+        return guarded
+
+    def _guard_proactor(self, name: str) -> Callable[..., Any]:
+        original = _PROACTOR_ORIGINALS[name]
+
+        def guarded(
+            proactor: object, conn: socket.socket, *args: Any, **kwargs: Any
+        ) -> Any:
+            address = _proactor_destination(name, args, kwargs)
+            if address is not None and not is_allowed_address(conn.family, address):
+                if name == "connect":
+                    conn.close()
+                raise self._block(_describe(address))
+            return original(proactor, conn, *args, **kwargs)
 
         guarded.__name__ = name
         guarded.__doc__ = original.__doc__
@@ -221,4 +267,16 @@ def _destination(method: str, args: tuple[Any, ...]) -> object | None:
     if method == "sendmsg":
         # sendmsg(buffers[, ancdata[, flags[, address]]])
         return args[3] if len(args) >= 4 else None
+    return None
+
+
+def _proactor_destination(
+    method: str, args: tuple[Any, ...], kwargs: dict[str, Any]
+) -> object | None:
+    """Extract the destination address from an `IocpProactor` method's
+    arguments, after the socket: connect(address), sendto(buf, flags, addr)."""
+    if method == "connect":
+        return args[0] if args else kwargs.get("address")
+    if method == "sendto":
+        return args[2] if len(args) >= 3 else kwargs.get("addr")
     return None
