@@ -22,7 +22,8 @@ the process.**
   answer shortens it; a crash halfway leaves it cautious.
 - One attempt per call, no automatic retries.
 - A daily cap per host, consumed before the request, that does not reset when
-  the process restarts.
+  the process restarts. The day is the UTC day: the cap starts again at
+  midnight UTC, whatever the time zone of the machine.
 - 403, 429 and 451 freeze the host until a person unlocks it.
 - Freshness is measured on the data itself, not on `304` or `Last-Modified`.
 
@@ -115,6 +116,15 @@ body is read up to `max_bytes` and to what is left of the host's byte
 budget. Decoding (gzip, deflate) happens in politefetch, the same way for
 every client.
 
+The fetchers say who they are with `User-Agent: politefetch/<version>`.
+Many sources ask for a way to reach whoever polls them: that is yours to
+give, with `user_agent="my-ingest/1.0 (https://example.org/contact)"`.
+
+With the `postgres` extra, add a libpq too: `psycopg[binary]` for most
+projects (`pip install "politefetch[postgres]" "psycopg[binary]"`), or
+`psycopg[c]` or the system's libpq. politefetch leaves the choice to the
+application, as psycopg asks of libraries.
+
 ## Status per host
 
 `gate.status(host_or_url)` says what the gate would decide now and why, with
@@ -154,6 +164,44 @@ print(to_json(gate.statuses(), indent=2))
 
 A frozen host stays frozen until a person lifts the freeze, which leaves a
 trace: `gate.unfreeze("services.swpc.noaa.gov", by="alice", note="asked them")`.
+The error of the request that froze it says so, and how to lift it.
+
+## Several endpoints of one host
+
+The promise and the in-flight block are kept per host, not per URL: after
+`/products/noaa-planetary-k-index.json`, the gate refuses
+`/products/solar-wind/plasma-5-minute.json` of the same host until
+`min_interval` has passed. That is on purpose: the source sees one client,
+whatever it asks for, and the interval is the pause it gets between two
+requests. A job that cron starts every `min_interval` can read one endpoint
+per run, the one read least recently:
+
+```python
+from politefetch import Gate
+from politefetch.adapters.urllib import UrllibFetcher
+from politefetch.gate import host_of
+
+ENDPOINTS = [
+    "https://services.swpc.noaa.gov/products/noaa-planetary-k-index.json",
+    "https://services.swpc.noaa.gov/products/solar-wind/plasma-5-minute.json",
+]
+
+
+def next_endpoint(gate: Gate, urls: list[str]) -> str:
+    """The endpoint read least recently; one never read comes first."""
+    last = {}
+    for row in gate.status(host_of(urls[0]), recent=10 * len(urls)).recent:
+        last.setdefault(row.url, row.opened_at)  # newest first
+    return min(urls, key=lambda url: (url in last, last.get(url)))
+
+
+def run(gate: Gate) -> None:
+    UrllibFetcher(gate).get(next_endpoint(gate, ENDPOINTS))  # Refused if too soon
+```
+
+With two endpoints and `min_interval="10m"`, each is read every twenty
+minutes. To read them more often, ask the source what it allows and lower
+`min_interval`, not the other way round.
 
 ## The pieces
 
@@ -162,26 +210,38 @@ trace: `gate.unfreeze("services.swpc.noaa.gov", by="alice", note="asked them")`.
   adapter fits:
 
   ```python
+  import httpx
+
   from politefetch import Gate, HostPolicy
   from politefetch.store import SqliteStore
 
-  gate = Gate(
-      SqliteStore("ingest.db"),
-      {
-          "celestrak.org": HostPolicy(
-              daily_cap=40, min_interval="2h", byte_budget="50MB"
+  POLICIES = {
+      "celestrak.org": HostPolicy(daily_cap=40, min_interval="2h", byte_budget="50MB")
+  }
+
+
+  def fetch(gate: Gate, client: httpx.Client, url: str) -> bytes | None:
+      """One request with your own client; the gate decides and records."""
+      with gate.attempt(url) as attempt:  # raises Refused: nothing is sent
+          try:
+              response = client.get(url, headers=attempt.conditional_headers)
+          except httpx.TimeoutException:
+              attempt.failure("read_timeout")
+              return None
+          attempt.response(
+              response.status_code,
+              headers=response.headers,  # Retry-After, ETag, Last-Modified
+              wire_bytes=response.num_bytes_downloaded,  # as transferred
+              decoded_bytes=len(response.content),
           )
-      },
-  )
-  with gate.attempt(url) as attempt:  # raises Refused: nothing is sent
-      response = client.get(url, headers=attempt.conditional_headers)
-      attempt.response(
-          response.status_code,
-          headers=response.headers,  # Retry-After, ETag, Last-Modified
-          wire_bytes=wire_size,  # the body as transferred
-          decoded_bytes=len(response.content),
-      )
+          return response.content if response.status_code == 200 else None
+
+
+  # In the job: fetch(Gate(SqliteStore("ingest.db"), POLICIES), httpx.Client(), url)
   ```
+
+  The client must not retry on its own: each retry would be a request the
+  gate never admitted.
 
   `attempt.conditional_headers` carries `If-None-Match` and
   `If-Modified-Since` from the URL's last answer; `gate.may_fetch(url)` says
@@ -209,6 +269,13 @@ trace: `gate.unfreeze("services.swpc.noaa.gov", by="alice", note="asked them")`.
     body, HTML, stuck data) and counts the requests that actually reached it;
   - `politefetch.testing.processes.spawn` runs a function in a child process
     behind the barrier, and can kill it mid-request.
+
+  With the plugin switched off (`-p no:politefetch`) its marker
+  `politefetch_expects_blocked` is not registered, and `--strict-markers`
+  rejects the tests that use it. On Windows a refused connection on
+  loopback arrives as a connect timeout: Windows retries the SYN for about
+  two seconds before it reports the refusal, so give such tests a connect
+  timeout longer than that.
 
   ```python
   from politefetch.testing.simulator import NoAnswer

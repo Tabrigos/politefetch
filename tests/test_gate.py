@@ -13,7 +13,13 @@ from hypothesis import HealthCheck, given, settings
 from hypothesis import strategies as st
 
 from politefetch.clock import FakeClock
-from politefetch.errors import OutcomeNotSaved, RefusalReason, Refused
+from politefetch.errors import (
+    NoPolicy,
+    OutcomeNotSaved,
+    PoliteFetchError,
+    RefusalReason,
+    Refused,
+)
 from politefetch.gate import CANCELLED, CLOSE_TRIES, Gate
 from politefetch.policy import HostPolicy
 from politefetch.store import MemoryStore, Outcome, RequestRow, RowState
@@ -362,10 +368,13 @@ def test_option_starts_over_after_a_good_answer(
 
 def test_unknown_hosts_are_not_allowed(harness: Harness, clock: FakeClock) -> None:
     gate = make_gate(harness, clock)
-    with pytest.raises(ValueError, match="no policy"):
+    with pytest.raises(NoPolicy, match="no policy") as missing:
         gate.may_fetch("https://elsewhere.example/")
+    assert missing.value.host == "elsewhere.example"
+    assert isinstance(missing.value, PoliteFetchError)
+    assert isinstance(missing.value, ValueError)  # what it raised before
     with (
-        pytest.raises(ValueError, match="no policy"),
+        pytest.raises(NoPolicy, match="no policy"),
         gate.attempt("https://elsewhere.example/"),
     ):
         pass

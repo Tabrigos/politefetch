@@ -49,6 +49,37 @@ jobs:
       - name: mypy
         run: uv run mypy
 
+  lowest:
+    # The oldest versions the extras allow: a lower bound that no longer
+    # works shows here, not in a user's project.
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: politefetch
+          POSTGRES_PASSWORD: politefetch
+          POSTGRES_DB: politefetch_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U politefetch"
+          --health-interval 2s
+          --health-timeout 5s
+          --health-retries 15
+    env:
+      POLITEFETCH_TEST_POSTGRES: host=127.0.0.1 port=5432 dbname=politefetch_test user=politefetch password=politefetch
+      POLITEFETCH_REQUIRE_POSTGRES: "1"
+    steps:
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v10.3.0
+        with:
+          python-version: "3.12"
+      - name: uv sync --all-extras --resolution lowest-direct
+        run: uv sync --all-extras --resolution lowest-direct
+      - name: pytest
+        run: uv run --no-sync pytest
+
   windows:
     # The pytest plugin loads in every project that installs politefetch, so
     # it must work on Windows too. No Postgres here (Windows runners have no

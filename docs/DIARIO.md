@@ -10,9 +10,10 @@ Riscritto da capo a ogni fine sessione, mai accodato.
   byte, quattro adattatori, il kit di test, lo stato per host in JSON e la
   skill per gli agenti dentro il pacchetto (`python -m politefetch.skill`,
   schema comune con swpc-kit, D-040 e D-041).
-- **Prossimo passo**: R3 è fatta (D-048) sul ramo `r3-contenuto`; la
-  prossima è R4, integrazione e dipendenze. Poi la T11 (skill v2) e la
-  pubblicazione (D-043). Prima dei test:
+- **Prossimo passo**: R4 è fatta (D-049) sul ramo `r4-integrazione`; le
+  quattro tappe di D-045 sono chiuse. La prossima è la T11 (skill v2),
+  d'accordo con la sessione swpc-kit, poi la pubblicazione (D-043):
+  TestPyPI e tag, solo su richiesta di Paolo. Prima dei test:
   `eval "$(scripts/postgres-for-tests.sh)"`, altrimenti i test Postgres
   vengono saltati (su Windows lo script non c'è: lì i test Postgres si
   saltano, girano nel job Linux).
@@ -143,3 +144,11 @@ Una riga per sessione: data, tappa, cosa è entrato, cosa resta.
   una durata (campo `since` nei tre store); HTML riconosciuto dal primo
   tag dopo commenti e dichiarazione XML. Su Windows 1034 test passati, 168
   saltati (Postgres, in CI); difetti iniettati 15, sopravvissuti 0.
+- 2026-10-26 — R4 (D-049): `urllib3>=2.2` con requests, `psycopg` senza
+  `[binary]`, job CI con le versioni minime; esempio README per più
+  endpoint di un host, snippet `gate.attempt` eseguito; `NoPolicy`,
+  `FetchFailed.note` sul congelamento, `TypeError` chiaro per le durate;
+  Postgres senza stato di sessione, riconnessione, controllo
+  dell'orologio (rossi in CI prima della correzione). Su Windows 1056 test
+  passati, 173 saltati (Postgres, in CI); difetti iniettati 8 (quelli
+  eseguibili senza Postgres), sopravvissuti 1, poi coperto da un test.

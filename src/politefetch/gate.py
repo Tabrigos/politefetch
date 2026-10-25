@@ -40,7 +40,7 @@ from typing import Self
 from urllib.parse import urlsplit
 
 from politefetch.clock import Clock, SystemClock
-from politefetch.errors import OutcomeNotSaved, Refused
+from politefetch.errors import NoPolicy, OutcomeNotSaved, Refused
 from politefetch.policy import HostPolicy, parse_duration, parse_retry_after
 from politefetch.status import HostStatus
 from politefetch.store.base import (
@@ -146,9 +146,10 @@ class Gate:
             raise ValueError("reconcile_after must be positive")
 
     def policy_for(self, host: str) -> HostPolicy:
-        policy = self._policies.get(normalize_host(host), self._default)
+        name = normalize_host(host)
+        policy = self._policies.get(name, self._default)
         if policy is None:
-            raise ValueError(f"no policy for host {host!r} and no default policy")
+            raise NoPolicy(name)
         return policy
 
     def reconcile(self, now: datetime | None = None) -> list[RequestRow]:

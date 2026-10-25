@@ -137,7 +137,8 @@ your own client or session to share pools, proxies or certificates, but
 refuse one that retries on its own (`ValueError`): give them a requests
 adapter or an httpx transport built without retries. A hand-written
 transport must not retry either. The async fetcher has the same `get` as a
-coroutine.
+coroutine. `user_agent=` replaces `politefetch/<version>`: put a way to
+reach you in it when the source asks for one.
 
 ## Sizing a policy
 
@@ -152,7 +153,12 @@ byte_budget=None)`
   capped at `backoff_max`, never below `min_interval`. A `Retry-After` header
   is a minimum on top of that.
 - `daily_cap`: below the documented quota, with margin; it counts requests
-  sent, consumed before sending, per UTC day.
+  sent, consumed before sending, per UTC day: it starts again at midnight
+  UTC.
+- The interval and the in-flight block are per host, not per URL: several
+  endpoints of one host share them. A job that reads several reads one per
+  run, the one read least recently (the README shows how), instead of
+  asking for each and being refused.
 - 403 and 451 freeze the host; 429 too, unless `respect_retry_after_429=True`,
   which honours the first 429 that carries Retry-After and freezes on the
   second. `freeze_for` makes freezes expire; by default only a person lifts
@@ -160,7 +166,8 @@ byte_budget=None)`
 - `byte_budget`: bytes on the wire per UTC day; a request reserves the size
   of the URL's last full answer and is corrected when it closes.
 - `Gate(store, policies, *, clock=None, default=None, reconcile_after="1h")`:
-  a host without a policy raises `ValueError` unless `default` is given; rows
+  a host without a policy raises `NoPolicy` (a `ValueError` too) unless
+  `default` is given; rows
   left open longer than `reconcile_after` (a crashed process) are closed as
   failed before the next decision.
 
@@ -172,8 +179,9 @@ message text.
 | Error | Meaning | What to do |
 |---|---|---|
 | `Refused` | The gate said no; nothing was sent. `reason`, `retry_after` (`None` while frozen until a person unlocks) | Ask again at `retry_after` or later; never in a loop |
-| `FetchFailed` | Sent, no usable answer, or still arriving at the `deadline`; `shape`, `status`. The gate already recorded it and grew the pause | Do not retry now: the next call will be refused until the pause ends |
+| `FetchFailed` | Sent, no usable answer, or still arriving at the `deadline`; `shape`, `status`, and `note` when the answer froze the host (with how to lift it). The gate already recorded it and grew the pause | Do not retry now: the next call will be refused until the pause ends |
 | `OutcomeNotSaved` | Sent, but the store could not save how it ended; `shape`, `status`. The host stays blocked until the reconciliation | Check the store (a lock held too long); a person may need to apply a lost 403/429 by hand |
+| `NoPolicy` | The host has no policy and the gate no default; nothing was sent. `host` | Add a `HostPolicy` for it |
 | `SourceNotReady` | Truncated or empty body (the source is rewriting its file) | Wait for the next scheduled run |
 | `UnexpectedContent` | HTML where data was expected, a redirect, or a body that does not decode | Report it; do not follow the redirect yourself |
 | `BodyTooLarge` | The body is longer than `max_bytes` or the byte budget left; reading stopped there | Raise `max_bytes` or `byte_budget` if the size is expected |

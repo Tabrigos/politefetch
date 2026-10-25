@@ -334,7 +334,7 @@ blocco letto.
 
 ## R4 — Integrazione e dipendenze
 
-- [ ] Fatta
+- [x] Fatta (D-049)
 
 1. **Dipendenze**:
    - `requests` porta `urllib3>=2`, perché l'adattatore usa

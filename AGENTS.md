@@ -92,6 +92,8 @@ uv run mypy
   waits for the maintainer's approval in the `pypi` environment, publishes,
   and creates the GitHub release with the notes of that `CHANGELOG.md`
   section. A manual run of the workflow publishes to TestPyPI instead.
+- Before a release, review the upper bounds of the extras in
+  `pyproject.toml` (`httpx<1` above all) against the versions out.
 - The sdist holds an explicit list of files (`only-include` in
   `pyproject.toml`, checked again by the workflow): a new top-level folder
   that must ship goes in both places.

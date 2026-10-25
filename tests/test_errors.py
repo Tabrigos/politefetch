@@ -10,6 +10,7 @@ from politefetch.errors import (
     BodyTooLarge,
     ContentError,
     FetchFailed,
+    NoPolicy,
     OutcomeNotSaved,
     PoliteFetchError,
     RefusalReason,
@@ -36,6 +37,8 @@ def sample_errors() -> list[PoliteFetchError]:
         StaleData(data_time=T, max_age=timedelta(hours=3), age=timedelta(hours=5)),
         StuckSource(data_time=T, reads=4, url="https://e.org/a"),
         OutcomeNotSaved("https://e.org/a", 7, "http", 403),
+        NoPolicy("elsewhere.example"),
+        FetchFailed("https://e.org/a", "http", 403, "the host is now frozen"),
     ]
 
 
@@ -76,6 +79,7 @@ def test_public_names_cover_the_hierarchy() -> None:
         "StaleData",
         "StuckSource",
         "OutcomeNotSaved",
+        "NoPolicy",
     }
 
 
@@ -203,3 +207,12 @@ def test_outcome_not_saved_says_what_was_lost() -> None:
     assert "HTTP 403" in str(exc)
     assert "in flight" in str(exc)
     assert not isinstance(exc, (FetchFailed, ContentError, Refused))
+
+
+def test_a_note_on_a_failure_survives_pickling() -> None:
+    failed = FetchFailed("https://e.org/a", "http", 403, "the host is now frozen")
+    copy = pickle.loads(pickle.dumps(failed))
+    assert copy.note == "the host is now frozen"
+    assert failed.args == ("https://e.org/a", "http", 403, "the host is now frozen")
+    assert str(copy) == str(failed)
+    assert str(copy).endswith(": the host is now frozen")
