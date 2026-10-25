@@ -33,7 +33,9 @@ __all__ = [
     "UrlRecord",
     "Validators",
     "apply_close",
+    "apply_late_close",
     "check_admission",
+    "is_late",
     "next_utc_midnight",
 ]
 
@@ -250,10 +252,13 @@ class Store(Protocol):
         `update` receives the host state before this close. A good outcome
         may shorten the promise; a failure only lengthens it. The outcome's
         wire bytes replace the row's reservation, on the day the row opened.
-        `validators` are those of the answer; see `apply_validators`. Closing
-        a row that is no longer in flight (closed, or reconciled as failed)
-        changes nothing and returns the row as it is. Raises `KeyError` for an
-        unknown row.
+        `validators` are those of the answer; see `apply_validators`.
+
+        A row the reconciliation closed as abandoned takes its late outcome,
+        stays `RECONCILED`, and changes the host only as `apply_late_close`
+        says: never in a way that allows more requests. Closing a row closed
+        already, or late already, changes nothing and returns the row as it
+        is. Raises `KeyError` for an unknown row.
         """
         ...
 
@@ -382,21 +387,24 @@ def check_cautious(now: datetime, cautious: datetime) -> datetime:
 
 
 def apply_close(state: HostState, outcome: Outcome, update: HostUpdate) -> HostState:
-    """Return the host state after closing one of its requests."""
+    """Return the host state after closing one of its requests.
+
+    A good answer may freeze the host only until a time the source asked for
+    (a Retry-After longer than the policy's own pauses), never for ever.
+    """
     if outcome.ok:
-        if update.freeze is not None:
-            raise ValueError("a successful outcome cannot freeze the host")
+        if update.freeze is not None and update.freeze.until is None:
+            raise ValueError("a successful outcome cannot freeze the host for ever")
         return replace(
             state,
             not_before=update.not_before,
             not_before_reason=update.reason,
             failures=0,
             throttled=0,
+            freeze=_longer_freeze(state.freeze, update.freeze),
             in_flight=max(state.in_flight - 1, 0),
         )
-    not_before, reason = state.not_before, state.not_before_reason
-    if not_before is None or update.not_before > not_before:
-        not_before, reason = update.not_before, update.reason
+    not_before, reason = _later_promise(state, update)
     return replace(
         state,
         not_before=not_before,
@@ -406,6 +414,57 @@ def apply_close(state: HostState, outcome: Outcome, update: HostUpdate) -> HostS
         freeze=update.freeze if update.freeze is not None else state.freeze,
         in_flight=max(state.in_flight - 1, 0),
     )
+
+
+def is_late(row: RequestRow) -> bool:
+    """True for a row the reconciliation closed as abandoned, whose request
+    has not reported back yet: its outcome can still arrive, late."""
+    return (
+        row.state is RowState.RECONCILED
+        and row.outcome is not None
+        and row.outcome.failure == ABANDONED
+    )
+
+
+def apply_late_close(
+    state: HostState, outcome: Outcome, update: HostUpdate
+) -> HostState:
+    """Return the host state after the outcome of a row already reconciled.
+
+    The request lasted longer than the reconciliation threshold, and other
+    requests may have run meanwhile: only what makes the host more careful
+    is kept (a later promise, the longer freeze, one more 429). The
+    reconciliation has already counted the request as a failure, and a good
+    answer does not undo that.
+    """
+    if outcome.ok and update.freeze is not None and update.freeze.until is None:
+        raise ValueError("a successful outcome cannot freeze the host for ever")
+    not_before, reason = _later_promise(state, update)
+    return replace(
+        state,
+        not_before=not_before,
+        not_before_reason=reason,
+        throttled=state.throttled + (1 if outcome.status == 429 else 0),
+        freeze=_longer_freeze(state.freeze, update.freeze),
+    )
+
+
+def _later_promise(
+    state: HostState, update: HostUpdate
+) -> tuple[datetime | None, RefusalReason | None]:
+    if state.not_before is None or update.not_before > state.not_before:
+        return update.not_before, update.reason
+    return state.not_before, state.not_before_reason
+
+
+def _longer_freeze(old: Freeze | None, new: Freeze | None) -> Freeze | None:
+    if old is None or new is None:
+        return new or old
+    if old.until is None:
+        return old
+    if new.until is None or new.until > old.until:
+        return new
+    return old
 
 
 def apply_validators(
@@ -461,11 +520,14 @@ def apply_data_time(
     return replace(previous, reads=previous.reads + 1, updated_at=now)
 
 
-def byte_changes(row: RequestRow, outcome: Outcome) -> tuple[int, int]:
+def byte_changes(
+    row: RequestRow, outcome: Outcome, *, late: bool = False
+) -> tuple[int, int]:
     """How a close changes the day's (wire, decoded) bytes: the real wire
-    bytes replace the reservation; without them the reservation stays."""
+    bytes replace the reservation; without them the reservation stays. A
+    late close only adds: the reservation is never given back."""
     wire = 0 if outcome.wire_bytes is None else outcome.wire_bytes - row.reserved_bytes
-    return wire, outcome.decoded_bytes or 0
+    return (max(wire, 0) if late else wire), outcome.decoded_bytes or 0
 
 
 def check_unfreezer(by: str) -> str:

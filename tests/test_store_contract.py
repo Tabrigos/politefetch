@@ -356,7 +356,7 @@ def test_closing_an_unknown_row_raises(store: Store) -> None:
         store.row(12345)
 
 
-def test_success_cannot_freeze(store: Store) -> None:
+def test_success_cannot_freeze_for_ever(store: Store) -> None:
     row = open_at(store, T)
     before = snapshot(store, T)
     with pytest.raises(ValueError, match="freeze"):
@@ -367,6 +367,16 @@ def test_success_cannot_freeze(store: Store) -> None:
             update=update(timedelta(1), freeze=Freeze(since=T)),
         )
     assert snapshot(store, T) == before
+
+
+def test_success_may_freeze_until_a_retry_after(store: Store) -> None:
+    row = open_at(store, T)
+    freeze = Freeze(since=T, until=T + timedelta(days=30), status=200)
+    store.close_request(
+        row.id, now=T, outcome=OK, update=update(timedelta(minutes=1), freeze=freeze)
+    )
+    state = store.host_state(HOST, T)
+    assert (state.freeze, state.failures) == (freeze, 0)
 
 
 # --- freezing -------------------------------------------------------------------------
@@ -434,13 +444,122 @@ def test_reconcile_frees_the_host(store: Store) -> None:
     open_at(store, T + timedelta(hours=2))
 
 
-def test_a_late_close_does_not_overturn_the_reconciliation(store: Store) -> None:
-    row = open_at(store, T, cautious=timedelta(minutes=5))
+# --- a late close: the answer came after the reconciliation (R1) ----------------------
+
+LATE = T + timedelta(hours=3)
+
+
+def reconciled_row(
+    store: Store, cautious: timedelta = timedelta(minutes=5)
+) -> RequestRow:
+    row = open_at(store, T, cautious=cautious)
     store.reconcile(now=T + timedelta(hours=2), older_than=timedelta(hours=1))
-    before = snapshot(store, T + timedelta(hours=2))
-    late = close_at(store, row, T + timedelta(hours=3), OK, next_in=timedelta(0))
+    return row
+
+
+def test_a_late_good_answer_loosens_nothing(store: Store) -> None:
+    row = reconciled_row(store, cautious=timedelta(hours=10))
+    late = close_at(store, row, LATE, OK, next_in=timedelta(seconds=1))
+    state = store.host_state(HOST, LATE)
+    assert state.not_before == T + timedelta(hours=10)
+    assert state.failures == 1
     assert late.state is RowState.RECONCILED
-    assert snapshot(store, T + timedelta(hours=2)) == before
+    assert (late.closed_at, late.outcome) == (LATE, OK)
+    assert store.row(row.id) == late
+
+
+def test_a_late_failure_may_lengthen_the_promise(store: Store) -> None:
+    row = reconciled_row(store)
+    close_at(store, row, LATE, FAIL, next_in=timedelta(hours=1))
+    state = store.host_state(HOST, LATE)
+    assert state.not_before == LATE + timedelta(hours=1)
+    assert state.not_before_reason is RefusalReason.BACKOFF
+    assert state.failures == 1  # the reconciliation already counted this request
+
+
+def test_a_late_403_freezes_the_host(store: Store) -> None:
+    row = reconciled_row(store)
+    freeze = Freeze(since=LATE, status=403, note="HTTP 403")
+    store.close_request(
+        row.id,
+        now=LATE,
+        outcome=Outcome(ok=False, status=403, failure="http"),
+        update=update(timedelta(minutes=1), RefusalReason.BACKOFF, freeze, base=LATE),
+    )
+    assert store.host_state(HOST, LATE).freeze == freeze
+    with pytest.raises(Refused) as refused:
+        open_at(store, LATE + timedelta(days=30))
+    assert refused.value.reason is RefusalReason.FROZEN
+
+
+def test_a_late_429_counts_as_throttled(store: Store) -> None:
+    row = reconciled_row(store)
+    close_at(store, row, LATE, Outcome(ok=False, status=429, failure="http"))
+    assert store.host_state(HOST, LATE).throttled == 1
+
+
+def test_a_late_close_keeps_the_longer_freeze(store: Store) -> None:
+    row = reconciled_row(store)
+    for_ever = Freeze(since=T + timedelta(hours=2), status=403)
+    freeze_host(store, for_ever, now=T + timedelta(hours=2))
+    store.close_request(
+        row.id,
+        now=LATE,
+        outcome=Outcome(ok=False, status=429, failure="http"),
+        update=update(
+            timedelta(minutes=1),
+            RefusalReason.BACKOFF,
+            Freeze(since=LATE, until=LATE + timedelta(hours=1), status=429),
+            base=LATE,
+        ),
+    )
+    assert store.host_state(HOST, LATE).freeze == for_ever
+
+
+def test_a_second_late_close_changes_nothing(store: Store) -> None:
+    row = reconciled_row(store)
+    first = close_at(store, row, LATE, FAIL, next_in=timedelta(minutes=1))
+    before = snapshot(store, LATE)
+    second = store.close_request(
+        row.id,
+        now=LATE + timedelta(hours=1),
+        outcome=Outcome(ok=False, status=403, failure="http"),
+        update=update(
+            timedelta(days=1), RefusalReason.BACKOFF, Freeze(since=LATE), base=LATE
+        ),
+    )
+    assert second == first
+    assert snapshot(store, LATE) == before
+
+
+def test_a_late_close_adds_bytes_and_never_removes_them(store: Store) -> None:
+    answer(store, T - timedelta(hours=1), Outcome(ok=True, status=200, wire_bytes=1000))
+    small = reconciled_row(store)  # reserves 1000
+    close_at(store, small, LATE, Outcome(ok=False, failure="reset", wire_bytes=10))
+    assert store.host_state(HOST, T).wire_bytes_today == 2000
+    big = open_at(store, LATE + timedelta(hours=1), cap=100)  # reserves 1000 more
+    store.reconcile(now=LATE + timedelta(hours=3), older_than=timedelta(hours=1))
+    close_at(
+        store,
+        big,
+        LATE + timedelta(hours=4),
+        Outcome(ok=False, failure="reset", wire_bytes=5000, decoded_bytes=7000),
+    )
+    state = store.host_state(HOST, T)
+    assert state.wire_bytes_today == 2000 + 5000
+    assert state.decoded_bytes_today == 7000
+
+
+def test_a_late_close_teaches_no_validators(store: Store) -> None:
+    row = reconciled_row(store)
+    store.close_request(
+        row.id,
+        now=LATE,
+        outcome=Outcome(ok=True, status=200, wire_bytes=10),
+        update=update(timedelta(minutes=1), base=LATE),
+        validators=Validators(etag='"late"'),
+    )
+    assert store.url_record(URL) is None
 
 
 def test_reconcile_threshold_must_be_positive(store: Store) -> None:

@@ -13,7 +13,7 @@ Modules: `politefetch` · `politefetch.gate` · `politefetch.policy` · `politef
 
 politefetch: a polite, crash-safe gate between an ingest service and the external sources it polls.
 
-Re-exports: `Clock` (politefetch.clock), `ContentError` (politefetch.errors), `FakeClock` (politefetch.clock), `FetchFailed` (politefetch.errors), `Gate` (politefetch.gate), `HostPolicy` (politefetch.policy), `PoliteFetchError` (politefetch.errors), `RefusalReason` (politefetch.errors), `Refused` (politefetch.errors), `SourceNotReady` (politefetch.errors), `StaleData` (politefetch.errors), `StuckSource` (politefetch.errors), `SystemClock` (politefetch.clock), `UnexpectedContent` (politefetch.errors).
+Re-exports: `Clock` (politefetch.clock), `ContentError` (politefetch.errors), `FakeClock` (politefetch.clock), `FetchFailed` (politefetch.errors), `Gate` (politefetch.gate), `HostPolicy` (politefetch.policy), `OutcomeNotSaved` (politefetch.errors), `PoliteFetchError` (politefetch.errors), `RefusalReason` (politefetch.errors), `Refused` (politefetch.errors), `SourceNotReady` (politefetch.errors), `StaleData` (politefetch.errors), `StuckSource` (politefetch.errors), `SystemClock` (politefetch.clock), `UnexpectedContent` (politefetch.errors).
 
 ### `__version__`
 
@@ -55,6 +55,10 @@ The single point every request to a protected host goes through.
 `Verdict(refusal: Refused | None = None)`
 
 The answer of `Gate.may_fetch`: true if a request may start now.
+
+### `normalize_host(host: str) -> str`
+
+The one spelling of a host name that caps and promises are kept under: lowercase, without the final dot, international names in their ASCII (IDNA) form. `example.org.`, `EXAMPLE.org` and `example.org` are one host; `localhost` and `127.0.0.1` stay two, as nothing short of a DNS lookup could tell they are the same.
 
 ## `politefetch.policy`
 
@@ -115,6 +119,12 @@ A request was sent and answered, but the answer cannot be used.
 
 A request was sent but no usable HTTP answer came back.
 
+### `OutcomeNotSaved`
+
+`OutcomeNotSaved(url: str, row_id: int, shape: str | None, status: int | None = None)` (subclass of `PoliteFetchError`)
+
+A request was sent, but the store could not save how it ended, even after trying again.
+
 ### `PoliteFetchError`
 
 `PoliteFetchError` (subclass of `Exception`)
@@ -128,7 +138,7 @@ Why the gate refused a request.
 - `IN_FLIGHT` = `'in_flight'`: Another request to the host is still open: one at a time per host.
 - `MIN_INTERVAL` = `'min_interval'`: The minimum interval since the previous request has not elapsed.
 - `BACKOFF` = `'backoff'`: The pause after a failure has not elapsed.
-- `FROZEN` = `'frozen'`: The host answered 403, 429 or 451 and waits for a person or an expiry.
+- `FROZEN` = `'frozen'`: The host answered 403, 429 or 451, or asked with Retry-After for a pause longer than any of its policy's, and waits for a person or an expiry.
 - `DAILY_CAP` = `'daily_cap'`: Today's request cap for the host is used up.
 - `BYTE_BUDGET` = `'byte_budget'`: Today's byte budget for the host is used up.
 
@@ -481,9 +491,17 @@ What a source said about a resource's version: raw `ETag` and `Last-Modified` he
 
 Return the host state after closing one of its requests.
 
+### `apply_late_close(state: HostState, outcome: Outcome, update: HostUpdate) -> HostState`
+
+Return the host state after the outcome of a row already reconciled.
+
 ### `check_admission(state: HostState, now: datetime, daily_cap: int, byte_budget: int | None = None, reserve: int = 0) -> Refused | None`
 
 Return why a request to the host must be refused now, or `None`.
+
+### `is_late(row: RequestRow) -> bool`
+
+True for a row the reconciliation closed as abandoned, whose request has not reported back yet: its outcome can still arrive, late.
 
 ### `next_utc_midnight(now: datetime) -> datetime`
 

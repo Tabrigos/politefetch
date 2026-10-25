@@ -6,7 +6,38 @@ All notable changes to politefetch. The format follows
 
 ## Unreleased
 
+### Added
+
+- `OutcomeNotSaved`: raised when the store cannot save how a request ended,
+  even after `CLOSE_TRIES` tries. It carries the URL, the row, the failure
+  shape and the HTTP status that would otherwise be lost.
+- `politefetch.gate.normalize_host`.
+
+### Changed
+
+- An answer that arrives after the reconciliation closed its row (a source
+  dripping its body past `reconcile_after`) is no longer ignored. It is
+  written on the row, which stays `reconciled`, and it can only make the
+  host more careful: a freeze, a later promise, one more 429.
+- A cancelled async attempt now closes its row, with the outcome it had
+  recorded or as `cancelled`. Before, the row stayed in flight until the
+  reconciliation, and an outcome already recorded (a 403) was lost.
+- `Attempt.response` counts a 3xx other than 304 as a failure.
+- Host names are normalized (lowercase, no final dot, IDNA) in policies,
+  URLs, `status` and `unfreeze`. Before, `example.org.` had a cap of its own.
+- A Retry-After longer than any pause of the policy (`min_interval`,
+  `backoff_max`) becomes a freeze until that time, after any answer. It is
+  still honoured in full, but `status` shows it and `unfreeze` lifts it.
+  After a 403, 429 or 451 it also stays a promise, as before.
+
 ### Fixed
+
+- A Retry-After with non-ASCII digits (`"²"`) raised `ValueError`
+  inside the attempt: the HTTP status was lost and a 403 or 429 did not
+  freeze the host. Retry-After parsing never raises now.
+- A store error while closing a row (SQLite locked past its busy timeout)
+  replaced the caller's error and lost the outcome. Closing is now tried
+  again, then raises `OutcomeNotSaved`.
 
 - Windows: the pytest plugin failed to import (`socket.socket` has no
   `sendmsg` there), which broke pytest in every Windows project that

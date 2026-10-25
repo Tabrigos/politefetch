@@ -44,6 +44,7 @@ from politefetch.store.base import (
     Validators,
     apply_close,
     apply_data_time,
+    apply_late_close,
     apply_validators,
     byte_changes,
     check_admission,
@@ -51,6 +52,7 @@ from politefetch.store.base import (
     check_latest,
     check_threshold,
     check_unfreezer,
+    is_late,
 )
 
 __all__ = ["SqliteStore"]
@@ -443,19 +445,25 @@ class SqliteStore:
         now = as_utc(now, "now")
         with self._transaction(immediate=True) as conn:
             row = self._get_row(conn, row_id)
-            if row.state is not RowState.IN_FLIGHT:
+            late = is_late(row)
+            if row.state is not RowState.IN_FLIGHT and not late:
                 return row
             state = self._state(conn, row.host, now)
-            new_state = apply_close(state, outcome, update(state))
-            record = apply_validators(
-                self._url_record(conn, row.url), row.url, outcome, validators, now
-            )
+            if late:
+                new_state = apply_late_close(state, outcome, update(state))
+                record = None
+            else:
+                new_state = apply_close(state, outcome, update(state))
+                record = apply_validators(
+                    self._url_record(conn, row.url), row.url, outcome, validators, now
+                )
+            closed_state = row.state if late else RowState.CLOSED
             self._write_host(conn, new_state)
             conn.execute(
                 "UPDATE requests SET state = ?, closed_at = ?, ok = ?, status = ?,"
                 " failure = ?, wire_bytes = ?, decoded_bytes = ? WHERE id = ?",
                 (
-                    RowState.CLOSED.value,
+                    closed_state.value,
                     _to_text(now),
                     int(outcome.ok),
                     outcome.status,
@@ -465,7 +473,7 @@ class SqliteStore:
                     row_id,
                 ),
             )
-            wire, decoded = byte_changes(row, outcome)
+            wire, decoded = byte_changes(row, outcome, late=late)
             conn.execute(
                 "UPDATE daily_counts SET wire_bytes = wire_bytes + ?,"
                 " decoded_bytes = decoded_bytes + ? WHERE host = ? AND day = ?",
@@ -486,7 +494,7 @@ class SqliteStore:
                         _to_text(record.updated_at),
                     ),
                 )
-        return replace(row, state=RowState.CLOSED, closed_at=now, outcome=outcome)
+        return replace(row, state=closed_state, closed_at=now, outcome=outcome)
 
     @staticmethod
     def _url_record(conn: sqlite3.Connection, url: str) -> UrlRecord | None:

@@ -11,6 +11,7 @@ from politefetch.clock import Clock, FakeClock, SystemClock
 from politefetch.errors import (
     ContentError,
     FetchFailed,
+    OutcomeNotSaved,
     PoliteFetchError,
     RefusalReason,
     Refused,
@@ -31,6 +32,7 @@ __all__ = [
     "FetchFailed",
     "Gate",
     "HostPolicy",
+    "OutcomeNotSaved",
     "PoliteFetchError",
     "RefusalReason",
     "Refused",

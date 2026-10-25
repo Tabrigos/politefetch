@@ -28,6 +28,7 @@ from politefetch.store.base import (
     Validators,
     apply_close,
     apply_data_time,
+    apply_late_close,
     apply_validators,
     byte_changes,
     check_admission,
@@ -35,6 +36,7 @@ from politefetch.store.base import (
     check_latest,
     check_threshold,
     check_unfreezer,
+    is_late,
 )
 
 __all__ = ["MemoryData", "MemoryStore"]
@@ -164,20 +166,30 @@ class MemoryStore:
         now = as_utc(now, "now")
         with self.data.lock:
             row = self.data.rows[row_id]
-            if row.state is not RowState.IN_FLIGHT:
+            late = is_late(row)
+            if row.state is not RowState.IN_FLIGHT and not late:
                 return row
             state = self._state(row.host, now)
-            new_state = apply_close(state, outcome, update(state))
-            record = apply_validators(
-                self.data.urls.get(row.url), row.url, outcome, validators, now
-            )
+            if late:
+                new_state = apply_late_close(state, outcome, update(state))
+                record = None
+            else:
+                new_state = apply_close(state, outcome, update(state))
+                record = apply_validators(
+                    self.data.urls.get(row.url), row.url, outcome, validators, now
+                )
             # Nothing has been written yet: everything below cannot fail.
-            closed = replace(row, state=RowState.CLOSED, closed_at=now, outcome=outcome)
+            closed = replace(
+                row,
+                state=row.state if late else RowState.CLOSED,
+                closed_at=now,
+                outcome=outcome,
+            )
             self.data.rows[row_id] = closed
             self.data.hosts[row.host] = new_state
             if record is not None:
                 self.data.urls[row.url] = record
-            wire, decoded = byte_changes(row, outcome)
+            wire, decoded = byte_changes(row, outcome, late=late)
             key = (row.host, row.opened_at.date())
             self.data.wire[key] = self.data.wire.get(key, 0) + wire
             self.data.decoded[key] = self.data.decoded.get(key, 0) + decoded

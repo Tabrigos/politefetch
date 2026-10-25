@@ -97,22 +97,24 @@ def parse_retry_after(value: str | None, now: datetime) -> datetime | None:
     """Return the time a Retry-After header asks to wait until, or `None` if
     the header is missing or unreadable.
 
-    Both forms of RFC 9110 are read: delay in seconds and HTTP date. A date
-    in the past means "now".
+    Both forms of RFC 9110 are read: delay in seconds (ASCII digits only)
+    and HTTP date. A date in the past means "now". It never raises: a header
+    it cannot read must not cost the status it came with.
     """
     if value is None:
         return None
     text = value.strip()
-    if text.isdigit():
+    # str.isdigit() also accepts digits int() cannot read, such as "²".
+    if text.isascii() and text.isdigit():
         delay = min(timedelta(seconds=int(text[:12])), _LONGEST_RETRY_AFTER)
         return now + delay
     try:
         when = email.utils.parsedate_to_datetime(text)
+        if when.tzinfo is None:  # HTTP dates are GMT
+            when = when.replace(tzinfo=UTC)
+        when = when.astimezone(UTC)
     except (TypeError, ValueError, IndexError, OverflowError):
         return None
-    if when.tzinfo is None:  # HTTP dates are GMT
-        when = when.replace(tzinfo=UTC)
-    when = when.astimezone(UTC)
     return min(max(when, now), now + _LONGEST_RETRY_AFTER)
 
 
@@ -221,21 +223,44 @@ class HostPolicy:
         """The promise (and freeze, if any) after a request ended at `now`.
 
         `state` is the host state before this request is closed. `retry_at`
-        is the time the source's Retry-After asked for, if any: a minimum.
+        is the time the source's Retry-After asked for, if any: a minimum. A
+        Retry-After longer than any pause of the policy (`min_interval` and
+        `backoff_max`) is honoured as a freeze until that time, after any
+        answer: the status shows it, and `unfreeze` can lift it.
         """
+        longest = now + max(self.min_interval, self.backoff_max)
+        asked_long = retry_at is not None and retry_at > longest
+        promised = None if asked_long else retry_at
         if outcome.ok:
             until = now + self.min_interval
+            if promised is not None:
+                until = max(until, promised)
+            long_freeze = self._long_freeze(now, outcome.status, retry_at, asked_long)
+            return HostUpdate(until, RefusalReason.MIN_INTERVAL, long_freeze)
+        until = now + max(self.min_interval, self.backoff(state.failures + 1))
+        if self._freezes(state, outcome.status, retry_at):
+            # A 403/429/451 freeze is lifted by a person, and the pause the
+            # source asked for must outlive that (D-023): it stays a promise.
             if retry_at is not None:
                 until = max(until, retry_at)
-            return HostUpdate(until, RefusalReason.MIN_INTERVAL)
-        pause = max(self.min_interval, self.backoff(state.failures + 1))
-        until = now + pause
-        if retry_at is not None:
-            until = max(until, retry_at)
-        freeze = None
-        if self._freezes(state, outcome.status, retry_at):
-            freeze = self._freeze(now, outcome.status, retry_at)
-        return HostUpdate(until, RefusalReason.BACKOFF, freeze)
+            return HostUpdate(
+                until,
+                RefusalReason.BACKOFF,
+                self._freeze(now, outcome.status, retry_at),
+            )
+        if promised is not None:
+            until = max(until, promised)
+        long_freeze = self._long_freeze(now, outcome.status, retry_at, asked_long)
+        return HostUpdate(until, RefusalReason.BACKOFF, long_freeze)
+
+    @staticmethod
+    def _long_freeze(
+        now: datetime, status: int | None, retry_at: datetime | None, asked_long: bool
+    ) -> Freeze | None:
+        if not asked_long or retry_at is None:
+            return None
+        note = f"Retry-After until {retry_at.isoformat()}"
+        return Freeze(since=now, until=retry_at, status=status, note=note)
 
     def _freezes(
         self, state: HostState, status: int | None, retry_at: datetime | None

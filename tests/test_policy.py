@@ -82,9 +82,28 @@ def test_retry_after_in_the_past_means_now() -> None:
     assert parse_retry_after("Fri, 16 Oct 2026 10:00:00 GMT", T) == T
 
 
-@pytest.mark.parametrize("value", [None, "", "soon", "-5", "1.5", "Fri, 99 Oct 2026"])
+@pytest.mark.parametrize(
+    "value",
+    [
+        None,
+        "",
+        "soon",
+        "-5",
+        "1.5",
+        "Fri, 99 Oct 2026",
+        "\u00b2",  # superscript two: str.isdigit() says yes, int() says no
+        "\u0661\u0662\u0660",  # Arabic-Indic 120
+        "\uff11\uff12\uff10",  # fullwidth 120: RFC 9110 delays are ASCII digits
+    ],
+)
 def test_unreadable_retry_after_is_ignored(value: str | None) -> None:
     assert parse_retry_after(value, T) is None
+
+
+@given(st.text())
+def test_retry_after_never_raises(value: str) -> None:
+    when = parse_retry_after(value, T)
+    assert when is None or T <= when <= T + timedelta(days=365)
 
 
 # --- validation -------------------------------------------------------------------
@@ -192,6 +211,45 @@ def test_retry_after_is_a_minimum(outcome: Outcome) -> None:
     policy = HostPolicy(daily_cap=10, min_interval="10s", backoff_base="1m")
     far = T + timedelta(hours=5)
     assert policy.after(state(), T, outcome, far).not_before == far
+
+
+@pytest.mark.parametrize("outcome", [OK, TIMEOUT, http(503)])
+def test_a_retry_after_longer_than_any_pause_becomes_a_freeze(outcome: Outcome) -> None:
+    # Longer than backoff_max: honoured to the end, but as a freeze a person
+    # can see in the status and lift with unfreeze.
+    policy = HostPolicy(daily_cap=10, min_interval="10s", backoff_max="6h")
+    far = T + timedelta(days=30)
+    update = policy.after(state(), T, outcome, far)
+    assert update.freeze is not None
+    assert (update.freeze.since, update.freeze.until) == (T, far)
+    assert update.freeze.status == outcome.status
+    assert "Retry-After" in update.freeze.note
+    assert update.not_before == policy.after(state(), T, outcome, None).not_before
+
+
+def test_a_retry_after_as_long_as_the_longest_pause_stays_a_promise() -> None:
+    policy = HostPolicy(daily_cap=10, min_interval="10s", backoff_max="6h")
+    edge = T + timedelta(hours=6)
+    update = policy.after(state(), T, OK, edge)
+    assert (update.freeze, update.not_before) == (None, edge)
+    beyond = policy.after(state(), T, OK, edge + timedelta(seconds=1))
+    assert beyond.freeze is not None
+
+
+def test_the_longest_pause_is_the_minimum_interval_when_that_is_longer() -> None:
+    policy = HostPolicy(daily_cap=10, min_interval="1d", backoff_max="1h")
+    half_a_day = T + timedelta(hours=12)
+    update = policy.after(state(), T, http(503), half_a_day)
+    assert (update.freeze, update.not_before) == (None, T + timedelta(days=1))
+
+
+def test_a_long_retry_after_never_shortens_a_freeze_for_ever() -> None:
+    policy = HostPolicy(daily_cap=10, min_interval="10s")
+    far = T + timedelta(days=30)
+    update = policy.after(state(), T, http(403), far)
+    assert update.freeze is not None
+    assert update.freeze.until is None
+    assert update.not_before == far  # still there after an unfreeze (D-023)
 
 
 def test_retry_after_shorter_than_the_pause_changes_nothing() -> None:

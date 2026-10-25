@@ -14,16 +14,23 @@ an outcome counts as failed, and so does one ended by an exception, which is
 re-raised. The gate never retries (rule 2).
 
 `async with gate.attempt(url)` has the same meaning; the store is called in a
-worker thread. If the task is cancelled the row is not closed, because a
-cancelled task cannot safely wait: the reconciliation closes it later, as
-failed (SPEC.md, "Architecture").
+worker thread. A cancelled attempt is closed too, with the outcome already
+recorded or as `cancelled`: the close runs in its own thread, which a second
+cancellation does not stop. Only if the process ends first is the row left
+to the reconciliation (SPEC.md, "Architecture").
+
+An answer that arrives after the reconciliation has closed its row (a source
+that drips its body for longer than `reconcile_after`) still counts, but only
+to make the host more careful: a freeze, a longer pause, never a shorter one.
 
 If the store itself fails (for SQLite, a lock that stays taken past the busy
 timeout), its exception propagates from entering the attempt and nothing is
-sent.
+sent. Closing is tried again `CLOSE_TRIES` times; if every try fails, the
+attempt raises `OutcomeNotSaved`, which carries what the source answered.
 """
 
 import asyncio
+import contextlib
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from datetime import datetime, timedelta
@@ -33,12 +40,13 @@ from typing import Self
 from urllib.parse import urlsplit
 
 from politefetch.clock import Clock, SystemClock
-from politefetch.errors import Refused
+from politefetch.errors import OutcomeNotSaved, Refused
 from politefetch.policy import HostPolicy, parse_duration, parse_retry_after
 from politefetch.status import HostStatus
 from politefetch.store.base import (
     DataTimeRecord,
     HostState,
+    HostUpdate,
     Outcome,
     RequestRow,
     Store,
@@ -47,10 +55,16 @@ from politefetch.store.base import (
     check_admission,
 )
 
-__all__ = ["Attempt", "Gate", "Verdict"]
+__all__ = ["Attempt", "Gate", "Verdict", "normalize_host"]
 
 UNRECORDED = "unrecorded"
 """Failure shape of an attempt that ended without an outcome."""
+
+CANCELLED = "cancelled"
+"""Failure shape of an async attempt cancelled before it had an outcome."""
+
+CLOSE_TRIES = 3
+"""How many times closing a row is tried before `OutcomeNotSaved`."""
 
 Headers = Mapping[str, str] | Message
 """Response headers: any mapping (httpx, requests) or an `email.message.Message`
@@ -73,16 +87,35 @@ class Verdict:
         return self.refusal is None
 
 
+def normalize_host(host: str) -> str:
+    """The one spelling of a host name that caps and promises are kept under:
+    lowercase, without the final dot, international names in their ASCII
+    (IDNA) form. `example.org.`, `EXAMPLE.org` and `example.org` are one
+    host; `localhost` and `127.0.0.1` stay two, as nothing short of a DNS
+    lookup could tell they are the same."""
+    name = host.strip().lower()
+    if name.endswith("."):
+        name = name[:-1]
+    if not name.isascii():
+        try:
+            name = name.encode("idna").decode("ascii")
+        except UnicodeError:
+            raise ValueError(f"not a host name: {host!r}") from None
+    if not name or any(not label for label in name.split(".")):
+        raise ValueError(f"not a host name: {host!r}")
+    return name
+
+
 def host_of(url: str) -> str:
-    """The host a URL points at, lowercased, without port."""
+    """The host a URL points at, normalized (`normalize_host`), without port."""
     host = urlsplit(url).hostname
     if not host:
         raise ValueError(f"no host in URL {url!r}")
-    return host.lower()
+    return normalize_host(host)
 
 
 def _host(host_or_url: str) -> str:
-    return host_of(host_or_url) if "://" in host_or_url else host_or_url.lower()
+    return host_of(host_or_url) if "://" in host_or_url else normalize_host(host_or_url)
 
 
 class Gate:
@@ -104,14 +137,16 @@ class Gate:
         """
         self.store = store
         self.clock: Clock = clock if clock is not None else SystemClock()
-        self._policies = {host.lower(): policy for host, policy in policies.items()}
+        self._policies = {
+            normalize_host(host): policy for host, policy in policies.items()
+        }
         self._default = default
         self.reconcile_after = parse_duration(reconcile_after)
         if self.reconcile_after <= timedelta(0):
             raise ValueError("reconcile_after must be positive")
 
     def policy_for(self, host: str) -> HostPolicy:
-        policy = self._policies.get(host.lower(), self._default)
+        policy = self._policies.get(normalize_host(host), self._default)
         if policy is None:
             raise ValueError(f"no policy for host {host!r} and no default policy")
         return policy
@@ -220,7 +255,8 @@ class Attempt:
         self._validators: Validators | None = None
         self._conditional: dict[str, str] = {}
         self.result: RequestRow | None = None
-        """The closed row, once the block has ended (`None` if cancelled)."""
+        """The closed row, once the block has ended (`None` if it could not be
+        closed)."""
 
     @property
     def row(self) -> RequestRow:
@@ -250,15 +286,15 @@ class Attempt:
     ) -> None:
         """Record that the source answered with HTTP `status`.
 
-        2xx and 3xx (304 included) are good answers; anything else is a
-        failure. From `headers` the gate reads Retry-After, ETag and
-        Last-Modified; `retry_after`, if given, wins over the header.
-        `wire_bytes` is the body as transferred, `decoded_bytes` after
-        decoding.
+        2xx and 304 are good answers; anything else is a failure, a redirect
+        too (following it would be another request). From `headers` the gate
+        reads Retry-After, ETag and Last-Modified; `retry_after`, if given,
+        wins over the header. `wire_bytes` is the body as transferred,
+        `decoded_bytes` after decoding.
         """
         if not 100 <= status <= 599:
             raise ValueError(f"not an HTTP status: {status}")
-        ok = 200 <= status < 400
+        ok = 200 <= status < 300 or status == 304
         found = _lowercase(headers)
         if retry_after is None:
             retry_after = found.get("retry-after")
@@ -338,18 +374,40 @@ class Attempt:
     def _close(self, exc: BaseException | None) -> None:
         outcome = self._outcome
         if outcome is None:
-            shape = UNRECORDED if exc is None else f"exception:{type(exc).__name__}"
+            if exc is None:
+                shape = UNRECORDED
+            elif isinstance(exc, asyncio.CancelledError):
+                shape = CANCELLED
+            else:
+                shape = f"exception:{type(exc).__name__}"
             outcome = Outcome(ok=False, failure=shape)
             self._outcome = outcome
         retry_at, policy = self._retry_at, self._policy
-        now = self._gate.clock.now()
-        self.result = self._gate.store.close_request(
-            self.row.id,
-            now=now,
-            outcome=outcome,
-            update=lambda state: policy.after(state, now, outcome, retry_at),
-            validators=self._validators,
-        )
+        # The store is our own database, not the source: trying it again
+        # sends nothing. Each try waits as long as the store's own timeout.
+        failed: Exception | None = None
+        for _ in range(CLOSE_TRIES):
+            now = self._gate.clock.now()
+
+            def update(state: HostState, now: datetime = now) -> HostUpdate:
+                return policy.after(state, now, outcome, retry_at)
+
+            try:
+                self.result = self._gate.store.close_request(
+                    self.row.id,
+                    now=now,
+                    outcome=outcome,
+                    update=update,
+                    validators=self._validators,
+                )
+                return
+            except Exception as error:
+                failed = error
+        # Raised outside the handler, so an exception from the block stays the
+        # context and the store's is the cause.
+        raise OutcomeNotSaved(
+            self.url, self.row.id, outcome.failure, outcome.status
+        ) from failed
 
     def __enter__(self) -> Self:
         self._open()
@@ -373,6 +431,26 @@ class Attempt:
         exc: BaseException | None,
         tb: TracebackType | None,
     ) -> None:
-        if isinstance(exc, asyncio.CancelledError):
-            return  # cannot wait safely: the reconciliation closes the row
-        await asyncio.to_thread(self._close, exc)
+        closing = asyncio.ensure_future(asyncio.to_thread(self._close, exc))
+        if not isinstance(exc, asyncio.CancelledError):
+            await closing
+            return
+        # The task is being cancelled. The close runs in its own thread, so
+        # even a second cancellation, which stops this wait, does not stop
+        # it; if the process ends first, the reconciliation closes the row.
+        _CLOSING.add(closing)
+        closing.add_done_callback(_closed)
+        # The cancellation goes on either way: an outcome the store could not
+        # save leaves the row to the reconciliation, as a crash would.
+        with contextlib.suppress(Exception):
+            await asyncio.shield(closing)
+
+
+_CLOSING: set["asyncio.Future[None]"] = set()
+"""Closes started during a cancellation, kept alive until they end."""
+
+
+def _closed(closing: "asyncio.Future[None]") -> None:
+    _CLOSING.discard(closing)
+    if not closing.cancelled():
+        closing.exception()  # retrieved, even when nobody waits any more

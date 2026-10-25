@@ -10,14 +10,14 @@ Riscritto da capo a ogni fine sessione, mai accodato.
   byte, quattro adattatori, il kit di test, lo stato per host in JSON e la
   skill per gli agenti dentro il pacchetto (`python -m politefetch.skill`,
   schema comune con swpc-kit, D-040 e D-041).
-- **Prossimo passo**: nessuna tappa aperta in `docs/TAPPE.md`. Repository
-  pronto per diventare pubblico come `politefetch` (D-042). Il plugin e la
-  barriera funzionano su Windows, con un job in CI (D-044). Pubblicazione
-  decisa (D-043): prima la skill v2, poi la prova su TestPyPI e il tag.
-  Chi cambia l'API pubblica rigenera la skill (`AGENTS.md`). Prima dei test:
-  `eval "$(scripts/postgres-for-tests.sh)"`, altrimenti i test Postgres
-  vengono saltati (su Windows lo script non c'è: lì i test Postgres si
-  saltano, girano nel job Linux).
+- **Prossimo passo**: R1 è fatta (D-046) sul ramo `r1-esiti`; la prossima
+  è R2, gli adattatori: scadenza totale, limite di dimensione, decodifica nel
+  core, retry dei client. Le tre decisioni di `docs/TAPPE.md` sono prese:
+  intervallo per host, `ValueError` per i client con retry, dati vecchi o
+  fermi come risposte arrivate. Poi R3, R4, la T11 (skill v2) e la pubblicazione (D-043). Prima
+  dei test: `eval "$(scripts/postgres-for-tests.sh)"`, altrimenti i test
+  Postgres vengono saltati (su Windows lo script non c'è: lì i test
+  Postgres si saltano, girano nel job Linux).
 - **Dubbi aperti**:
   - `httpx2` non è supportato (D-032);
   - una modifica al modulo `skill` va concordata con swpc-kit.
@@ -120,3 +120,15 @@ Una riga per sessione: data, tappa, cosa è entrato, cosa resta.
   `Child.join` non resta appeso su un figlio ucciso subito; test e generatore
   della skill adattati; job `windows` in CI. Su Windows 817 test passati, 136
   saltati (Postgres); mutazioni sui pezzi nuovi prese tutte.
+- 2026-10-25 — revisione scettica prima di pubblicare (D-045): reggono il
+  tetto fra processi, i crash e i congelamenti; non reggono la richiesta
+  lenta oltre `reconcile_after`, un `Retry-After` non ASCII, la chiusura
+  fallita o cancellata, i retry del client, gzip troncato e tempi nel
+  futuro. Quattro tappe R1–R4 prima della T11.
+- 2026-10-25 — R1 (D-046): una risposta arrivata dopo la riconciliazione
+  può solo stringere l'host; `Retry-After` solo ASCII, mai un'eccezione; la
+  chiusura si ritenta, poi `OutcomeNotSaved`; un task cancellato chiude la
+  sua riga; 3xx come fallimento; host normalizzati; `Retry-After` oltre
+  `backoff_max` come congelamento a tempo. Su Windows 901 test passati, 168
+  saltati (Postgres, in CI); difetti iniettati 20, sopravvissuti 1, poi
+  coperto da un test di confine.

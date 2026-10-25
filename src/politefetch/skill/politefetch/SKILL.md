@@ -162,6 +162,7 @@ message text.
 |---|---|---|
 | `Refused` | The gate said no; nothing was sent. `reason`, `retry_after` (`None` while frozen until a person unlocks) | Ask again at `retry_after` or later; never in a loop |
 | `FetchFailed` | Sent, no usable answer; `shape`, `status` for `http`. The gate already recorded it and grew the pause | Do not retry now: the next call will be refused until the pause ends |
+| `OutcomeNotSaved` | Sent, but the store could not save how it ended; `shape`, `status`. The host stays blocked until the reconciliation | Check the store (a lock held too long); a person may need to apply a lost 403/429 by hand |
 | `SourceNotReady` | Truncated or empty body (the source is rewriting its file) | Wait for the next scheduled run |
 | `UnexpectedContent` | HTML where data was expected, or a redirect to another host | Report it; do not follow the redirect yourself |
 | `StaleData` | Data older than `max_age`; `data_time`, `max_age`, `age` | Use the previous data with a warning, or wait |
@@ -206,8 +207,8 @@ Record exactly one outcome per attempt: `attempt.response(status, ...)` for
 any HTTP answer (the policy decides what a status means), or
 `attempt.failure(shape, ...)` when none came. An attempt left without an
 outcome, or ended by an exception, counts as failed. `async with
-gate.attempt(url)` works the same; a cancelled task leaves its row to the
-reconciliation. `gate.may_fetch(url)` asks without sending; it is advisory,
+gate.attempt(url)` works the same; a cancelled task closes its row too, as
+`cancelled` or with the outcome it recorded. `gate.may_fetch(url)` asks without sending; it is advisory,
 `attempt` decides again atomically.
 
 For bodies you fetch yourself, the checks are pure functions in

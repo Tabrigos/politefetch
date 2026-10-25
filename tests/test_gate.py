@@ -1,17 +1,22 @@
 """The gate: scenarios with a fake clock, on every store."""
 
 import asyncio
+import sqlite3
+import threading
 from collections.abc import Iterator
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from typing import Any
 
 import pytest
+from hypothesis import HealthCheck, given, settings
+from hypothesis import strategies as st
 
 from politefetch.clock import FakeClock
-from politefetch.errors import RefusalReason, Refused
-from politefetch.gate import Gate
+from politefetch.errors import OutcomeNotSaved, RefusalReason, Refused
+from politefetch.gate import CANCELLED, CLOSE_TRIES, Gate
 from politefetch.policy import HostPolicy
-from politefetch.store import Outcome, RowState
+from politefetch.store import MemoryStore, Outcome, RequestRow, RowState
 
 from .stores import KINDS, Harness
 
@@ -227,6 +232,53 @@ def test_not_modified_is_a_good_answer(harness: Harness, clock: FakeClock) -> No
     assert gate.store.rows()[0].outcome == Outcome(ok=True, status=304)
 
 
+@pytest.mark.parametrize("status", [300, 301, 302, 303, 307, 308])
+def test_a_redirect_is_not_a_good_answer(
+    harness: Harness, clock: FakeClock, status: int
+) -> None:
+    # Following it would be another request: the caller asks for the new URL.
+    gate = make_gate(harness, clock)
+    respond(gate, status)
+    assert gate.store.rows()[0].outcome == Outcome(
+        ok=False, status=status, failure="http"
+    )
+    assert gate.store.host_state(HOST, clock.now()).failures == 1
+
+
+def test_a_403_that_arrives_after_the_reconciliation_still_freezes(
+    harness: Harness, clock: FakeClock
+) -> None:
+    # A source dripping its answer keeps the request alive past
+    # reconcile_after; the reconciliation frees the host meanwhile.
+    gate = make_gate(harness, clock)
+    with gate.attempt(URL) as slow:
+        clock.advance(timedelta(hours=3))
+        gate.reconcile()
+        with gate.attempt(URL) as other:  # the host looked free
+            other.response(200)
+        slow.response(403)
+    assert slow.result is not None
+    assert slow.result.state is RowState.RECONCILED
+    assert slow.result.outcome == Outcome(ok=False, status=403, failure="http")
+    with pytest.raises(Refused) as refused:
+        respond(gate, 200)
+    assert refused.value.reason is RefusalReason.FROZEN
+
+
+def test_a_year_long_retry_after_shows_and_can_be_lifted(
+    harness: Harness, clock: FakeClock
+) -> None:
+    gate = make_gate(harness, clock)
+    respond(gate, 200, retry_after=str(400 * 24 * 3600))
+    status = gate.status(HOST)
+    assert status.reason is RefusalReason.FROZEN
+    assert status.frozen is not None
+    assert status.frozen.until == T + timedelta(days=365)
+    assert gate.unfreeze(HOST, by="ops") is not None
+    clock.advance(timedelta(seconds=10))  # the minimum interval still applies
+    assert gate.may_fetch(URL)
+
+
 def test_retry_after_is_a_minimum(harness: Harness, clock: FakeClock) -> None:
     gate = make_gate(harness, clock, backoff_base="1m")
     respond(gate, 503, retry_after="3600")
@@ -234,7 +286,7 @@ def test_retry_after_is_a_minimum(harness: Harness, clock: FakeClock) -> None:
 
 
 def test_retry_after_as_a_date(harness: Harness, clock: FakeClock) -> None:
-    gate = make_gate(harness, clock, backoff_base="1m")
+    gate = make_gate(harness, clock, backoff_base="1m", backoff_max="6h")
     respond(gate, 503, retry_after="Fri, 16 Oct 2026 15:00:00 GMT")
     assert promise(gate, clock) == datetime(2026, 10, 16, 15, tzinfo=UTC)
 
@@ -356,6 +408,64 @@ def test_policy_keys_are_normalised(harness: Harness, clock: FakeClock) -> None:
     assert gate.may_fetch(URL)
 
 
+@pytest.mark.parametrize(
+    "spelling",
+    ["https://example.org./a", "https://EXAMPLE.org/a", "https://example.org:8443/a"],
+)
+def test_spellings_of_a_host_share_its_cap(
+    harness: Harness, clock: FakeClock, spelling: str
+) -> None:
+    gate = Gate(
+        harness.store,
+        {"Example.ORG.": HostPolicy(daily_cap=1, min_interval="1s")},
+        clock=clock,
+    )
+    with gate.attempt(spelling) as attempt:
+        attempt.response(200)
+    assert attempt.row.host == HOST
+    clock.advance(timedelta(hours=1))
+    refusal = gate.may_fetch(URL).refusal
+    assert refusal is not None
+    assert refusal.reason is RefusalReason.DAILY_CAP
+    assert gate.status("example.org.").requests_today == 1
+
+
+def test_spellings_share_the_cap_of_the_default_policy(
+    harness: Harness, clock: FakeClock
+) -> None:
+    gate = Gate(
+        harness.store,
+        {},
+        clock=clock,
+        default=HostPolicy(daily_cap=1, min_interval="1s"),
+    )
+    respond_to = "https://bücher.example/a"
+    with gate.attempt(respond_to) as attempt:
+        attempt.response(200)
+    assert attempt.row.host == "xn--bcher-kva.example"
+    clock.advance(timedelta(hours=1))
+    assert not gate.may_fetch("https://XN--BCHER-KVA.example./b")
+
+
+def test_a_host_that_is_not_a_name_is_rejected(
+    harness: Harness, clock: FakeClock
+) -> None:
+    gate = Gate(
+        harness.store,
+        {},
+        clock=clock,
+        default=HostPolicy(daily_cap=1, min_interval="1s"),
+    )
+    for url in (
+        "https://a..b/",
+        "https://.example/",
+        "https://\u00e9" + "x" * 80 + "/",
+    ):
+        with pytest.raises(ValueError, match="not a host name"):
+            gate.may_fetch(url)
+    assert gate.store.rows() == []
+
+
 def test_reconcile_threshold_must_be_positive(
     harness: Harness, clock: FakeClock
 ) -> None:
@@ -394,7 +504,7 @@ def test_async_exception_is_recorded(harness: Harness, clock: FakeClock) -> None
     )
 
 
-def test_async_cancellation_leaves_the_row_to_reconciliation(
+def test_async_cancellation_closes_the_row_as_cancelled(
     harness: Harness, clock: FakeClock
 ) -> None:
     gate = make_gate(harness, clock)
@@ -414,10 +524,200 @@ def test_async_cancellation_leaves_the_row_to_reconciliation(
 
     asyncio.run(main())
     row = gate.store.rows()[0]
-    assert row.state is RowState.IN_FLIGHT
-    clock.advance(timedelta(hours=2))
-    gate.reconcile()
-    assert gate.store.row(row.id).state is RowState.RECONCILED
+    assert row.state is RowState.CLOSED
+    assert row.outcome == Outcome(ok=False, failure=CANCELLED)
+    state = gate.store.host_state(HOST, clock.now())
+    assert (state.in_flight, state.failures) == (0, 1)
+    assert promise(gate, clock) == T + timedelta(minutes=1)  # the backoff
+
+
+def test_a_cancelled_attempt_keeps_the_outcome_it_recorded(
+    harness: Harness, clock: FakeClock
+) -> None:
+    gate = make_gate(harness, clock)
+    recorded = asyncio.Event()
+
+    async def worker() -> None:
+        async with gate.attempt(URL) as attempt:
+            attempt.response(403)
+            recorded.set()
+            await asyncio.sleep(3600)  # still reading the body
+
+    async def main() -> None:
+        task = asyncio.create_task(worker())
+        await recorded.wait()
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+    asyncio.run(main())
+    assert gate.store.rows()[0].outcome == Outcome(ok=False, status=403, failure="http")
+    assert gate.store.host_state(HOST, clock.now()).freeze is not None
+
+
+def test_asyncio_timeout_closes_the_row(harness: Harness, clock: FakeClock) -> None:
+    gate = make_gate(harness, clock)
+
+    async def main() -> None:
+        async with asyncio.timeout(0.05), gate.attempt(URL):
+            await asyncio.sleep(3600)
+
+    with pytest.raises(TimeoutError):
+        asyncio.run(main())
+    assert gate.store.rows()[0].outcome == Outcome(ok=False, failure=CANCELLED)
+
+
+class SlowClose(MemoryStore):
+    """Holds every close until `release` is set."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.closing = threading.Event()
+        self.release = threading.Event()
+
+    def close_request(self, row_id: int, **kwargs: Any) -> RequestRow:
+        self.closing.set()
+        self.release.wait(timeout=10)
+        return super().close_request(row_id, **kwargs)
+
+
+def test_a_second_cancellation_does_not_stop_the_close(clock: FakeClock) -> None:
+    store = SlowClose()
+    gate = Gate(store, {HOST: HostPolicy(daily_cap=10, min_interval="1m")}, clock=clock)
+    entered = asyncio.Event()
+
+    async def worker() -> None:
+        async with gate.attempt(URL):
+            entered.set()
+            await asyncio.sleep(3600)
+
+    async def main() -> None:
+        task = asyncio.create_task(worker())
+        await entered.wait()
+        task.cancel()
+        await asyncio.to_thread(store.closing.wait, 10)
+        task.cancel()  # while the first cancellation waits for the close
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        store.release.set()
+
+    asyncio.run(main())  # waits for the worker threads before it returns
+    assert store.rows()[0].outcome == Outcome(ok=False, failure=CANCELLED)
+
+
+# --- a store that cannot save the outcome ---------------------------------------------
+
+
+class FailingClose(MemoryStore):
+    """Fails the first `failures` closes, as SQLite does when its lock stays
+    taken past the busy timeout."""
+
+    def __init__(self, failures: int) -> None:
+        super().__init__()
+        self.failures = failures
+        self.tries = 0
+
+    def close_request(self, row_id: int, **kwargs: Any) -> RequestRow:
+        self.tries += 1
+        if self.tries <= self.failures:
+            raise sqlite3.OperationalError("database is locked")
+        return super().close_request(row_id, **kwargs)
+
+
+def failing_gate(clock: FakeClock, failures: int) -> tuple[Gate, FailingClose]:
+    store = FailingClose(failures)
+    policies = {HOST: HostPolicy(daily_cap=10, min_interval="1m")}
+    return Gate(store, policies, clock=clock), store
+
+
+def test_a_cancellation_stays_a_cancellation_when_the_close_fails(
+    clock: FakeClock,
+) -> None:
+    gate, store = failing_gate(clock, failures=CLOSE_TRIES)
+    entered = asyncio.Event()
+
+    async def worker() -> None:
+        async with gate.attempt(URL):
+            entered.set()
+            await asyncio.sleep(3600)
+
+    async def main() -> None:
+        task = asyncio.create_task(worker())
+        await entered.wait()
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+    asyncio.run(main())
+    assert store.rows()[0].state is RowState.IN_FLIGHT  # left to the reconciliation
+
+
+def test_a_close_that_fails_is_tried_again(clock: FakeClock) -> None:
+    gate, store = failing_gate(clock, failures=CLOSE_TRIES - 1)
+    respond(gate, 403)
+    assert store.tries == CLOSE_TRIES
+    assert store.host_state(HOST, clock.now()).freeze is not None
+
+
+def test_a_close_that_keeps_failing_says_what_was_lost(clock: FakeClock) -> None:
+    gate, store = failing_gate(clock, failures=CLOSE_TRIES)
+    with pytest.raises(OutcomeNotSaved) as lost:
+        respond(gate, 403)
+    assert store.tries == CLOSE_TRIES
+    assert (lost.value.url, lost.value.status, lost.value.shape) == (URL, 403, "http")
+    assert isinstance(lost.value.__cause__, sqlite3.OperationalError)
+    row = store.rows()[0]
+    assert (lost.value.row_id, row.state) == (row.id, RowState.IN_FLIGHT)
+
+
+def test_a_lost_outcome_keeps_the_error_of_the_block(clock: FakeClock) -> None:
+    gate, _ = failing_gate(clock, failures=CLOSE_TRIES)
+    with pytest.raises(OutcomeNotSaved) as lost, gate.attempt(URL):
+        raise ConnectionResetError
+    assert isinstance(lost.value.__context__, ConnectionResetError)
+    assert lost.value.shape == "exception:ConnectionResetError"
+
+
+def test_an_async_close_that_keeps_failing_says_what_was_lost(
+    clock: FakeClock,
+) -> None:
+    gate, _ = failing_gate(clock, failures=CLOSE_TRIES)
+
+    async def main() -> None:
+        async with gate.attempt(URL) as attempt:
+            attempt.response(429)
+
+    with pytest.raises(OutcomeNotSaved) as lost:
+        asyncio.run(main())
+    assert lost.value.status == 429
+
+
+@pytest.mark.parametrize("status", [403, 429, 451])
+@pytest.mark.parametrize("header", ["\u00b2", "\uff16\uff10", "x" * 10_000])
+def test_an_unreadable_retry_after_still_freezes(
+    harness: Harness, clock: FakeClock, status: int, header: str
+) -> None:
+    gate = make_gate(harness, clock)
+    with gate.attempt(URL) as attempt:
+        attempt.response(status, headers={"Retry-After": header})
+    assert attempt.result is not None
+    assert attempt.result.outcome == Outcome(ok=False, status=status, failure="http")
+    with pytest.raises(Refused) as refused:
+        respond(gate, 200)
+    assert refused.value.reason is RefusalReason.FROZEN
+
+
+@given(header=st.text())
+@settings(max_examples=50, suppress_health_check=[HealthCheck.function_scoped_fixture])
+def test_a_403_freezes_whatever_retry_after_it_carries(
+    clock: FakeClock, header: str
+) -> None:
+    gate = Gate(
+        MemoryStore(), {HOST: HostPolicy(daily_cap=10, min_interval="1m")}, clock=clock
+    )
+    with gate.attempt(URL) as attempt:
+        attempt.failure("http", status=403, headers={"Retry-After": header})
+    assert gate.store.host_state(HOST, clock.now()).freeze is not None
 
 
 def test_the_package_exports_the_gate() -> None:
