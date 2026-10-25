@@ -286,58 +286,23 @@ minutes. To read them more often, ask the source what it allows and lower
       assert source_simulator.counter.count <= 11
   ```
 
-## For AI assistants
+## For coding agents
 
-The package ships an [Agent Skill](https://agentskills.io) that tells coding
-assistants (Claude Code and others that read `SKILL.md` files) how to use the
-library, so they do not have to read its source. It is plain Markdown: the
-guide is `src/politefetch/skill/politefetch/SKILL.md`, and `references/api.md`
-next to it lists every public module, class and function, generated from the
-code. The skill carries the version of the package it describes, and the test
-suite fails if it falls behind the code.
-
-Assistants look for skills in the project, not inside installed packages.
-The simplest way to keep the right copy there is a `SessionStart` hook in the
-project's `.claude/settings.json`:
-
-```json
-{
-  "hooks": {
-    "SessionStart": [
-      {
-        "hooks": [
-          {
-            "type": "command",
-            "command": "cd \"$CLAUDE_PROJECT_DIR\" && uv run --quiet python -m politefetch.skill sync"
-          }
-        ]
-      }
-    ]
-  }
-}
-```
-
-(Without uv, use the project's interpreter: `.venv/bin/python -m
-politefetch.skill sync`.) At every session start, `sync` copies the skill of
-each installed package that ships one into `.claude/skills/<name>/`, updates
-copies whose version changed, removes those of packages no longer installed,
-and prints one line such as `skills: politefetch 0.1.0`. It never makes the
-session fail: problems go to stderr as warnings. The copies it creates hold a
-`.gitignore` that keeps them out of git, and a `.package-skill` file that
-marks them as managed; a skill directory without that file is never touched.
-
-To keep a copy under version control instead, install it by hand and refresh
-it after upgrading:
+The package ships a skill for AI coding assistants in
+`src/politefetch/skill/politefetch/`, versioned with the package. A project
+copies it into `.claude/skills/politefetch/`, keeps the copy in git and
+checks it against the installed version by hash, so the agent reads the
+guide of the version it actually uses:
 
 ```bash
-python -m politefetch.skill install   # into .claude/skills/politefetch/
-python -m politefetch.skill check     # is the installed copy current?
+python -m politefetch.skill install --target .claude/skills/politefetch
+python -m politefetch.skill check     # exit 1 if the copy differs
 ```
 
-Other packages can take part: a package declares its skill in the
-`agent_skills` entry point group, pointing at a module with a `bundled()`
-function that returns the skill directory (see `politefetch/skill/__init__.py`
-and the `[project.entry-points.agent_skills]` table in `pyproject.toml`).
+`path` prints where the installed skill is and `show` prints its
+`SKILL.md`. `install` writes only into `.claude/skills/politefetch` or
+`.agents/skills/politefetch`, and never replaces a directory it did not
+write.
 
 ## Development
 

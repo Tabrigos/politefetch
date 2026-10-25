@@ -58,12 +58,17 @@ uv run mypy
 - **Types**: `mypy --strict` clean; dates always `datetime` with UTC timezone.
 - **The skill follows the code.** If you change the public API, regenerate
   `src/politefetch/skill/politefetch/references/api.md` with
-  `uv run python tools/build_skill.py` and reread `SKILL.md` (same folder);
-  if you change the version, change it also in `metadata.version` of
-  `SKILL.md` and in the CHANGELOG. The tests (`tests/test_skill.py`) fail if
-  either one falls behind. The module `politefetch/skill/__init__.py` follows
-  the layout shared by the packages (D-040), the same as swpc-kit's: do not
-  change it on your own.
+  `uv run python tools/build_skill.py` and reread `SKILL.md` (same folder)
+  in the same commit; if you change the version, change it also in
+  `metadata.version` of `SKILL.md` and in the CHANGELOG. The tests
+  (`tests/test_skill.py`, `tests/test_skill_examples.py`) fail if either one
+  falls behind, and run the examples of `SKILL.md` and of the README.
+- `politefetch/skill/__init__.py`, `tools/build_skill.py` and
+  `tests/test_skill.py` are copies of the common library-skill template,
+  the same as swpc-kit's: only the constants above the line
+  `nothing below this line changes` are politefetch's, and a test checks the
+  fingerprint of the rest. A fix goes to the template and to every copy,
+  never to one repo alone (D-040, D-050).
 - Each stage touches its own modules; shared files (`__init__.py`, the
   interfaces) are touched as little as possible, to avoid conflicts between
   parallel PRs.
