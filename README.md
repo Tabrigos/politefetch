@@ -97,15 +97,21 @@ conditional headers of the URL's last answer, and returns a `FetchResult`
   request already in flight); `retry_after` says when to ask again, and is
   `None` while the host is frozen;
 - `FetchFailed`: no usable answer (`shape`: `connect_timeout`,
-  `read_timeout`, `refused`, `reset`, `tls`, `dns`, `connection`, or `http`
-  with `status`);
+  `read_timeout`, `refused`, `reset`, `tls`, `dns`, `connection`, `deadline`
+  for a body still arriving when its time was up, or `http` with `status`);
 - a `ContentError`: truncated (`SourceNotReady`), HTML or redirected
-  (`UnexpectedContent`), stale (`StaleData`) or stuck (`StuckSource`) data.
+  (`UnexpectedContent`), too large (`BodyTooLarge`), stale (`StaleData`) or
+  stuck (`StuckSource`) data.
 
 Adapters: `politefetch.adapters.urllib.UrllibFetcher` (no extras),
 `politefetch.adapters.httpx.HttpxFetcher` and `AsyncHttpxFetcher` (extra
 `httpx`), `politefetch.adapters.requests.RequestsFetcher` (extra
-`requests`). They never follow redirects and never retry.
+`requests`). They never follow redirects and never retry, and they refuse a
+client or session of yours that retries on its own. Each request has a
+deadline for its whole body (`deadline=`, default five minutes), and the
+body is read up to `max_bytes` and to what is left of the host's byte
+budget. Decoding (gzip, deflate) happens in politefetch, the same way for
+every client.
 
 ## Status per host
 

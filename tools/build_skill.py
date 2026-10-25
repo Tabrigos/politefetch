@@ -44,6 +44,7 @@ MODULES = [
     "politefetch.clock",
     "politefetch.adapters",
     "politefetch.adapters.base",
+    "politefetch.adapters.decoding",
     "politefetch.adapters.urllib",
     "politefetch.adapters.httpx",
     "politefetch.adapters.requests",
