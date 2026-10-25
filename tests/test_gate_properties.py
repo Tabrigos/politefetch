@@ -4,7 +4,8 @@ Whatever the source answers, a request is never admitted:
 
 - beyond the daily cap of its UTC day;
 - while the host is frozen (403, 451, or 429 by default);
-- before a Retry-After the source asked for;
+- before a Retry-After the source asked for (one longer than any pause of
+  the policy is a freeze until then, which a person may lift);
 - sooner than the minimum interval after the previous request ended;
 - sooner than the growing pause after a failure.
 """
@@ -33,7 +34,7 @@ POLICY = HostPolicy(
 )
 
 answers = st.one_of(
-    st.tuples(st.sampled_from([200, 304, 403, 451, 500, 503]), st.none()),
+    st.tuples(st.sampled_from([200, 301, 304, 403, 451, 500, 503]), st.none()),
     st.tuples(st.just(429), st.sampled_from([None, "60", "7200"])),
     st.tuples(st.just(503), st.sampled_from(["30", "5400"])),
     st.tuples(st.sampled_from(["timeout", "exception", "unrecorded"]), st.none()),
@@ -51,6 +52,7 @@ actions = st.lists(
 @dataclass
 class Model:
     frozen: bool = False
+    frozen_until: datetime | None = None
     not_before: datetime = T
     failures: int = 0
     per_day: dict[date, int] = field(default_factory=dict)
@@ -69,6 +71,7 @@ def test_the_gate_never_admits_too_early(script: list[tuple[str, object]]) -> No
         elif kind == "unfreeze":
             gate.unfreeze(HOST, by="test")
             model.frozen = False
+            model.frozen_until = None
         else:
             assert isinstance(arg, tuple)
             answer, retry_after = arg
@@ -80,6 +83,7 @@ def test_the_gate_never_admits_too_early(script: list[tuple[str, object]]) -> No
                 continue
             # Admitted: check every rule the source relies on.
             assert not model.frozen
+            assert model.frozen_until is None or now >= model.frozen_until
             assert now >= model.not_before
             day = now.date()
             model.per_day[day] = model.per_day.get(day, 0) + 1
@@ -100,7 +104,7 @@ def test_the_gate_never_admits_too_early(script: list[tuple[str, object]]) -> No
                     context.__exit__(type(error), error, None)
             except OSError:
                 pass
-            ok = isinstance(answer, int) and answer < 400
+            ok = answer in (200, 304)
             if ok:
                 model.failures = 0
                 model.not_before = end + POLICY.min_interval
@@ -109,8 +113,11 @@ def test_the_gate_never_admits_too_early(script: list[tuple[str, object]]) -> No
                 pause = max(POLICY.min_interval, POLICY.backoff(model.failures))
                 model.not_before = max(model.not_before, end + pause)
             if isinstance(retry_after, str):
-                model.not_before = max(
-                    model.not_before, end + timedelta(seconds=int(retry_after))
-                )
+                asked = end + timedelta(seconds=int(retry_after))
+                longest = end + max(POLICY.min_interval, POLICY.backoff_max)
+                if answer in (403, 451, 429) or asked <= longest:
+                    model.not_before = max(model.not_before, asked)
+                else:
+                    model.frozen_until = asked
             if answer in (403, 451, 429):
                 model.frozen = True

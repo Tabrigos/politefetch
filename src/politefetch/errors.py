@@ -3,6 +3,8 @@
     PoliteFetchError
     ├── Refused              the gate said no: no request was sent
     ├── FetchFailed          a request was sent: no answer, or an HTTP error
+    ├── OutcomeNotSaved      a request was sent: the store could not save how
+    │                        it ended
     └── ContentError         a request was sent, but its response is unusable
         ├── SourceNotReady   truncated or empty body; transient
         ├── UnexpectedContent  HTML where data was expected, foreign redirect
@@ -21,6 +23,7 @@ from politefetch.clock import as_utc
 __all__ = [
     "ContentError",
     "FetchFailed",
+    "OutcomeNotSaved",
     "PoliteFetchError",
     "RefusalReason",
     "Refused",
@@ -48,7 +51,8 @@ class RefusalReason(StrEnum):
     BACKOFF = "backoff"
     """The pause after a failure has not elapsed."""
     FROZEN = "frozen"
-    """The host answered 403, 429 or 451 and waits for a person or an expiry."""
+    """The host answered 403, 429 or 451, or asked with Retry-After for a pause
+    longer than any of its policy's, and waits for a person or an expiry."""
     DAILY_CAP = "daily_cap"
     """Today's request cap for the host is used up."""
     BYTE_BUDGET = "byte_budget"
@@ -110,6 +114,40 @@ class FetchFailed(PoliteFetchError):
     def __str__(self) -> str:
         what = f"HTTP {self.status}" if self.status is not None else self.shape
         return f"{self.url}: request failed ({what})"
+
+
+class OutcomeNotSaved(PoliteFetchError):
+    """A request was sent, but the store could not save how it ended, even
+    after trying again.
+
+    The row stays in flight, so the host stays blocked until the
+    reconciliation closes it as failed; what the source answered (`shape`,
+    `status`) is lost to the store, which is why this error carries it. The
+    store's own exception is the `__cause__`; an exception raised inside
+    the attempt is the `__context__`.
+    """
+
+    url: str
+    row_id: int
+    shape: str | None
+    status: int | None
+
+    def __init__(
+        self, url: str, row_id: int, shape: str | None, status: int | None = None
+    ) -> None:
+        super().__init__(url, row_id, shape, status)
+        self.url = url
+        self.row_id = row_id
+        self.shape = shape
+        self.status = status
+
+    def __str__(self) -> str:
+        what = f"HTTP {self.status}" if self.status is not None else self.shape
+        return (
+            f"{self.url}: the outcome of the request ({what}) could not be saved;"
+            " its row stays in flight and the host stays blocked until the"
+            " reconciliation closes it"
+        )
 
 
 class ContentError(PoliteFetchError):

@@ -85,9 +85,12 @@ promised must outlive the process**.
   block, today's counts and bytes, latest rows; serializable to JSON for a
   dashboard.
 
-Synchronous and asynchronous with the same semantics. During an asynchronous
-cancellation it is not safe to await: in that case the row is closed by the
-reconciliation, and the specification states this instead of pretending.
+Synchronous and asynchronous with the same semantics. A cancelled
+asynchronous request is closed in a thread of its own, which a second
+cancellation does not stop; only a process that ends before that thread
+leaves the row to the reconciliation, and the specification states this
+instead of pretending. An answer that arrives after the reconciliation can
+only make the host more careful.
 
 ```python
 from politefetch import Gate, HostPolicy

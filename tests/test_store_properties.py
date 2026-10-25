@@ -7,7 +7,8 @@ every step it checks the invariants of SPEC.md that belong to the store:
 
 - the daily count never loses a request and never exceeds the cap;
 - a host never has two requests in flight;
-- a promise is never shortened except by a good answer;
+- a promise is never shortened except by a good answer, and never by one
+  that arrives after the reconciliation;
 - after a reconciliation no row older than the threshold is left open;
 - a refused or failed operation writes nothing;
 - a restart changes nothing.
@@ -38,6 +39,7 @@ from politefetch.store import (
     Store,
     Validators,
 )
+from politefetch.store.base import ABANDONED
 
 from .stores import Harness, needs_postgres
 
@@ -66,6 +68,7 @@ class StoreMachine(RuleBasedStateMachine):
         self.admitted: dict[tuple[str, date], int] = {}
         self.promise: dict[str, datetime | None] = dict.fromkeys(HOSTS)
         self.forgotten: set[int] = set()
+        self.closed_late: set[int] = set()
 
     def teardown(self) -> None:
         self.harness.close()
@@ -175,6 +178,8 @@ class StoreMachine(RuleBasedStateMachine):
             if before.validators.etag is not None:
                 assert after_close.validators.etag is not None
         assert closed.state is not RowState.IN_FLIGHT
+        if closed.state is RowState.RECONCILED:
+            self.closed_late.add(row.id)
         if ok and closed.state is RowState.CLOSED:
             # A good answer may shorten the promise: start tracking afresh.
             self.promise[row.host] = self.store.host_state(row.host, now).not_before
@@ -232,9 +237,13 @@ class StoreMachine(RuleBasedStateMachine):
         for row in self.store.rows():
             real = row.outcome.wire_bytes if row.outcome is not None else None
             key = (row.host, row.opened_at.date())
-            expected[key] = expected.get(key, 0) + (
-                real if real is not None else row.reserved_bytes
-            )
+            if real is None:
+                counted = row.reserved_bytes
+            elif row.state is RowState.RECONCILED:
+                counted = max(real, row.reserved_bytes)  # late: only adds
+            else:
+                counted = real
+            expected[key] = expected.get(key, 0) + counted
         for (host, day), total in expected.items():
             moment = datetime.combine(day, datetime.min.time(), UTC)
             assert self.store.host_state(host, moment).wire_bytes_today == total
@@ -261,7 +270,7 @@ class StoreMachine(RuleBasedStateMachine):
                 assert row.closed_at is not None
             if row.state is RowState.RECONCILED:
                 assert row.outcome is not None
-                assert not row.outcome.ok
+                assert row.outcome.failure == ABANDONED or row.id in self.closed_late
 
 
 class MemoryStoreMachine(StoreMachine):

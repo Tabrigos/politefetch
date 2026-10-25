@@ -9,6 +9,7 @@ from politefetch import errors
 from politefetch.errors import (
     ContentError,
     FetchFailed,
+    OutcomeNotSaved,
     PoliteFetchError,
     RefusalReason,
     Refused,
@@ -31,6 +32,7 @@ def sample_errors() -> list[PoliteFetchError]:
         UnexpectedContent("HTML where JSON was expected"),
         StaleData(data_time=T, max_age=timedelta(hours=3), age=timedelta(hours=5)),
         StuckSource(data_time=T, reads=4, url="https://e.org/a"),
+        OutcomeNotSaved("https://e.org/a", 7, "http", 403),
     ]
 
 
@@ -63,6 +65,7 @@ def test_public_names_cover_the_hierarchy() -> None:
         "UnexpectedContent",
         "StaleData",
         "StuckSource",
+        "OutcomeNotSaved",
     }
 
 
@@ -175,3 +178,16 @@ def test_fetch_failed_says_how() -> None:
     assert "read_timeout" in str(timeout)
     assert "HTTP 503" in str(FetchFailed("https://e.org/a", "http", 503))
     assert ContentError not in type(timeout).__mro__
+
+
+def test_outcome_not_saved_says_what_was_lost() -> None:
+    exc = OutcomeNotSaved("https://e.org/a", 7, "http", 403)
+    assert (exc.url, exc.row_id, exc.shape, exc.status) == (
+        "https://e.org/a",
+        7,
+        "http",
+        403,
+    )
+    assert "HTTP 403" in str(exc)
+    assert "in flight" in str(exc)
+    assert not isinstance(exc, (FetchFailed, ContentError, Refused))
