@@ -902,3 +902,22 @@ alla vecchia e la vecchia prende la riga "Superata da".
 - **Alternative scartate**: un riferimento scritto a mano (invecchia in
   silenzio); generare anche `SKILL.md` (le docstring dicono cosa fa una
   funzione, non quando usarla e cosa evitare).
+
+## D-042 — Il repository diventa pubblico come `politefetch`
+
+- **Data e tappa**: 2026-10-25, fuori dalle tappe (sessione locale)
+- **Contesto**: D-010 lasciava il repository col nome `fetchguard`; il
+  progetto si prepara a diventare open source.
+- **Decisione**: il repository si chiama `politefetch`. Autore, titolare del
+  copyright (`LICENSE`, `pyproject.toml`) e identità git sono
+  `Sidereus Team <sidereus.team@gmail.com>`, come in plancia-ui. Prima di
+  renderlo pubblico la storia è stata riscritta: ogni commit ha quell'autore,
+  senza trailer, e `CLAUDE.md` e `.claude/` ne sono usciti (sono file degli
+  strumenti di chi lavora, ignorati in locale). `AGENTS.md` e `SPEC.md` sono
+  in inglese; `docs/` resta in italiano come storia dello sviluppo.
+- **Alternative scartate**: rinominare il repository esistente e riscriverne
+  la storia con un force-push (le pull request fuse tengono raggiungibili i
+  commit originali).
+- **Conseguenze**: supera il titolare del copyright di D-011 e chiude il
+  punto aperto di D-010. I numeri delle pull request citati qui e nel Log si
+  riferiscono al repository precedente, privato.

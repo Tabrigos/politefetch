@@ -9,6 +9,7 @@ description = "A polite, crash-safe gate between an ingest service and the exter
 readme = "README.md"
 license = "MIT"
 license-files = ["LICENSE"]
+authors = [{ name = "Sidereus Team", email = "sidereus.team@gmail.com" }]
 requires-python = ">=3.12"
 dependencies = []
 classifiers = [
@@ -19,6 +20,11 @@ classifiers = [
     "Programming Language :: Python :: 3.13",
     "Typing :: Typed",
 ]
+
+[project.urls]
+Homepage = "https://github.com/Tabrigos/politefetch"
+Issues = "https://github.com/Tabrigos/politefetch/issues"
+Changelog = "https://github.com/Tabrigos/politefetch/blob/main/CHANGELOG.md"
 
 [project.entry-points.pytest11]
 politefetch = "politefetch.testing.plugin"

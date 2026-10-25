@@ -11,12 +11,12 @@ Riscritto da capo a ogni fine sessione, mai accodato.
   skill per gli agenti dentro il pacchetto (`python -m politefetch.skill`,
   schema comune con swpc-kit, D-040 e D-041).
 - **Prossimo passo**: nessuna tappa aperta in `docs/TAPPE.md`. Da decidere
-  con l'utente: pubblicazione su PyPI (e tag `v0.1.0`), nome del repository.
+  con l'utente: pubblicazione su PyPI (e tag `v0.1.0`). Repository pronto
+  per diventare pubblico come `politefetch` (D-042).
   Chi cambia l'API pubblica rigenera la skill (`AGENTS.md`). Prima dei test:
   `eval "$(scripts/postgres-for-tests.sh)"`, altrimenti i test Postgres
   vengono saltati.
 - **Dubbi aperti**:
-  - il repository GitHub si chiama ancora `fetchguard` (D-010);
   - `httpx2` non è supportato (D-032);
   - una modifica al modulo `skill` va concordata con swpc-kit.
 
@@ -109,3 +109,7 @@ Una riga per sessione: data, tappa, cosa è entrato, cosa resta.
   a fondo con Claude Code e con le wheel dei due pacchetti. 945 test (1
   saltato, IPv6); difetti iniettati presi tutti dopo un test in più sui
   parametri delle chiamate. Resta: decidere la pubblicazione.
+- 2026-10-25 — preparazione all'open source, in locale (D-042): repository
+  `politefetch`, autore Sidereus Team in `LICENSE` e `pyproject.toml`,
+  `AGENTS.md` e `SPEC.md` in inglese, storia riscritta senza identità
+  personali. Resta: renderlo pubblico, poi la pubblicazione su PyPI.
