@@ -12,6 +12,17 @@ All notable changes to politefetch. The format follows
   even after `CLOSE_TRIES` tries. It carries the URL, the row, the failure
   shape and the HTTP status that would otherwise be lost.
 - `politefetch.gate.normalize_host`.
+- A deadline for each whole request, body included: `deadline=` on every
+  fetcher (default five minutes, measured with `timer=`, by default
+  `time.monotonic`). With the two timeouts it must end before the gate's
+  `reconcile_after`. A good answer still arriving then fails with the new
+  shape `deadline`.
+- `max_bytes=` on `get`, and `Attempt.bytes_left`: reading stops at the
+  tighter of `max_bytes` and what is left of the host's byte budget, and
+  raises the new `BodyTooLarge` with the bytes it read. `max_bytes` also
+  bounds the decoded body.
+- `politefetch.testing.simulator.Drip`, a source that sends its body one
+  byte at a time.
 
 ### Changed
 
@@ -29,6 +40,21 @@ All notable changes to politefetch. The format follows
   `backoff_max`) becomes a freeze until that time, after any answer. It is
   still honoured in full, but `status` shows it and `unfreeze` lifts it.
   After a 403, 429 or 451 it also stays a promise, as before.
+- Decoding happens in the core for every client: the fetchers ask for
+  `gzip, deflate` (urllib too), read the body raw and decode it with the
+  standard library, so wire and decoded bytes count the same way in every
+  adapter. A compressed stream that stops before its end is
+  `SourceNotReady`; one that does not decode, or an encoding it cannot undo,
+  is `UnexpectedContent`.
+- The `Transport` protocol: `send` returns a context manager holding a
+  `RawResponse(status, headers, chunks)` with the raw body in pieces;
+  `TransportError` and `IncompleteBody` carry no byte counts, the core
+  counts them.
+- A client or session that retries on its own is refused with `ValueError`
+  when the fetcher is built: each retry is a request the gate never
+  admitted.
+- Headers of the caller replace ours whatever their case.
+- The source simulator joins a header sent twice into one value.
 
 ### Fixed
 
@@ -38,6 +64,10 @@ All notable changes to politefetch. The format follows
 - A store error while closing a row (SQLite locked past its busy timeout)
   replaced the caller's error and lost the outcome. Closing is now tried
   again, then raises `OutcomeNotSaved`.
+- A gzip body cut short but framed correctly passed as good with
+  `expect="text"` or `"bytes"`.
+- With httpx, a lowercase `user-agent` of the caller was sent next to ours.
+- A Content-Length with non-ASCII digits raised `ValueError`.
 
 - Windows: the pytest plugin failed to import (`socket.socket` has no
   `sendmsg` there), which broke pytest in every Windows project that

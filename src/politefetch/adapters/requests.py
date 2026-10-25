@@ -1,23 +1,32 @@
 """Adapter for requests, behind the `requests` extra (synchronous only).
 
 Pass your own `requests.Session` to share adapters, proxies or certificates;
-the fetcher then leaves it open. Redirects are never followed and requests
-does not retry by default. Wire bytes come from the underlying urllib3
-response (compressed, if the answer was).
+the fetcher then leaves it open. A session with an adapter that retries
+(`HTTPAdapter(max_retries=...)`) is refused: each retry would be a request
+the gate never admitted. Redirects are never followed. The body is read raw
+from the underlying urllib3 response: the core decodes it and counts the
+bytes.
 """
 
-from collections.abc import Mapping
+import contextlib
+import http.client
+import time
+from collections.abc import Generator, Iterator, Mapping
+from datetime import timedelta
 
 import requests
 import urllib3.exceptions
+from urllib3.util.retry import Retry
 
 from politefetch.adapters.base import (
+    DEFAULT_DEADLINE,
     USER_AGENT,
     FailureShape,
     Fetcher,
     IncompleteBody,
     RawResponse,
     Timeout,
+    Timer,
     TransportError,
     _chain,
     classify,
@@ -25,6 +34,8 @@ from politefetch.adapters.base import (
 from politefetch.gate import Gate
 
 __all__ = ["RequestsFetcher", "RequestsTransport", "failure_shape"]
+
+CHUNK = 64 * 1024
 
 
 def failure_shape(error: BaseException) -> FailureShape:
@@ -48,20 +59,61 @@ def failure_shape(error: BaseException) -> FailureShape:
     return classify(error, phase="connect")
 
 
-def _wire_bytes(response: requests.Response) -> int:
+def _may_retry(retry: Retry) -> bool:
+    """Whether urllib3 would try again after one failure of some kind.
+
+    It counts each kind against its own budget and against `total`; a count
+    that falls below zero ends the retries, `None` sets no bound, and `False`
+    turns that kind off.
+    """
+    if retry.total is False:
+        return False
+    for kind in (retry.connect, retry.read, retry.status, retry.other):
+        if kind is False:
+            continue
+        left = [count - 1 for count in (retry.total, kind) if count is not None]
+        if all(count >= 0 for count in left):
+            return True
+    return False
+
+
+def _refuse_retries(session: requests.Session) -> None:
+    for prefix, adapter in session.adapters.items():
+        retry = getattr(adapter, "max_retries", None)
+        if isinstance(retry, Retry) and _may_retry(retry):
+            raise ValueError(
+                f"the session's adapter for {prefix!r} retries ({retry!r}): each "
+                "retry is a request the gate never admitted. Give the fetcher a "
+                "session whose adapters do not retry (max_retries=0)."
+            )
+
+
+def _chunks(response: requests.Response) -> Iterator[bytes]:
     raw = response.raw
-    told = raw.tell() if raw is not None and hasattr(raw, "tell") else None
-    return told if isinstance(told, int) else len(response.content)
+    try:
+        while chunk := raw.read1(CHUNK, decode_content=False):
+            yield chunk
+    except urllib3.exceptions.ProtocolError as broken:
+        if any(
+            isinstance(found, http.client.IncompleteRead) for found in _chain(broken)
+        ):
+            raise IncompleteBody from broken
+        raise TransportError(failure_shape(broken)) from broken
+    except (urllib3.exceptions.HTTPError, OSError) as error:
+        raise TransportError(failure_shape(error)) from error
 
 
 class RequestsTransport:
     def __init__(self, session: requests.Session | None = None) -> None:
+        if session is not None:
+            _refuse_retries(session)
         self._owned = session is None
         self._session = session if session is not None else requests.Session()
 
+    @contextlib.contextmanager
     def send(
         self, url: str, headers: Mapping[str, str], timeout: tuple[float, float]
-    ) -> RawResponse:
+    ) -> Generator[RawResponse, None, None]:
         try:
             response = self._session.get(
                 url,
@@ -73,15 +125,8 @@ class RequestsTransport:
         except requests.RequestException as error:
             raise TransportError(failure_shape(error)) from error
         with response:
-            status = response.status_code
             found = {name.lower(): value for name, value in response.headers.items()}
-            try:
-                body = response.content
-            except requests.exceptions.ChunkedEncodingError as broken:
-                raise IncompleteBody(status, found, _wire_bytes(response)) from broken
-            except requests.RequestException as error:
-                raise TransportError(failure_shape(error)) from error
-            return RawResponse(status, found, body, _wire_bytes(response))
+            yield RawResponse(response.status_code, found, _chunks(response))
 
     def close(self) -> None:
         if self._owned:
@@ -97,8 +142,15 @@ class RequestsFetcher(Fetcher):
         session: requests.Session | None = None,
         *,
         timeout: Timeout = (10.0, 30.0),
+        deadline: timedelta | str = DEFAULT_DEADLINE,
         user_agent: str = USER_AGENT,
+        timer: Timer = time.monotonic,
     ) -> None:
         super().__init__(
-            gate, RequestsTransport(session), timeout=timeout, user_agent=user_agent
+            gate,
+            RequestsTransport(session),
+            timeout=timeout,
+            deadline=deadline,
+            user_agent=user_agent,
+            timer=timer,
         )

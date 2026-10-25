@@ -135,4 +135,5 @@ def test_shapes_are_stable_strings() -> None:
         "dns",
         "connection",
         "http",
+        "deadline",
     }

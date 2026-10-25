@@ -11,14 +11,17 @@ it passes the network barrier. Every request that arrives is counted before
 the scenario plays (`politefetch.testing.counter`).
 
 Scenarios: `Respond` (any status, body, headers), `TooManyRequests`, `Html`,
-`Truncated` (body shorter than its Content-Length), `NoAnswer` (holds the
-connection until the simulator stops), `Reset` (closes with a TCP reset),
+`Truncated` (body shorter than its Content-Length), `Drip` (the body one
+byte at a time), `NoAnswer` (holds the connection until the simulator
+stops), `Reset` (closes with a TCP reset),
 `stuck_json` and `advancing_json` (data whose time stays put or moves on),
 `Validated` (answers 304 to a matching If-None-Match or If-Modified-Since).
 A source that refuses connections is a closed port: `closed_port_url()`.
 
 Every answer closes the connection (`Connection: close`). Socket timeouts
 use real time: keep client timeouts short in tests that do not get answers.
+A header that a request sends more than once is recorded once, its values
+joined by ", ".
 """
 
 import contextlib
@@ -36,6 +39,7 @@ from typing import Protocol, Self
 from politefetch.testing.counter import RequestCounter, SourceRequest
 
 __all__ = [
+    "Drip",
     "Html",
     "NoAnswer",
     "Reset",
@@ -75,19 +79,22 @@ def _send(
     *,
     declared_length: int | None = None,
 ) -> None:
+    length = len(body) if declared_length is None else declared_length
+    conn.sendall(_head(status, headers, length) + body)
+
+
+def _head(status: int, headers: Mapping[str, str], length: int) -> bytes:
     try:
         reason = HTTPStatus(status).phrase
     except ValueError:
         reason = ""
-    length = len(body) if declared_length is None else declared_length
     lines = [
         f"HTTP/1.1 {status} {reason}",
         f"Content-Length: {length}",
         "Connection: close",
     ]
     lines += [f"{name}: {value}" for name, value in headers.items()]
-    head = ("\r\n".join(lines) + "\r\n\r\n").encode("latin-1")
-    conn.sendall(head + body)
+    return ("\r\n".join(lines) + "\r\n\r\n").encode("latin-1")
 
 
 class Respond:
@@ -223,6 +230,33 @@ class Truncated:
         )
 
 
+class Drip:
+    """Send the head at once, then the body one byte every `every` seconds:
+    a source that keeps a request alive for as long as it likes."""
+
+    def __init__(
+        self,
+        body: bytes = b'{"data": "' + b"x" * 200 + b'"}',
+        *,
+        every: float = 0.05,
+        content_type: str = "application/json",
+        name: str = "drip",
+    ) -> None:
+        self.body = body
+        self.every = every
+        self.content_type = content_type
+        self.name = name
+
+    def serve(
+        self, conn: socket.socket, request: SourceRequest, stop: threading.Event
+    ) -> None:
+        conn.sendall(_head(200, {"Content-Type": self.content_type}, len(self.body)))
+        for byte in self.body:
+            if stop.wait(self.every):
+                return
+            conn.sendall(bytes([byte]))
+
+
 class NoAnswer:
     """Read the request, then say nothing until the simulator stops."""
 
@@ -290,7 +324,8 @@ def _read_head(conn: socket.socket) -> tuple[str, str, dict[str, str]] | None:
     headers: dict[str, str] = {}
     for line in lines[1:]:
         name, _, value = line.partition(":")
-        headers[name.strip().lower()] = value.strip()
+        key, value = name.strip().lower(), value.strip()
+        headers[key] = f"{headers[key]}, {value}" if key in headers else value
     return method, path, headers
 
 

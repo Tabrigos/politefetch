@@ -257,6 +257,9 @@ class Attempt:
         self.result: RequestRow | None = None
         """The closed row, once the block has ended (`None` if it could not be
         closed)."""
+        self.bytes_left: int | None = None
+        """The wire bytes this request may read before the host's byte budget
+        for the day is spent, as of its start; `None` without a budget."""
 
     @property
     def row(self) -> RequestRow:
@@ -364,6 +367,12 @@ class Attempt:
             byte_budget=policy.byte_budget,
             cautious=lambda state: policy.cautious_until(state, now),
         )
+        if policy.byte_budget is not None:
+            # Today's bytes include this request's reservation: it is part of
+            # what the request may read, not something already read.
+            used = gate.store.host_state(self.host, now).wire_bytes_today
+            spent = used - self._row.reserved_bytes
+            self.bytes_left = max(0, policy.byte_budget - spent)
         record = gate.store.url_record(self.url)
         if record is not None:
             if record.validators.etag is not None:

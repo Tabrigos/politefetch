@@ -106,11 +106,15 @@ def poll(gate: Gate, url: str = URL) -> list[dict[str, Any]] | None:
 ```
 
 `fetch.get(url, *, expect="json", data_time=None, max_age=None,
-stuck_after=None, headers=None, allow_empty=False)` returns a `FetchResult`:
+stuck_after=None, headers=None, allow_empty=False, max_bytes=None)` returns a
+`FetchResult`:
 `content` (parsed JSON, text or bytes according to `expect`: `"json"`,
 `"text"` or `"bytes"`), `status`, `headers`, `body`, `not_modified`,
 `data_time`, `wire_bytes`, `decoded_bytes`. It sends the conditional headers
 of the URL's last answer by itself, never follows redirects and never retries.
+It decodes gzip and deflate itself, the same way for every client, and stops
+reading at `max_bytes` (as transferred and as decoded) or at what is left of
+the host's byte budget: then it raises `BodyTooLarge`.
 
 ## Choosing the pieces
 
@@ -124,9 +128,14 @@ of the URL's last answer by itself, never follows redirects and never retries.
 | requests | `RequestsFetcher` in `politefetch.adapters.requests` |
 | Your own client, or not HTTP GET | `gate.attempt(url)` (below) |
 
-Adapters take `timeout=` (one number or `(connect, read)` seconds) and accept
-your own client or session to share pools, proxies or certificates. The async
-fetcher has the same `get` as a coroutine.
+Adapters take `timeout=` (one number or `(connect, read)` seconds) and
+`deadline=` for the whole request, body included (default `"5m"`; with the
+two timeouts it must end before the gate's `reconcile_after`). They accept
+your own client or session to share pools, proxies or certificates, but
+refuse one that retries on its own (`ValueError`): give them a requests
+adapter or an httpx transport built without retries. A hand-written
+transport must not retry either. The async fetcher has the same `get` as a
+coroutine.
 
 ## Sizing a policy
 
@@ -161,10 +170,11 @@ message text.
 | Error | Meaning | What to do |
 |---|---|---|
 | `Refused` | The gate said no; nothing was sent. `reason`, `retry_after` (`None` while frozen until a person unlocks) | Ask again at `retry_after` or later; never in a loop |
-| `FetchFailed` | Sent, no usable answer; `shape`, `status` for `http`. The gate already recorded it and grew the pause | Do not retry now: the next call will be refused until the pause ends |
+| `FetchFailed` | Sent, no usable answer, or still arriving at the `deadline`; `shape`, `status`. The gate already recorded it and grew the pause | Do not retry now: the next call will be refused until the pause ends |
 | `OutcomeNotSaved` | Sent, but the store could not save how it ended; `shape`, `status`. The host stays blocked until the reconciliation | Check the store (a lock held too long); a person may need to apply a lost 403/429 by hand |
 | `SourceNotReady` | Truncated or empty body (the source is rewriting its file) | Wait for the next scheduled run |
-| `UnexpectedContent` | HTML where data was expected, or a redirect to another host | Report it; do not follow the redirect yourself |
+| `UnexpectedContent` | HTML where data was expected, a redirect, or a body that does not decode | Report it; do not follow the redirect yourself |
+| `BodyTooLarge` | The body is longer than `max_bytes` or the byte budget left; reading stopped there | Raise `max_bytes` or `byte_budget` if the size is expected |
 | `StaleData` | Data older than `max_age`; `data_time`, `max_age`, `age` | Use the previous data with a warning, or wait |
 | `StuckSource` | The data time has not moved for `stuck_after` reads; `data_time`, `reads` | Alert a person: the source is up but frozen |
 
@@ -174,8 +184,8 @@ message text.
 waiting for `retry_after` does not run into the next.
 
 `FetchFailed.shape` values: `connect_timeout`, `read_timeout`, `refused`,
-`reset`, `tls`, `dns`, `connection`, and `http` (an error status, in
-`status`). The shapes are recorded so that a person can tell a block from an
+`reset`, `tls`, `dns`, `connection`, `deadline` (a good answer still arriving
+when its time was up), and `http` (an error status, in `status`). The shapes are recorded so that a person can tell a block from an
 outage; the library does not guess.
 
 ## The gate without an adapter

@@ -274,7 +274,7 @@ non viene mai chiusa mentre la richiesta è viva.
 
 ## R2 — Adattatori: scadenza, dimensione, decodifica
 
-- [ ] Fatta
+- [x] Fatta (D-047)
 
 I trasporti leggono il corpo in un colpo solo (`response.read()`,
 `response.content`, `stream.read()`), con un timeout che vale per ogni

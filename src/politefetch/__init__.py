@@ -9,6 +9,7 @@ data that stopped advancing). See SPEC.md for the rules.
 
 from politefetch.clock import Clock, FakeClock, SystemClock
 from politefetch.errors import (
+    BodyTooLarge,
     ContentError,
     FetchFailed,
     OutcomeNotSaved,
@@ -26,6 +27,7 @@ from politefetch.policy import HostPolicy
 __version__ = "0.1.0"
 
 __all__ = [
+    "BodyTooLarge",
     "Clock",
     "ContentError",
     "FakeClock",

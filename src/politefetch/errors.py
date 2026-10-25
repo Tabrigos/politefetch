@@ -2,12 +2,14 @@
 
     PoliteFetchError
     ├── Refused              the gate said no: no request was sent
-    ├── FetchFailed          a request was sent: no answer, or an HTTP error
+    ├── FetchFailed          a request was sent: no answer, an HTTP error, or
+    │                        past its deadline
     ├── OutcomeNotSaved      a request was sent: the store could not save how
     │                        it ended
     └── ContentError         a request was sent, but its response is unusable
         ├── SourceNotReady   truncated or empty body; transient
         ├── UnexpectedContent  HTML where data was expected, foreign redirect
+        ├── BodyTooLarge     the body is longer than the fetch may read
         ├── StaleData        the data is older than max_age
         └── StuckSource      the data time stopped advancing
 
@@ -21,6 +23,7 @@ from enum import StrEnum
 from politefetch.clock import as_utc
 
 __all__ = [
+    "BodyTooLarge",
     "ContentError",
     "FetchFailed",
     "OutcomeNotSaved",
@@ -97,8 +100,10 @@ class FetchFailed(PoliteFetchError):
     """A request was sent but no usable HTTP answer came back.
 
     `shape` says how it failed: a connect or read timeout, a refused or reset
-    connection, TLS, DNS, another connection error, or `http` for an error
-    status (then `status` is set). The gate has already recorded it.
+    connection, TLS, DNS, another connection error, `deadline` for an answer
+    still arriving when its time was up, or `http` for an error status.
+    `status` is the HTTP status, when an answer had started. The gate has
+    already recorded it.
     """
 
     url: str
@@ -112,7 +117,12 @@ class FetchFailed(PoliteFetchError):
         self.status = status
 
     def __str__(self) -> str:
-        what = f"HTTP {self.status}" if self.status is not None else self.shape
+        if self.status is None:
+            what = self.shape
+        elif self.shape == "http":
+            what = f"HTTP {self.status}"
+        else:
+            what = f"{self.shape} after HTTP {self.status}"
         return f"{self.url}: request failed ({what})"
 
 
@@ -193,6 +203,13 @@ class UnexpectedContent(_DetailedContentError):
     redirect to another host."""
 
     shape = "unexpected_content"
+
+
+class BodyTooLarge(_DetailedContentError):
+    """The body is longer than the fetch may read: `max_bytes`, or the bytes
+    left in the host's byte budget. Reading stopped there."""
+
+    shape = "too_large"
 
 
 class StaleData(ContentError):

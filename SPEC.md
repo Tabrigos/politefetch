@@ -64,8 +64,14 @@ promised must outlive the process**.
 ## Traffic
 
 - Conditional requests: ETag and Last-Modified saved per URL and sent back.
-- Bytes per host and per day, both on the wire (compressed) and decoded.
-- Byte budget per host, consumed like the request cap.
+- Bytes per host and per day, both on the wire (compressed) and decoded,
+  counted the same way whatever the client: the core decodes the body
+  (gzip, deflate) and checks that a compressed stream reaches its end.
+- Byte budget per host, consumed like the request cap. A body is read only
+  up to what is left of it (and up to a limit of the caller's), then the
+  request fails with the bytes it read.
+- A deadline for each whole request, body included, shorter than the
+  reconciliation: a source that drips its body cannot keep a request alive.
 
 ## Architecture
 
@@ -77,8 +83,11 @@ promised must outlive the process**.
   The critical operations are atomic: two processes sharing the store do not
   exceed the cap together.
 - **Transport adapters**: `urllib` (standard library, in the core), `httpx`
-  and `requests` (extras). The core imports no HTTP client: changing library
-  touches only the adapter.
+  and `requests` (extras). An adapter sends one GET and hands back the body
+  as transferred, piece by piece; reading, the deadline, the size limit and
+  decoding happen in the core. The core imports no HTTP client: changing
+  library touches only the adapter. A client that retries on its own is
+  refused.
 - **Test kit** (`politefetch.testing`): socket barrier, source simulator,
   worst-case counter.
 - **Readable state**: for each host, next allowed request, reason for any

@@ -12,6 +12,7 @@ import pytest
 
 from politefetch.testing.counter import RequestCounter
 from politefetch.testing.simulator import (
+    Drip,
     Html,
     NoAnswer,
     Reset,
@@ -140,6 +141,26 @@ def test_truncated_body(source: SourceSimulator) -> None:
         assert response.headers["Content-Length"] == "200"
         with pytest.raises(http.client.IncompleteRead):
             response.read()
+
+
+def test_drip_sends_the_body_one_byte_at_a_time(source: SourceSimulator) -> None:
+    source.scenario = Drip(b'{"a": 1}', every=0.02)
+    with urllib.request.urlopen(source.url(), timeout=5) as response:
+        assert response.headers["Content-Length"] == "8"
+        pieces = list(iter(lambda: response.read1(64), b""))
+    assert b"".join(pieces) == b'{"a": 1}'
+    assert len(pieces) > 1
+
+
+def test_a_header_sent_twice_is_kept_whole(source: SourceSimulator) -> None:
+    connection = http.client.HTTPConnection("127.0.0.1", source.port, timeout=5)
+    connection.putrequest("GET", "/")
+    connection.putheader("X-One", "a")
+    connection.putheader("x-one", "b")
+    connection.endheaders()
+    connection.getresponse().read()
+    connection.close()
+    assert source.counter.requests[0].headers["x-one"] == "a, b"
 
 
 def test_html_instead_of_json(source: SourceSimulator) -> None:

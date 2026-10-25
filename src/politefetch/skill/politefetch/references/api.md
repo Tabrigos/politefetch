@@ -7,13 +7,13 @@ Read only the section you need. Times are aware UTC `datetime` objects;
 durations accept `timedelta` or strings such as `'90s'`, `'15m'`, `'2h'`;
 sizes accept `int` bytes or strings such as `'50MB'`, `'1GiB'`.
 
-Modules: `politefetch` · `politefetch.gate` · `politefetch.policy` · `politefetch.status` · `politefetch.errors` · `politefetch.checks` · `politefetch.clock` · `politefetch.adapters` · `politefetch.adapters.base` · `politefetch.adapters.urllib` · `politefetch.adapters.httpx` · `politefetch.adapters.requests` · `politefetch.store` · `politefetch.store.base` · `politefetch.store.memory` · `politefetch.store.sqlite` · `politefetch.store.postgres` · `politefetch.testing` · `politefetch.testing.plugin` · `politefetch.testing.barrier` · `politefetch.testing.simulator` · `politefetch.testing.counter` · `politefetch.testing.processes` · `politefetch.skill`
+Modules: `politefetch` · `politefetch.gate` · `politefetch.policy` · `politefetch.status` · `politefetch.errors` · `politefetch.checks` · `politefetch.clock` · `politefetch.adapters` · `politefetch.adapters.base` · `politefetch.adapters.decoding` · `politefetch.adapters.urllib` · `politefetch.adapters.httpx` · `politefetch.adapters.requests` · `politefetch.store` · `politefetch.store.base` · `politefetch.store.memory` · `politefetch.store.sqlite` · `politefetch.store.postgres` · `politefetch.testing` · `politefetch.testing.plugin` · `politefetch.testing.barrier` · `politefetch.testing.simulator` · `politefetch.testing.counter` · `politefetch.testing.processes` · `politefetch.skill`
 
 ## `politefetch`
 
 politefetch: a polite, crash-safe gate between an ingest service and the external sources it polls.
 
-Re-exports: `Clock` (politefetch.clock), `ContentError` (politefetch.errors), `FakeClock` (politefetch.clock), `FetchFailed` (politefetch.errors), `Gate` (politefetch.gate), `HostPolicy` (politefetch.policy), `OutcomeNotSaved` (politefetch.errors), `PoliteFetchError` (politefetch.errors), `RefusalReason` (politefetch.errors), `Refused` (politefetch.errors), `SourceNotReady` (politefetch.errors), `StaleData` (politefetch.errors), `StuckSource` (politefetch.errors), `SystemClock` (politefetch.clock), `UnexpectedContent` (politefetch.errors).
+Re-exports: `BodyTooLarge` (politefetch.errors), `Clock` (politefetch.clock), `ContentError` (politefetch.errors), `FakeClock` (politefetch.clock), `FetchFailed` (politefetch.errors), `Gate` (politefetch.gate), `HostPolicy` (politefetch.policy), `OutcomeNotSaved` (politefetch.errors), `PoliteFetchError` (politefetch.errors), `RefusalReason` (politefetch.errors), `Refused` (politefetch.errors), `SourceNotReady` (politefetch.errors), `StaleData` (politefetch.errors), `StuckSource` (politefetch.errors), `SystemClock` (politefetch.clock), `UnexpectedContent` (politefetch.errors).
 
 ### `__version__`
 
@@ -106,6 +106,12 @@ One status as a JSON object, or several as a JSON array.
 ## `politefetch.errors`
 
 The exceptions politefetch raises.
+
+### `BodyTooLarge`
+
+`BodyTooLarge(detail: str, *, url: str | None = None)` (subclass of `_DetailedContentError`)
+
+The body is longer than the fetch may read: `max_bytes`, or the bytes left in the host's byte budget. Reading stopped there.
 
 ### `ContentError`
 
@@ -246,20 +252,30 @@ Re-exports: `AsyncFetcher` (politefetch.adapters.base), `FailureShape` (politefe
 
 What every adapter shares: the fetch cycle, the result, the failure shapes.
 
+### `DEFAULT_DEADLINE`
+
+`timedelta(seconds=300)`
+
 ### `AsyncFetcher`
 
-`AsyncFetcher(gate: Gate, transport: AsyncTransport, *, timeout: float | tuple[float, float] = (10.0, 30.0), user_agent: str = 'politefetch/0.1.0')`
+`AsyncFetcher(gate: Gate, transport: AsyncTransport, *, timeout: float | tuple[float, float] = (10.0, 30.0), deadline: timedelta | str = timedelta(seconds=300), user_agent: str = 'politefetch/0.1.0', timer: Callable[[], float] = <built-in function monotonic>)`
 
 Fetch through the gate with an asynchronous transport. Same meaning as `Fetcher`; store work runs in a worker thread.
 
-- `.get(url: str, *, expect: Literal['json', 'text', 'bytes'] = 'json', data_time: Callable[[Any], datetime] | None = None, max_age: timedelta | str | None = None, stuck_after: int | None = None, headers: Mapping[str, str] | None = None, allow_empty: bool = False) -> FetchResult`
+- `.get(url: str, *, expect: Literal['json', 'text', 'bytes'] = 'json', data_time: Callable[[Any], datetime] | None = None, max_age: timedelta | str | None = None, stuck_after: int | None = None, headers: Mapping[str, str] | None = None, allow_empty: bool = False, max_bytes: int | str | None = None) -> FetchResult`
 - `.aclose() -> None`
+
+### `AsyncRawResponse`
+
+`AsyncRawResponse(status: int, headers: Mapping[str, str], chunks: AsyncIterator[bytes])`
+
+`RawResponse` for an asynchronous transport.
 
 ### `AsyncTransport`
 
 Protocol. Base class for protocol classes.
 
-- `.send(url: str, headers: Mapping[str, str], timeout: tuple[float, float]) -> RawResponse`
+- `.send(url: str, headers: Mapping[str, str], timeout: tuple[float, float]) -> AbstractAsyncContextManager[AsyncRawResponse]`
 - `.aclose() -> None`
 
 ### `FailureShape`
@@ -274,6 +290,7 @@ How a request failed without a usable HTTP answer. Stored: do not rename.
 - `DNS` = `'dns'`
 - `CONNECTION` = `'connection'`: Any other failure to connect or to read the answer.
 - `HTTP` = `'http'`: An HTTP error status (1xx, 4xx, 5xx).
+- `DEADLINE` = `'deadline'`: A good answer still arriving when the fetch's deadline was up.
 
 ### `FetchResult`
 
@@ -283,41 +300,57 @@ A fetch that passed every check.
 
 ### `Fetcher`
 
-`Fetcher(gate: Gate, transport: Transport, *, timeout: float | tuple[float, float] = (10.0, 30.0), user_agent: str = 'politefetch/0.1.0')`
+`Fetcher(gate: Gate, transport: Transport, *, timeout: float | tuple[float, float] = (10.0, 30.0), deadline: timedelta | str = timedelta(seconds=300), user_agent: str = 'politefetch/0.1.0', timer: Callable[[], float] = <built-in function monotonic>)`
 
 Fetch through the gate with a synchronous transport.
 
-- `.get(url: str, *, expect: Literal['json', 'text', 'bytes'] = 'json', data_time: Callable[[Any], datetime] | None = None, max_age: timedelta | str | None = None, stuck_after: int | None = None, headers: Mapping[str, str] | None = None, allow_empty: bool = False) -> FetchResult`: Fetch `url` once, if the gate allows it, and check what comes back.
+- `.get(url: str, *, expect: Literal['json', 'text', 'bytes'] = 'json', data_time: Callable[[Any], datetime] | None = None, max_age: timedelta | str | None = None, stuck_after: int | None = None, headers: Mapping[str, str] | None = None, allow_empty: bool = False, max_bytes: int | str | None = None) -> FetchResult`: Fetch `url` once, if the gate allows it, and check what comes back.
 - `.close() -> None`
 
 ### `IncompleteBody`
 
-`IncompleteBody(status: int, headers: Mapping[str, str], wire_bytes: int)` (subclass of `Exception`)
+`IncompleteBody` (subclass of `Exception`)
 
-An answer started but its body broke off: turned into `SourceNotReady`.
+The body broke off before its end: raised by a transport while the body is read, and turned into `SourceNotReady`.
 
 ### `RawResponse`
 
-`RawResponse(status: int, headers: Mapping[str, str], body: bytes, wire_bytes: int)`
+`RawResponse(status: int, headers: Mapping[str, str], chunks: Iterator[bytes])`
 
-One HTTP answer as a transport received it. Header names are lowercase; `body` is decoded, `wire_bytes` counts the body as transferred.
+One HTTP answer as a transport receives it. Header names are lowercase. `chunks` yields the body as transferred, piece by piece as it arrives: without the transfer framing, but not decoded (a Content-Encoding stays, the core undoes it).
+
+### `Timer`
+
+`Callable[[], float]`
 
 ### `Transport`
 
-Protocol. Sends one GET, without following redirects or retrying.
+Protocol. Sends one GET, without following redirects, retrying or decoding.
 
-- `.send(url: str, headers: Mapping[str, str], timeout: tuple[float, float]) -> RawResponse`
+- `.send(url: str, headers: Mapping[str, str], timeout: tuple[float, float]) -> AbstractContextManager[RawResponse]`
 - `.close() -> None`
 
 ### `TransportError`
 
-`TransportError(shape: FailureShape, *, wire_bytes: int | None = None)` (subclass of `Exception`)
+`TransportError(shape: FailureShape)` (subclass of `Exception`)
 
-No usable answer: raised by a transport, turned into `FetchFailed`.
+No usable answer: raised by a transport, while connecting or while reading the body, and turned into `FetchFailed`.
 
 ### `classify(error: BaseException, *, phase: Literal['connect', 'read']) -> FailureShape`
 
 Name a low-level failure by what is found behind it. A timeout counts as a connect timeout or a read timeout according to `phase`.
+
+## `politefetch.adapters.decoding`
+
+The body as the source meant it: Content-Encoding undone in one place, with the standard library, for every client.
+
+### `ACCEPT_ENCODING`
+
+`'gzip, deflate'`
+
+### `decode_body(body: bytes, encoding: str | None, *, max_bytes: int | None = None, url: str | None = None) -> bytes`
+
+Undo `encoding` (the Content-Encoding header) on `body`.
 
 ## `politefetch.adapters.urllib`
 
@@ -325,7 +358,7 @@ Adapter for the standard-library `urllib`, available without extras.
 
 ### `UrllibFetcher`
 
-`UrllibFetcher(gate: Gate, *, timeout: float | tuple[float, float] = (10.0, 30.0), user_agent: str = 'politefetch/0.1.0')` (subclass of `Fetcher`)
+`UrllibFetcher(gate: Gate, *, timeout: float | tuple[float, float] = (10.0, 30.0), deadline: timedelta | str = timedelta(seconds=300), user_agent: str = 'politefetch/0.1.0', timer: Callable[[], float] = <built-in function monotonic>)` (subclass of `Fetcher`)
 
 `Fetcher` over urllib.
 
@@ -333,7 +366,7 @@ Adapter for the standard-library `urllib`, available without extras.
 
 `UrllibTransport()`
 
-- `.send(url: str, headers: Mapping[str, str], timeout: tuple[float, float]) -> RawResponse`
+- `.send(url: str, headers: Mapping[str, str], timeout: tuple[float, float]) -> Generator[RawResponse, None, None]`
 - `.close() -> None`
 
 ### `failure_shape(error: BaseException) -> FailureShape`
@@ -346,7 +379,7 @@ Adapter for httpx, behind the `httpx` extra: `HttpxFetcher` (sync) and `AsyncHtt
 
 ### `AsyncHttpxFetcher`
 
-`AsyncHttpxFetcher(gate: Gate, client: AsyncClient | None = None, *, timeout: float | tuple[float, float] = (10.0, 30.0), user_agent: str = 'politefetch/0.1.0')` (subclass of `AsyncFetcher`)
+`AsyncHttpxFetcher(gate: Gate, client: AsyncClient | None = None, *, timeout: float | tuple[float, float] = (10.0, 30.0), deadline: timedelta | str = timedelta(seconds=300), user_agent: str = 'politefetch/0.1.0', timer: Callable[[], float] = <built-in function monotonic>)` (subclass of `AsyncFetcher`)
 
 `AsyncFetcher` over an asynchronous httpx client.
 
@@ -354,12 +387,12 @@ Adapter for httpx, behind the `httpx` extra: `HttpxFetcher` (sync) and `AsyncHtt
 
 `AsyncHttpxTransport(client: AsyncClient | None = None)`
 
-- `.send(url: str, headers: Mapping[str, str], timeout: tuple[float, float]) -> RawResponse`
+- `.send(url: str, headers: Mapping[str, str], timeout: tuple[float, float]) -> AsyncGenerator[AsyncRawResponse, None]`
 - `.aclose() -> None`
 
 ### `HttpxFetcher`
 
-`HttpxFetcher(gate: Gate, client: Client | None = None, *, timeout: float | tuple[float, float] = (10.0, 30.0), user_agent: str = 'politefetch/0.1.0')` (subclass of `Fetcher`)
+`HttpxFetcher(gate: Gate, client: Client | None = None, *, timeout: float | tuple[float, float] = (10.0, 30.0), deadline: timedelta | str = timedelta(seconds=300), user_agent: str = 'politefetch/0.1.0', timer: Callable[[], float] = <built-in function monotonic>)` (subclass of `Fetcher`)
 
 `Fetcher` over a synchronous httpx client.
 
@@ -367,7 +400,7 @@ Adapter for httpx, behind the `httpx` extra: `HttpxFetcher` (sync) and `AsyncHtt
 
 `HttpxTransport(client: Client | None = None)`
 
-- `.send(url: str, headers: Mapping[str, str], timeout: tuple[float, float]) -> RawResponse`
+- `.send(url: str, headers: Mapping[str, str], timeout: tuple[float, float]) -> Generator[RawResponse, None, None]`
 - `.close() -> None`
 
 ### `failure_shape(error: BaseException) -> FailureShape`
@@ -378,7 +411,7 @@ Adapter for requests, behind the `requests` extra (synchronous only).
 
 ### `RequestsFetcher`
 
-`RequestsFetcher(gate: Gate, session: Session | None = None, *, timeout: float | tuple[float, float] = (10.0, 30.0), user_agent: str = 'politefetch/0.1.0')` (subclass of `Fetcher`)
+`RequestsFetcher(gate: Gate, session: Session | None = None, *, timeout: float | tuple[float, float] = (10.0, 30.0), deadline: timedelta | str = timedelta(seconds=300), user_agent: str = 'politefetch/0.1.0', timer: Callable[[], float] = <built-in function monotonic>)` (subclass of `Fetcher`)
 
 `Fetcher` over a requests session.
 
@@ -386,7 +419,7 @@ Adapter for requests, behind the `requests` extra (synchronous only).
 
 `RequestsTransport(session: Session | None = None)`
 
-- `.send(url: str, headers: Mapping[str, str], timeout: tuple[float, float]) -> RawResponse`
+- `.send(url: str, headers: Mapping[str, str], timeout: tuple[float, float]) -> Generator[RawResponse, None, None]`
 - `.close() -> None`
 
 ### `failure_shape(error: BaseException) -> FailureShape`
@@ -628,6 +661,14 @@ Tell whether a socket of `family` may reach `address`.
 ## `politefetch.testing.simulator`
 
 Source simulator: a real HTTP server on 127.0.0.1 that plays the scenarios of SPEC.md.
+
+### `Drip`
+
+`Drip(body: bytes = b'{"data": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"}', *, every: float = 0.05, content_type: str = 'application/json', name: str = 'drip')`
+
+Send the head at once, then the body one byte every `every` seconds: a source that keeps a request alive for as long as it likes.
+
+- `.serve(conn: socket, request: SourceRequest, stop: Event) -> None`
 
 ### `Html`
 

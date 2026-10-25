@@ -1,9 +1,11 @@
 """Every adapter, against the source simulator, on the same scenarios."""
 
 import contextlib
+import gzip
 import json
 import socket
 import threading
+import time
 from collections.abc import Iterator
 from datetime import UTC, datetime, timedelta
 
@@ -12,6 +14,7 @@ import pytest
 from politefetch.adapters import FailureShape
 from politefetch.clock import FakeClock
 from politefetch.errors import (
+    BodyTooLarge,
     FetchFailed,
     RefusalReason,
     Refused,
@@ -24,6 +27,7 @@ from politefetch.gate import Gate
 from politefetch.policy import HostPolicy
 from politefetch.store import MemoryStore, RequestRow
 from politefetch.testing.simulator import (
+    Drip,
     Html,
     NoAnswer,
     Reset,
@@ -298,3 +302,74 @@ def test_a_refused_request_never_leaves(get: Get, source: SourceSimulator) -> No
     with pytest.raises(Refused):
         get(source.url())
     assert source.counter.count == 1
+
+
+# --- one way to read, for every client ------------------------------------------------
+
+SERIES = json.dumps({"series": list(range(2000))}).encode()
+
+
+def test_it_asks_for_what_the_core_decodes(get: Get, source: SourceSimulator) -> None:
+    get(source.url())
+    assert source.counter.requests[0].headers["accept-encoding"] == "gzip, deflate"
+
+
+def test_a_gzip_answer_counts_the_same_in_every_client(
+    get: Get, gate: Gate, source: SourceSimulator
+) -> None:
+    packed = gzip.compress(SERIES)
+    source.scenario = Respond(body=packed, headers={"Content-Encoding": "gzip"})
+    result = get(source.url())
+    assert result.content == {"series": list(range(2000))}
+    assert (result.wire_bytes, result.decoded_bytes) == (len(packed), len(SERIES))
+
+
+@pytest.mark.parametrize("expect", ["json", "text", "bytes"])
+def test_a_truncated_gzip_is_not_ready(
+    get: Get, gate: Gate, source: SourceSimulator, expect: str
+) -> None:
+    packed = gzip.compress(SERIES)
+    cut = packed[: len(packed) // 2]  # framed right: Content-Length matches
+    source.scenario = Respond(
+        body=cut, content_type="text/plain", headers={"Content-Encoding": "gzip"}
+    )
+    with pytest.raises(SourceNotReady):
+        get(source.url(), expect=expect)
+    outcome = last_row(gate).outcome
+    assert outcome is not None
+    assert (outcome.failure, outcome.wire_bytes) == ("not_ready", len(cut))
+
+
+def test_one_user_agent_whatever_its_case(get: Get, source: SourceSimulator) -> None:
+    get(source.url(), headers={"user-agent": "mine/1.0"})
+    assert source.counter.requests[0].headers["user-agent"] == "mine/1.0"
+
+
+@pytest.mark.parametrize("kind", KINDS)
+def test_a_dripping_source_is_cut_at_the_deadline(
+    kind: str, gate: Gate, source: SourceSimulator
+) -> None:
+    source.scenario = Drip(every=0.05)  # about ten seconds for the whole body
+    get = getter(kind, gate, deadline=timedelta(milliseconds=500))
+    started = time.monotonic()
+    with pytest.raises(FetchFailed) as failed:
+        get(source.url())
+    assert failed.value.shape == FailureShape.DEADLINE
+    assert time.monotonic() - started < 5
+    outcome = last_row(gate).outcome
+    assert outcome is not None
+    assert (outcome.failure, outcome.status) == ("deadline", 200)
+    assert 0 < (outcome.wire_bytes or 0) < 100
+
+
+def test_a_large_body_stops_at_max_bytes(
+    get: Get, gate: Gate, source: SourceSimulator
+) -> None:
+    big = b'{"data": "' + b"x" * 3_000_000 + b'"}'
+    source.scenario = Respond(body=big)
+    with pytest.raises(BodyTooLarge):
+        get(source.url(), max_bytes="10kB")
+    outcome = last_row(gate).outcome
+    assert outcome is not None
+    assert outcome.failure == "too_large"
+    assert 10_000 < (outcome.wire_bytes or 0) < len(big)

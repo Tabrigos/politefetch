@@ -7,6 +7,7 @@ import pytest
 
 from politefetch import errors
 from politefetch.errors import (
+    BodyTooLarge,
     ContentError,
     FetchFailed,
     OutcomeNotSaved,
@@ -30,6 +31,8 @@ def sample_errors() -> list[PoliteFetchError]:
         FetchFailed("https://e.org/a", "http", 503),
         SourceNotReady("body shorter than Content-Length", url="https://e.org/a"),
         UnexpectedContent("HTML where JSON was expected"),
+        BodyTooLarge("body larger than max_bytes 10", url="https://e.org/a"),
+        FetchFailed("https://e.org/a", "deadline", 200),
         StaleData(data_time=T, max_age=timedelta(hours=3), age=timedelta(hours=5)),
         StuckSource(data_time=T, reads=4, url="https://e.org/a"),
         OutcomeNotSaved("https://e.org/a", 7, "http", 403),
@@ -45,7 +48,13 @@ def test_every_error_is_a_politefetch_error() -> None:
 def test_refused_is_not_a_content_error() -> None:
     # Refused means no request was sent; a ContentError means one was.
     assert not issubclass(Refused, ContentError)
-    for cls in (SourceNotReady, UnexpectedContent, StaleData, StuckSource):
+    for cls in (
+        SourceNotReady,
+        UnexpectedContent,
+        BodyTooLarge,
+        StaleData,
+        StuckSource,
+    ):
         assert issubclass(cls, ContentError)
 
 
@@ -63,6 +72,7 @@ def test_public_names_cover_the_hierarchy() -> None:
         "ContentError",
         "SourceNotReady",
         "UnexpectedContent",
+        "BodyTooLarge",
         "StaleData",
         "StuckSource",
         "OutcomeNotSaved",
@@ -177,6 +187,8 @@ def test_fetch_failed_says_how() -> None:
     )
     assert "read_timeout" in str(timeout)
     assert "HTTP 503" in str(FetchFailed("https://e.org/a", "http", 503))
+    late = str(FetchFailed("https://e.org/a", "deadline", 200))
+    assert "deadline after HTTP 200" in late
     assert ContentError not in type(timeout).__mro__
 
 
