@@ -973,6 +973,10 @@ alla vecchia e la vecchia prende la riga "Superata da".
     l'handshake prima di rispondere, altrimenti la chiusura con dati non letti
     manda un reset che su Windows cancella la risposta; il generatore della
     skill toglie anche gli indirizzi esadecimali maiuscoli e scrive sempre LF;
+    l'orologio comune ai processi dei test sugli store è `perf_counter`, non
+    `monotonic`, che con Python 3.12 su Windows avanza a scatti di 15,6 ms:
+    a ogni scatto i tentativi vedevano lo stesso istante e l'intervallo
+    minimo li rifiutava (19 ammessi su un tetto di 30, solo nel job 3.12);
   - un job `windows` in CI (3.12 e 3.13) esegue pytest e mypy, che controlla
     i rami `win32` solo su Windows. Postgres resta nel job Linux: i runner
     Windows non hanno i container di servizio.
