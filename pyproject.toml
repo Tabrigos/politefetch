@@ -35,15 +35,20 @@ politefetch = "politefetch.testing.plugin"
 politefetch = "politefetch.skill"
 
 [project.optional-dependencies]
-# The core never imports them. httpx stays below 1.0 until 1.0 is released.
+# The core never imports them. httpx stays below 1.0 until 1.0 is released:
+# review the bound at every release. The requests adapter reads the raw body
+# with urllib3's `read1` (2.2) and names its `NameResolutionError` (2.0).
+# psycopg comes without `[binary]`, as psycopg asks of libraries: the
+# application picks `psycopg[binary]`, `psycopg[c]` or a system libpq.
 httpx = ["httpx>=0.28,<1"]
-requests = ["requests>=2.32,<3"]
-postgres = ["psycopg[binary]>=3.2,<4"]
+requests = ["requests>=2.32,<3", "urllib3>=2.2,<3"]
+postgres = ["psycopg>=3.2,<4"]
 
 [dependency-groups]
 dev = [
     "hypothesis>=6.170",
     "mypy>=2.4",
+    "psycopg[binary]>=3.2",
     "pytest>=9.1",
     "ruff>=0.17",
     "types-requests>=2.32",

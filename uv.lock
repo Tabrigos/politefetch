@@ -563,16 +563,18 @@ httpx = [
     { name = "httpx" },
 ]
 postgres = [
-    { name = "psycopg", extra = ["binary"] },
+    { name = "psycopg" },
 ]
 requests = [
     { name = "requests" },
+    { name = "urllib3" },
 ]
 
 [package.dev-dependencies]
 dev = [
     { name = "hypothesis" },
     { name = "mypy" },
+    { name = "psycopg", extra = ["binary"] },
     { name = "pytest" },
     { name = "ruff" },
     { name = "types-requests" },
@@ -581,8 +583,9 @@ dev = [
 [package.metadata]
 requires-dist = [
     { name = "httpx", marker = "extra == 'httpx'", specifier = ">=0.28,<1" },
-    { name = "psycopg", extras = ["binary"], marker = "extra == 'postgres'", specifier = ">=3.2,<4" },
+    { name = "psycopg", marker = "extra == 'postgres'", specifier = ">=3.2,<4" },
     { name = "requests", marker = "extra == 'requests'", specifier = ">=2.32,<3" },
+    { name = "urllib3", marker = "extra == 'requests'", specifier = ">=2.2,<3" },
 ]
 provides-extras = ["httpx", "postgres", "requests"]
 
@@ -590,6 +593,7 @@ provides-extras = ["httpx", "postgres", "requests"]
 dev = [
     { name = "hypothesis", specifier = ">=6.170" },
     { name = "mypy", specifier = ">=2.4" },
+    { name = "psycopg", extras = ["binary"], specifier = ">=3.2" },
     { name = "pytest", specifier = ">=9.1" },
     { name = "ruff", specifier = ">=0.17" },
     { name = "types-requests", specifier = ">=2.32" },
