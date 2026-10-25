@@ -122,14 +122,15 @@ class UrlRecord:
 
 @dataclass(frozen=True, slots=True)
 class DataTimeRecord:
-    """The data-time history of one URL: the latest data time seen, and how
+    """The data-time history of one URL: the latest data time seen, how
     many consecutive reads have not gone past it (the read that brought it
-    included)."""
+    included), and `since`, when that first read happened."""
 
     url: str
     latest: datetime
     reads: int
     updated_at: datetime
+    since: datetime
 
 
 @dataclass(frozen=True, slots=True)
@@ -516,7 +517,9 @@ def apply_data_time(
     """
     data_time = as_utc(data_time, "data_time")
     if previous is None or data_time > previous.latest:
-        return DataTimeRecord(url=url, latest=data_time, reads=1, updated_at=now)
+        return DataTimeRecord(
+            url=url, latest=data_time, reads=1, updated_at=now, since=now
+        )
     return replace(previous, reads=previous.reads + 1, updated_at=now)
 
 

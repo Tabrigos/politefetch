@@ -132,9 +132,13 @@ _TABLES = (
         url text PRIMARY KEY,
         latest timestamptz NOT NULL,
         reads bigint NOT NULL,
-        updated_at timestamptz NOT NULL
+        updated_at timestamptz NOT NULL,
+        since timestamptz
     )
     """,
+    # Added after the table first shipped (no numbered migrations before the
+    # first release, D-002).
+    "ALTER TABLE data_times ADD COLUMN IF NOT EXISTS since timestamptz",
 )
 
 _ROW_COLUMNS = (
@@ -366,16 +370,18 @@ class PostgresStore:
         conn: psycopg.Connection[tuple[Any, ...]], url: str
     ) -> DataTimeRecord | None:
         found = conn.execute(
-            "SELECT latest, reads, updated_at FROM data_times WHERE url = %s", (url,)
+            "SELECT latest, reads, updated_at, since FROM data_times WHERE url = %s",
+            (url,),
         ).fetchone()
         if found is None:
             return None
-        latest, reads, updated_at = found
+        latest, reads, updated_at, since = found
         return DataTimeRecord(
             url=url,
             latest=as_utc(latest),
             reads=int(reads),
             updated_at=as_utc(updated_at),
+            since=as_utc(since if since is not None else updated_at),
         )
 
     # --- reads --------------------------------------------------------------
@@ -613,11 +619,12 @@ class PostgresStore:
                 self._data_time_record(conn, url), url, data_time, now
             )
             conn.execute(
-                "INSERT INTO data_times (url, latest, reads, updated_at)"
-                " VALUES (%s, %s, %s, %s)"
+                "INSERT INTO data_times (url, latest, reads, updated_at, since)"
+                " VALUES (%s, %s, %s, %s, %s)"
                 " ON CONFLICT (url) DO UPDATE SET latest = excluded.latest,"
-                " reads = excluded.reads, updated_at = excluded.updated_at",
-                (url, record.latest, record.reads, record.updated_at),
+                " reads = excluded.reads, updated_at = excluded.updated_at,"
+                " since = excluded.since",
+                (url, record.latest, record.reads, record.updated_at, record.since),
             )
         return record
 

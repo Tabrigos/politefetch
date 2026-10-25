@@ -1,8 +1,8 @@
 """The data-time history behind stuck-source detection, against a model.
 
 Whatever sequence of data times a source returns, across restarts of the
-store, the record holds the latest time seen and the number of consecutive
-reads that did not go past it.
+store, the record holds the latest time seen, the number of consecutive
+reads that did not go past it, and when the first of them happened.
 """
 
 from datetime import UTC, datetime, timedelta
@@ -33,6 +33,7 @@ def test_the_record_matches_the_model(kind: str, steps: list[tuple[str, int]]) -
     try:
         latest: datetime | None = None
         reads = 0
+        since = T
         now = T
         for action, hours in steps:
             if action == "restart":
@@ -41,20 +42,21 @@ def test_the_record_matches_the_model(kind: str, steps: list[tuple[str, int]]) -
             data_time = T + timedelta(hours=hours)
             now += timedelta(minutes=1)
             if latest is None or data_time > latest:
-                latest, reads = data_time, 1
+                latest, reads, since = data_time, 1, now
             else:
                 reads += 1
             record = harness.store.note_data_time(URL, data_time, now=now)
-            assert (record.latest, record.reads, record.updated_at) == (
+            assert (record.latest, record.reads, record.updated_at, record.since) == (
                 latest,
                 reads,
                 now,
+                since,
             )
         stored = harness.store.data_time_record(URL)
         if latest is None:
             assert stored is None
         else:
             assert stored is not None
-            assert (stored.latest, stored.reads) == (latest, reads)
+            assert (stored.latest, stored.reads, stored.since) == (latest, reads, since)
     finally:
         harness.close()
