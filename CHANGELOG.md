@@ -4,6 +4,20 @@ All notable changes to politefetch. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions follow
 [Semantic Versioning](https://semver.org/).
 
+## Unreleased
+
+### Fixed
+
+- Windows: the pytest plugin failed to import (`socket.socket` has no
+  `sendmsg` there), which broke pytest in every Windows project that
+  installed politefetch.
+- Windows: the network barrier let asyncio through, because the default
+  event loop connects and sends from its proactor without calling
+  `socket.socket`; the barrier now guards `IocpProactor.connect` and
+  `sendto` too.
+- Windows: `Child.join` waited for the whole timeout when the child was
+  killed before it started running.
+
 ## 0.1.0 — 2026-10-18
 
 The first version. Not published on PyPI yet.
