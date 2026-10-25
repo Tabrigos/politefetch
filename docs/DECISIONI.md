@@ -944,3 +944,49 @@ alla vecchia e la vecchia prende la riga "Superata da".
 - **Conseguenze**: regole in `AGENTS.md` ("Releases"). Gli environment
   `pypi` (con revisore) e `testpypi` si creano quando il repository è
   pubblico.
+
+## D-044 — politefetch funziona anche su Windows, e la CI lo prova
+
+- **Data e tappa**: 2026-10-25, fuori dalle tappe (sessione locale)
+- **Contesto**: su Windows `politefetch.testing.barrier` non si importava
+  (`socket.socket` non ha `sendmsg`). Il plugin è un entry point `pytest11`,
+  quindi pytest si rompeva in ogni progetto Windows che installa politefetch.
+  Corretto l'import, la suite è partita e ha mostrato un buco peggiore: il
+  loop di asyncio predefinito su Windows (proactor) apre le connessioni con
+  `_overlapped.ConnectEx`/`WSAConnect` e spedisce con `WSASendTo`, senza
+  passare da `socket.socket`. La barriera lasciava uscire asyncio, e con lui
+  httpx asincrono.
+- **Decisione**:
+  - la barriera sorveglia solo i metodi del socket che la piattaforma ha;
+  - su Windows sorveglia anche `asyncio.windows_events.IocpProactor.connect`
+    e `.sendto`, con la stessa regola (passa solo il loopback) e la stessa
+    chiusura del socket su un `connect` bloccato. È un'API interna di
+    CPython: se cambia, i test asyncio della barriera diventano rossi nel job
+    Windows;
+  - `Child.join` aspetta il pipe e insieme il processo: su Windows un figlio
+    ucciso prima di prendere il suo capo del pipe lo lascia aperto, e l'EOF
+    non arriva mai. Su Windows "ucciso" è `TerminateProcess`, che
+    `multiprocessing` riporta come `-SIGTERM`;
+  - i test si adattano a Windows senza cambiare cosa provano: il rifiuto su
+    loopback arriva dopo circa 2 s di SYN ritentati (misurato: 2,05 s), più
+    del timeout di connessione dei test; il server "HTTP davanti a TLS" legge
+    l'handshake prima di rispondere, altrimenti la chiusura con dati non letti
+    manda un reset che su Windows cancella la risposta; il generatore della
+    skill toglie anche gli indirizzi esadecimali maiuscoli e scrive sempre LF;
+    l'orologio comune ai processi dei test sugli store è `perf_counter`, non
+    `monotonic`, che con Python 3.12 su Windows avanza a scatti di 15,6 ms:
+    a ogni scatto i tentativi vedevano lo stesso istante e l'intervallo
+    minimo li rifiutava (19 ammessi su un tetto di 30, solo nel job 3.12);
+  - un job `windows` in CI (3.12 e 3.13) esegue pytest e mypy, che controlla
+    i rami `win32` solo su Windows. Postgres resta nel job Linux: i runner
+    Windows non hanno i container di servizio.
+- **Alternative scartate**: dichiarare il plugin solo per Linux e macOS (un
+  utente Windows avrebbe avuto pytest rotto o la barriera disattivata);
+  sorvegliare `_overlapped` direttamente (`Overlapped` è un tipo C, i suoi
+  metodi non si sostituiscono); avviare un sottoprocesso per provare l'import
+  senza `sendmsg` (D-012 lo vieta: il test carica una seconda copia del
+  modulo mentre `socket.socket` è una classe senza `sendmsg`).
+- **Conseguenze**: la protezione di `main` richiede anche `windows (3.12)` e
+  `windows (3.13)`. Su Windows, con un timeout di connessione sotto i 2 s, un
+  rifiuto su loopback si presenta come `connect_timeout`: il default di 10 s
+  non lo vede.

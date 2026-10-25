@@ -11,12 +11,13 @@ Riscritto da capo a ogni fine sessione, mai accodato.
   skill per gli agenti dentro il pacchetto (`python -m politefetch.skill`,
   schema comune con swpc-kit, D-040 e D-041).
 - **Prossimo passo**: nessuna tappa aperta in `docs/TAPPE.md`. Repository
-  pronto per diventare pubblico come `politefetch` (D-042). Pubblicazione
-  decisa (D-043): prima la skill v2 e il plugin che si importa su Windows,
-  poi la prova su TestPyPI e il tag.
+  pronto per diventare pubblico come `politefetch` (D-042). Il plugin e la
+  barriera funzionano su Windows, con un job in CI (D-044). Pubblicazione
+  decisa (D-043): prima la skill v2, poi la prova su TestPyPI e il tag.
   Chi cambia l'API pubblica rigenera la skill (`AGENTS.md`). Prima dei test:
   `eval "$(scripts/postgres-for-tests.sh)"`, altrimenti i test Postgres
-  vengono saltati.
+  vengono saltati (su Windows lo script non c'è: lì i test Postgres si
+  saltano, girano nel job Linux).
 - **Dubbi aperti**:
   - `httpx2` non è supportato (D-032);
   - una modifica al modulo `skill` va concordata con swpc-kit.
@@ -114,3 +115,8 @@ Una riga per sessione: data, tappa, cosa è entrato, cosa resta.
   `politefetch`, autore Sidereus Team in `LICENSE` e `pyproject.toml`,
   `AGENTS.md` e `SPEC.md` in inglese, storia riscritta senza identità
   personali. Resta: renderlo pubblico, poi la pubblicazione su PyPI.
+- 2026-10-25 — Windows (D-044): il plugin si importa (niente `sendmsg`), la
+  barriera sorveglia anche il proactor di asyncio, che la scavalcava;
+  `Child.join` non resta appeso su un figlio ucciso subito; test e generatore
+  della skill adattati; job `windows` in CI. Su Windows 817 test passati, 136
+  saltati (Postgres); mutazioni sui pezzi nuovi prese tutte.

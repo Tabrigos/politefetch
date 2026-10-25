@@ -1,6 +1,8 @@
 """Child processes started for tests run behind the network barrier (D-012)."""
 
+import signal
 import socket
+import sys
 
 import pytest
 
@@ -10,6 +12,13 @@ from politefetch.testing.processes import ChildFailed, spawn
 from . import children
 
 PUBLIC_IP = "1.1.1.1"
+
+# Windows has no SIGKILL: multiprocessing kills with TerminateProcess and
+# reports it as SIGTERM.
+if sys.platform == "win32":
+    KILLED = -signal.SIGTERM
+else:
+    KILLED = -signal.SIGKILL
 
 
 def test_the_result_comes_back() -> None:
@@ -47,11 +56,11 @@ def test_a_child_can_be_killed() -> None:
     child.kill()
     with pytest.raises(ChildFailed) as failed:
         child.join(timeout=60)
-    assert failed.value.exitcode == -9
+    assert failed.value.exitcode == KILLED
 
 
 def test_a_child_that_overruns_is_killed() -> None:
     child = spawn(children.sleep, 60)
     with pytest.raises(TimeoutError):
         child.join(timeout=0.5)
-    assert child.exitcode == -9
+    assert child.exitcode == KILLED

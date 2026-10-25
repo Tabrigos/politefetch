@@ -48,3 +48,25 @@ jobs:
         run: uv run ruff format --check .
       - name: mypy
         run: uv run mypy
+
+  windows:
+    # The pytest plugin loads in every project that installs politefetch, so
+    # it must work on Windows too. No Postgres here (Windows runners have no
+    # service containers): those tests run in `checks`. mypy runs again
+    # because it type-checks the win32 branches only on Windows.
+    runs-on: windows-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ["3.12", "3.13"]
+    steps:
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v10.3.0
+        with:
+          python-version: ${{ matrix.python }}
+      - name: uv sync --all-extras
+        run: uv sync --all-extras --locked
+      - name: pytest
+        run: uv run pytest
+      - name: mypy
+        run: uv run mypy

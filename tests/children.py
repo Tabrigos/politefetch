@@ -10,6 +10,7 @@ import time
 from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from typing import Final
 
 from politefetch.clock import FakeClock
 from politefetch.errors import RefusalReason, Refused
@@ -49,9 +50,19 @@ DAY_START = datetime(2026, 10, 16, tzinfo=UTC)
 TINY = timedelta(microseconds=1)
 
 
+# A clock shared by all processes, so their requests really interleave:
+# CLOCK_MONOTONIC on Linux, QueryPerformanceCounter on Windows. Not
+# `monotonic`: with Python 3.12 on Windows it ticks every 15.6 ms.
+SHARED_CLOCK: Final = "perf_counter"
+
+
+def clock_ns() -> int:
+    ticks: int = getattr(time, f"{SHARED_CLOCK}_ns")()
+    return ticks
+
+
 def _now(start_ns: int) -> datetime:
-    # A clock shared by all processes, so their requests really interleave.
-    return DAY_START + timedelta(microseconds=(time.monotonic_ns() - start_ns) // 1000)
+    return DAY_START + timedelta(microseconds=(clock_ns() - start_ns) // 1000)
 
 
 def _promise_after(moment: datetime) -> Callable[[HostState], datetime]:

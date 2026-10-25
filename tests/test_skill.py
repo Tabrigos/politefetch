@@ -133,6 +133,13 @@ def test_api_reference_is_reproducible() -> None:
     assert " at 0x" not in build_skill.build()
 
 
+@pytest.mark.parametrize("address", ["0x7f3a2c1b9e40", "0x000002A18B23DC60"])
+def test_function_addresses_are_dropped_on_every_platform(address: str) -> None:
+    # Windows prints addresses in upper case, Linux in lower case.
+    text = f"lock: <function RLock at {address}> = <factory>"
+    assert build_skill._short(text) == "lock: RLock = <factory>"
+
+
 def test_referenced_files_exist() -> None:
     paths = set(re.findall(r"`(references/[\w./-]+)`", BODY))
     assert paths

@@ -7,16 +7,20 @@ would prove nothing.
 """
 
 import asyncio
+import importlib.util
 import ipaddress
 import socket
 import ssl
+import sys
 import urllib.request
 from pathlib import Path
+from types import ModuleType
 
 import pytest
 from hypothesis import given
 from hypothesis import strategies as st
 
+from politefetch.testing import barrier
 from politefetch.testing.barrier import (
     NetworkBarrier,
     NetworkBlockedError,
@@ -136,6 +140,16 @@ def test_udp_sendto_with_flags_is_blocked() -> None:
         sock.sendto(b"query", 0, (PUBLIC_IP, 53))
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="no sendmsg on Windows")
+def test_udp_sendmsg_is_blocked() -> None:
+    if sys.platform != "win32":  # the check mypy understands
+        with (
+            socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock,
+            pytest.raises(NetworkBlockedError),
+        ):
+            sock.sendmsg([b"query"], [], 0, (PUBLIC_IP, 53))
+
+
 def test_create_connection_is_blocked() -> None:
     with pytest.raises(NetworkBlockedError):
         socket.create_connection((PUBLIC_IP, 443), timeout=5)
@@ -162,6 +176,36 @@ def test_asyncio_is_blocked() -> None:
 
     with pytest.raises(NetworkBlockedError):
         asyncio.run(connect())
+
+
+def test_asyncio_udp_connect_is_blocked() -> None:
+    async def connect() -> None:
+        loop = asyncio.get_running_loop()
+        await loop.create_datagram_endpoint(
+            asyncio.DatagramProtocol, remote_addr=(PUBLIC_IP, 53)
+        )
+
+    with pytest.raises(NetworkBlockedError):
+        asyncio.run(connect())
+
+
+def test_asyncio_udp_sendto_is_blocked(network_barrier: NetworkBarrier) -> None:
+    # The transport reports a failed send to the loop's exception handler
+    # instead of raising it: look at what the barrier recorded.
+    async def send() -> None:
+        loop = asyncio.get_running_loop()
+        transport, _ = await loop.create_datagram_endpoint(
+            asyncio.DatagramProtocol, family=socket.AF_INET
+        )
+        loop.set_exception_handler(lambda loop, context: None)
+        try:
+            transport.sendto(b"query", (PUBLIC_IP, 53))
+            await asyncio.sleep(0.1)
+        finally:
+            transport.close()
+
+    asyncio.run(send())
+    assert network_barrier.blocked == [f"{PUBLIC_IP}:53"]
 
 
 def test_blocked_attempts_are_recorded(network_barrier: NetworkBarrier) -> None:
@@ -195,14 +239,16 @@ def test_ipv6_loopback_passes() -> None:
         server.accept()[0].close()
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="no AF_UNIX on Windows")
 def test_unix_sockets_pass(tmp_path: Path) -> None:
-    path = str(tmp_path / "s.sock")
-    with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as server:
-        server.bind(path)
-        server.listen()
-        with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as client:
-            client.connect(path)
-            server.accept()[0].close()
+    if sys.platform != "win32":  # the check mypy understands
+        path = str(tmp_path / "s.sock")
+        with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as server:
+            server.bind(path)
+            server.listen()
+            with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as client:
+                client.connect(path)
+                server.accept()[0].close()
 
 
 def test_loopback_udp_passes() -> None:
@@ -235,6 +281,67 @@ def test_disable_restores_the_socket_module(network_barrier: NetworkBarrier) -> 
     assert restored == (original("connect"), original("getaddrinfo"))
     assert guarded is not original("connect")
     assert network_barrier.active
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="the proactor is on Windows only")
+def test_disable_restores_the_proactor(network_barrier: NetworkBarrier) -> None:
+    proactor = importlib.import_module("asyncio.windows_events").IocpProactor
+    guarded = (proactor.connect, proactor.sendto)
+    network_barrier.disable()
+    try:
+        restored = (proactor.connect, proactor.sendto)
+    finally:
+        network_barrier.enable()
+    assert all(a is not b for a, b in zip(restored, guarded, strict=True))
+    assert {f.__module__ for f in restored} == {"asyncio.windows_events"}
+
+
+class SocketWithoutSendmsg:
+    """`socket.socket` as Windows has it: no `sendmsg`."""
+
+    family = socket.AF_INET
+
+    def __init__(self) -> None:
+        self.reached: list[object] = []
+
+    def connect(self, address: object) -> None:
+        self.reached.append(address)
+
+    connect_ex = connect
+
+    def sendto(self, data: bytes, address: object) -> None:
+        self.reached.append(address)
+
+    def close(self) -> None:
+        pass
+
+
+def load_fresh_barrier() -> ModuleType:
+    """Import a second copy of the barrier module, as a new process would."""
+    spec = importlib.util.spec_from_file_location("fresh_barrier", barrier.__file__)
+    assert spec is not None
+    assert spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def test_the_barrier_works_where_sockets_have_no_sendmsg(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # The plugin is a pytest11 entry point: if the barrier does not import,
+    # pytest breaks in every project that installs politefetch on Windows.
+    monkeypatch.setattr(socket, "socket", SocketWithoutSendmsg)
+    fresh = load_fresh_barrier()
+    sock = SocketWithoutSendmsg()
+    with fresh.NetworkBarrier():
+        with pytest.raises(fresh.NetworkBlockedError):
+            sock.connect((PUBLIC_IP, 443))
+        with pytest.raises(fresh.NetworkBlockedError):
+            sock.sendto(b"query", (PUBLIC_IP, 53))
+        sock.connect(("127.0.0.1", 8080))
+    assert sock.reached == [("127.0.0.1", 8080)]
+    assert not hasattr(SocketWithoutSendmsg, "sendmsg")
 
 
 def test_a_blocked_connect_closes_the_socket() -> None:

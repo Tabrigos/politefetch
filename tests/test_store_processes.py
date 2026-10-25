@@ -32,9 +32,15 @@ def spec(
         drop_schema(found[2])
 
 
+def test_the_shared_clock_tells_requests_apart() -> None:
+    # Each request closes with the next one allowed a microsecond later: a
+    # coarser clock gives a whole burst the same instant and refuses it.
+    assert time.get_clock_info(children.SHARED_CLOCK).resolution <= 1e-6
+
+
 def test_processes_together_never_exceed_the_cap(spec: children.StoreSpec) -> None:
     cap = 30
-    start_ns = time.monotonic_ns()
+    start_ns = children.clock_ns()
     workers = [spawn(children.hammer, spec, HOST, cap, 300, start_ns) for _ in range(4)]
     admitted = [w.join(timeout=300) for w in workers]
     assert sum(admitted) == cap

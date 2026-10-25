@@ -725,7 +725,7 @@ Child processes for tests, started behind the network barrier.
 A running child process started by `spawn`.
 
 - `.exitcode` (property)
-- `.kill() -> None`: Kill the child with SIGKILL, as a crash would.
+- `.kill() -> None`: Kill the child with SIGKILL (TerminateProcess on Windows), as a crash would.
 - `.join(timeout: float) -> T`: Wait for the child and return its result, or raise its exception.
 
 ### `ChildFailed`
