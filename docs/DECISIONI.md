@@ -921,3 +921,26 @@ alla vecchia e la vecchia prende la riga "Superata da".
 - **Conseguenze**: supera il titolare del copyright di D-011 e chiude il
   punto aperto di D-010. I numeri delle pull request citati qui e nel Log si
   riferiscono al repository precedente, privato.
+
+## D-043 — Si pubblica su PyPI dalla CI, con l'approvazione del maintainer
+
+- **Data e tappa**: 2026-10-25, fuori dalle tappe (sessione locale)
+- **Contesto**: il nome `politefetch` è libero su PyPI e su TestPyPI il
+  2026-10-25 (un "pending publisher" non lo riserva). Una build locale
+  metteva nello sdist i file degli strumenti ignorati solo in
+  `.git/info/exclude`, che hatchling non legge.
+- **Decisione**: PyPI, account Sidereus Team. Pubblica solo
+  `.github/workflows/release.yml` con Trusted Publishing (nessun token):
+  il tag `vX.Y.Z` costruisce, controlla, aspetta l'approvazione nell'environment
+  `pypi`, pubblica con le attestazioni PEP 740 e crea la release su GitHub;
+  un avvio manuale pubblica su TestPyPI, come prova generale della prima
+  versione. Lo sdist ha un elenco esplicito di file (`only-include`),
+  ricontrollato dal workflow. La prima pubblicazione viene dopo la skill v2
+  e il plugin pytest che si importa su Windows, perché toglie `sync` e
+  l'entry point `agent_skills` prima che qualcuno li adotti.
+- **Alternative scartate**: `uv publish` dal PC con un token (un segreto da
+  custodire e una build che dipende dai file locali); pubblicare subito la
+  0.1.0.
+- **Conseguenze**: regole in `AGENTS.md` ("Releases"). Gli environment
+  `pypi` (con revisore) e `testpypi` si creano quando il repository è
+  pubblico.

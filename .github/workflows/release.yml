@@ -1,0 +1,106 @@
+name: Release
+
+# A pull request runs only the build and its checks. A tag `vX.Y.Z` publishes
+# to PyPI once the `pypi` environment is approved, then creates the GitHub
+# release with the same files. A manual run publishes to TestPyPI instead, as
+# a rehearsal. Both use Trusted Publishing: there is no token in the
+# repository.
+
+on:
+  push:
+    tags: ["v*"]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v10.3.0
+        with:
+          python-version: "3.12"
+      - name: uv build
+        run: uv build
+      - name: The tag matches the package version
+        if: github.event_name == 'push'
+        run: test -f "dist/politefetch-${GITHUB_REF_NAME#v}.tar.gz"
+      - name: The sdist holds only the expected files
+        run: |
+          allowed='^[^/]+/$|^[^/]+/(src|tests|tools|scripts|docs)/|^[^/]+/(\.gitignore|AGENTS\.md|CHANGELOG\.md|LICENSE|README\.md|SPEC\.md|pyproject\.toml|PKG-INFO)$'
+          if tar tzf dist/*.tar.gz | grep -v -E "$allowed"; then
+            echo "unexpected files in the sdist"
+            exit 1
+          fi
+      - name: twine check
+        run: uvx twine check --strict dist/*
+      - name: The wheel installs and carries its skill
+        run: |
+          uv venv /tmp/smoke
+          uv pip install --python /tmp/smoke/bin/python dist/*.whl
+          /tmp/smoke/bin/python -c "import politefetch; print(politefetch.__version__)"
+          /tmp/smoke/bin/python -m politefetch.skill path
+      - uses: actions/upload-artifact@v5
+        with:
+          name: dist
+          path: dist/
+
+  testpypi:
+    if: github.event_name == 'workflow_dispatch'
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: testpypi
+      url: https://test.pypi.org/project/politefetch/
+    permissions:
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@v6
+        with:
+          name: dist
+          path: dist/
+      - uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          repository-url: https://test.pypi.org/legacy/
+
+  pypi:
+    if: github.event_name == 'push'
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: pypi
+      url: https://pypi.org/project/politefetch/
+    permissions:
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@v6
+        with:
+          name: dist
+          path: dist/
+      - uses: pypa/gh-action-pypi-publish@release/v1
+
+  github-release:
+    needs: pypi
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/download-artifact@v6
+        with:
+          name: dist
+          path: dist/
+      - name: Release notes from the changelog
+        run: |
+          awk -v ver="${GITHUB_REF_NAME#v}" '
+            /^## / { if (found) exit; if (index($0, ver)) { found = 1; next } }
+            found { print }
+          ' CHANGELOG.md > notes.md
+          test -s notes.md
+      - name: gh release create
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "$GITHUB_REF_NAME" dist/* --title "$GITHUB_REF_NAME" --notes-file notes.md

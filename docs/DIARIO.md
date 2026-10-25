@@ -10,9 +10,10 @@ Riscritto da capo a ogni fine sessione, mai accodato.
   byte, quattro adattatori, il kit di test, lo stato per host in JSON e la
   skill per gli agenti dentro il pacchetto (`python -m politefetch.skill`,
   schema comune con swpc-kit, D-040 e D-041).
-- **Prossimo passo**: nessuna tappa aperta in `docs/TAPPE.md`. Da decidere
-  con l'utente: pubblicazione su PyPI (e tag `v0.1.0`). Repository pronto
-  per diventare pubblico come `politefetch` (D-042).
+- **Prossimo passo**: nessuna tappa aperta in `docs/TAPPE.md`. Repository
+  pronto per diventare pubblico come `politefetch` (D-042). Pubblicazione
+  decisa (D-043): prima la skill v2 e il plugin che si importa su Windows,
+  poi la prova su TestPyPI e il tag.
   Chi cambia l'API pubblica rigenera la skill (`AGENTS.md`). Prima dei test:
   `eval "$(scripts/postgres-for-tests.sh)"`, altrimenti i test Postgres
   vengono saltati.
