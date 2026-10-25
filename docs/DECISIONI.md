@@ -1080,3 +1080,70 @@ alla vecchia e la vecchia prende la riga "Superata da".
   `reconcile_after`. Nuovo errore pubblico `OutcomeNotSaved`; nuova funzione
   `politefetch.gate.normalize_host`. La scadenza totale della richiesta, che
   evita le chiusure tardive, arriva in R2.
+
+## D-047 — Adattatori: scadenza, dimensione, decodifica (R2)
+
+- **Data e tappa**: 2026-10-25, R2
+- **Contesto**: i trasporti leggevano il corpo in un colpo solo, con un
+  timeout per ogni blocco: una fonte che gocciola il corpo teneva viva la
+  richiesta oltre `reconcile_after`, il byte budget si consumava solo dopo
+  il download, e ogni client decodificava a modo suo (un gzip troncato con
+  il framing giusto passava per buono). Un client con retry propri mandava
+  alla fonte richieste che il Gate non aveva ammesso.
+- **Decisione**:
+  - **il trasporto consegna il corpo grezzo, a pezzi**: `send` restituisce
+    un context manager con `RawResponse(status, headers, chunks)`; i pezzi
+    sono il corpo come trasferito, senza framing ma non decodificato. Il
+    core legge, conta i byte, applica scadenza e limite e chiude la
+    connessione quando smette di leggere. httpx legge con `iter_raw`,
+    requests con `raw.read1(decode_content=False)`, urllib con `read1`:
+    tutti consegnano ciò che è arrivato senza aspettare un blocco pieno;
+  - **scadenza**: `deadline` per l'intera richiesta, default cinque minuti.
+    Si controlla all'arrivo della testa e dopo ogni pezzo, quindi una
+    richiesta dura al massimo la scadenza più un timeout di connessione e
+    uno di lettura: il `Fetcher` rifiuta alla costruzione una somma che non
+    sia minore di `gate.reconcile_after`. Cinque minuti bastano per file di
+    molti MB e restano lontani dall'ora di riconciliazione. L'orologio è
+    `timer`, iniettabile, di default `time.monotonic`, che non salta
+    indietro. Un 2xx oltre la scadenza è `FetchFailed` con forma nuova
+    `deadline` e lo stato HTTP; per un errore HTTP la scadenza non cambia
+    nulla, il fallimento resta lo stato;
+  - **dimensione**: la lettura si ferma oltre il limite più stretto fra
+    `max_bytes` (argomento di `get`) e i byte rimasti nel budget del giorno
+    (`Attempt.bytes_left`, calcolato all'apertura senza contare la
+    prenotazione della richiesta stessa). Un 2xx tagliato è `BodyTooLarge`
+    (forma `too_large`) con i byte davvero letti. `max_bytes` vale anche per
+    il corpo decodificato, così un gzip di pochi KB non diventa un GB in
+    memoria;
+  - **decodifica nel core** (`adapters/decoding.py`): gzip, anche in più
+    membri, e deflate, zlib o grezzo. I fetcher chiedono
+    `Accept-Encoding: gzip, deflate`, urllib compreso. Uno stream compresso
+    che non arriva alla fine è `SourceNotReady`; uno non valido, o una
+    codifica che non sappiamo togliere (`br`, `zstd`), è
+    `UnexpectedContent`;
+  - **client con retry** (decisione 2 di TAPPE): `ValueError` alla
+    costruzione. Per requests si guardano gli `HTTPAdapter` della sessione
+    e si chiede a `Retry` se dopo un fallimento di qualche tipo
+    ritenterebbe; per httpx i `retries` del pool di ogni trasporto, anche
+    quelli montati. Sono attributi privati di httpx: un test controlla che
+    esistano ancora. Un trasporto scritto a mano non si può controllare: lo
+    dice la documentazione;
+  - **header**: i nostri, poi quelli del chiamante, poi i condizionali,
+    senza distinguere maiuscole e minuscole: un `user-agent` del chiamante
+    sostituisce il nostro;
+  - **`Content-Length`**: solo cifre ASCII, come il `Retry-After` di R1.
+- **Alternative scartate**:
+  - leggere a blocchi dentro ogni trasporto: tre copie della stessa logica,
+    e i byte contati in tre modi;
+  - una scadenza con l'orologio del Gate: è un orologio da parete, può
+    saltare, e nei test è fermo;
+  - un limite sul corpo decodificato preso dal budget: il budget conta i
+    byte sul filo;
+  - decodificare `br` e `zstd`: servirebbero dipendenze fuori dalla
+    libreria standard.
+- **Conseguenze**: cambia il protocollo `Transport` (e `TransportError`,
+  `IncompleteBody`, `RawResponse`): un trasporto scritto a mano va
+  riscritto. Una fonte che gocciola la testa stessa resta limitata solo dal
+  timeout di lettura del client su ogni pezzo: la scadenza si controlla
+  quando la testa è arrivata. Il simulatore ha lo scenario `Drip` e unisce
+  gli header ripetuti, così un header mandato due volte si vede.

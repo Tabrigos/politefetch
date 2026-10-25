@@ -10,14 +10,13 @@ Riscritto da capo a ogni fine sessione, mai accodato.
   byte, quattro adattatori, il kit di test, lo stato per host in JSON e la
   skill per gli agenti dentro il pacchetto (`python -m politefetch.skill`,
   schema comune con swpc-kit, D-040 e D-041).
-- **Prossimo passo**: R1 è fatta (D-046) sul ramo `r1-esiti`; la prossima
-  è R2, gli adattatori: scadenza totale, limite di dimensione, decodifica nel
-  core, retry dei client. Le tre decisioni di `docs/TAPPE.md` sono prese:
-  intervallo per host, `ValueError` per i client con retry, dati vecchi o
-  fermi come risposte arrivate. Poi R3, R4, la T11 (skill v2) e la pubblicazione (D-043). Prima
-  dei test: `eval "$(scripts/postgres-for-tests.sh)"`, altrimenti i test
-  Postgres vengono saltati (su Windows lo script non c'è: lì i test
-  Postgres si saltano, girano nel job Linux).
+- **Prossimo passo**: R2 è fatta (D-047) sul ramo `r2-adattatori`; la
+  prossima è R3, il contenuto: tempi dei dati, dati vecchi o fermi come
+  risposte arrivate (decisione 3 di `docs/TAPPE.md`), HTML. Poi R4, la T11
+  (skill v2) e la pubblicazione (D-043). Prima dei test:
+  `eval "$(scripts/postgres-for-tests.sh)"`, altrimenti i test Postgres
+  vengono saltati (su Windows lo script non c'è: lì i test Postgres si
+  saltano, girano nel job Linux).
 - **Dubbi aperti**:
   - `httpx2` non è supportato (D-032);
   - una modifica al modulo `skill` va concordata con swpc-kit.
@@ -132,3 +131,10 @@ Una riga per sessione: data, tappa, cosa è entrato, cosa resta.
   `backoff_max` come congelamento a tempo. Su Windows 901 test passati, 168
   saltati (Postgres, in CI); difetti iniettati 20, sopravvissuti 1, poi
   coperto da un test di confine.
+- 2026-10-25 — R2 (D-047): i trasporti consegnano il corpo grezzo a
+  pezzi; il core legge con una scadenza totale (`deadline`, 5 minuti) e un
+  limite (`max_bytes` e budget rimasto, `BodyTooLarge`), decodifica gzip e
+  deflate e controlla la fine dello stream; client con retry rifiutati;
+  header senza doppioni. Su Windows 998 test passati, 168
+  saltati (Postgres, in CI); difetti iniettati 25, sopravvissuti 3, poi
+  coperti da tre test.
