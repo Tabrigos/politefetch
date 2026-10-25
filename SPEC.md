@@ -51,15 +51,21 @@ promised must outlive the process**.
 
 - **Truncated**: body shorter than `Content-Length`, JSON that ends midway,
   empty body where data is needed → `SourceNotReady` (transient).
-- **Unexpected content**: HTML (by `Content-Type` or by the start of the
-  body) where JSON or text is expected, redirect to another host →
-  `UnexpectedContent`.
+- **Unexpected content**: HTML (by `Content-Type`, or by the first tag of
+  the body past white space, comments and an XML declaration) where JSON or
+  text is expected, redirect to another host, a data time too far ahead of
+  now → `UnexpectedContent`. A data time from the future is not kept: one
+  alone would make every later read look stuck.
 - **Freshness on the content**: the caller provides a function that extracts
   the data's time from the body; the library compares it with `max_age`. A
   `304` or a recent `Last-Modified` does not mean that the data is new.
 - **Stuck source**: if the data's time does not advance for N consecutive
-  reads, the library reports it (`StuckSource`), even if every request
-  succeeded.
+  reads, or for a length of time, the library reports it (`StuckSource`),
+  even if every request succeeded.
+- Old or stuck data comes from a source that answered well: it counts as an
+  answer for the source (the minimum interval, no growing backoff, the
+  validators kept), and the error carries what came back, for a caller that
+  would rather use it with a warning.
 
 ## Traffic
 

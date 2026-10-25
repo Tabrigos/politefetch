@@ -85,7 +85,7 @@ def poll(gate: Gate, url: str = URL) -> list[dict[str, Any]] | None:
     fetch = UrllibFetcher(gate)
     try:
         result = fetch.get(
-            url, expect="json", data_time=newest_time, max_age="6h", stuck_after=36
+            url, expect="json", data_time=newest_time, max_age="6h", stuck_after="6h"
         )
     except Refused as refused:  # nothing was sent: try again after retry_after
         print(f"not now: {refused}")
@@ -106,15 +106,17 @@ def poll(gate: Gate, url: str = URL) -> list[dict[str, Any]] | None:
 ```
 
 `fetch.get(url, *, expect="json", data_time=None, max_age=None,
-stuck_after=None, headers=None, allow_empty=False, max_bytes=None)` returns a
-`FetchResult`:
+max_ahead="15m", stuck_after=None, headers=None, allow_empty=False,
+max_bytes=None)` returns a `FetchResult`:
 `content` (parsed JSON, text or bytes according to `expect`: `"json"`,
 `"text"` or `"bytes"`), `status`, `headers`, `body`, `not_modified`,
 `data_time`, `wire_bytes`, `decoded_bytes`. It sends the conditional headers
 of the URL's last answer by itself, never follows redirects and never retries.
 It decodes gzip and deflate itself, the same way for every client, and stops
 reading at `max_bytes` (as transferred and as decoded) or at what is left of
-the host's byte budget: then it raises `BodyTooLarge`.
+the host's byte budget: then it raises `BodyTooLarge`. A data time more than
+`max_ahead` after now is `UnexpectedContent` and is not kept (give a source
+of forecasts more room).
 
 ## Choosing the pieces
 
@@ -175,8 +177,8 @@ message text.
 | `SourceNotReady` | Truncated or empty body (the source is rewriting its file) | Wait for the next scheduled run |
 | `UnexpectedContent` | HTML where data was expected, a redirect, or a body that does not decode | Report it; do not follow the redirect yourself |
 | `BodyTooLarge` | The body is longer than `max_bytes` or the byte budget left; reading stopped there | Raise `max_bytes` or `byte_budget` if the size is expected |
-| `StaleData` | Data older than `max_age`; `data_time`, `max_age`, `age` | Use the previous data with a warning, or wait |
-| `StuckSource` | The data time has not moved for `stuck_after` reads; `data_time`, `reads` | Alert a person: the source is up but frozen |
+| `StaleData` | Data older than `max_age`; `data_time`, `max_age`, `age`, and `result` with what came back. Recorded as an answer: the source is not slowed down | Use `result` with a warning, or the previous data, or wait |
+| `StuckSource` | The data time has not moved for `stuck_after` (a number of reads, a 304 included, or a duration such as `"6h"`); `data_time`, `reads`, `since`, `result` | Alert a person: the source is up but frozen |
 
 `RefusalReason` values: `in_flight` (another request to the host is open),
 `min_interval`, `backoff` (pause after a failure), `frozen`, `daily_cap`,

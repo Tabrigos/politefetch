@@ -140,7 +140,8 @@ def test_a_304_does_not_make_old_data_fresh(
         get(source.url(), data_time=data_time, max_age="3h")
     outcome = last_row(gate).outcome
     assert outcome is not None
-    assert (outcome.ok, outcome.status, outcome.failure) == (False, 304, "stale_data")
+    # Stale data is an answer: the source did its part (D-048).
+    assert (outcome.ok, outcome.status, outcome.failure) == (True, 304, None)
 
 
 # --- failures without a usable answer -------------------------------------------------

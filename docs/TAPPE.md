@@ -314,7 +314,7 @@ blocco letto.
 
 ## R3 — Contenuto: tempi, dati vecchi, HTML
 
-- [ ] Fatta
+- [x] Fatta (D-048)
 
 1. **Un tempo del dato nel futuro non avvelena lo storico.** Oggi
    `apply_data_time` (`store/base.py:458`) tiene il massimo, quindi un solo

@@ -10,10 +10,9 @@ Riscritto da capo a ogni fine sessione, mai accodato.
   byte, quattro adattatori, il kit di test, lo stato per host in JSON e la
   skill per gli agenti dentro il pacchetto (`python -m politefetch.skill`,
   schema comune con swpc-kit, D-040 e D-041).
-- **Prossimo passo**: R2 è fatta (D-047) sul ramo `r2-adattatori`; la
-  prossima è R3, il contenuto: tempi dei dati, dati vecchi o fermi come
-  risposte arrivate (decisione 3 di `docs/TAPPE.md`), HTML. Poi R4, la T11
-  (skill v2) e la pubblicazione (D-043). Prima dei test:
+- **Prossimo passo**: R3 è fatta (D-048) sul ramo `r3-contenuto`; la
+  prossima è R4, integrazione e dipendenze. Poi la T11 (skill v2) e la
+  pubblicazione (D-043). Prima dei test:
   `eval "$(scripts/postgres-for-tests.sh)"`, altrimenti i test Postgres
   vengono saltati (su Windows lo script non c'è: lì i test Postgres si
   saltano, girano nel job Linux).
@@ -138,3 +137,9 @@ Una riga per sessione: data, tappa, cosa è entrato, cosa resta.
   header senza doppioni. Su Windows 998 test passati, 168
   saltati (Postgres, in CI); difetti iniettati 25, sopravvissuti 3, poi
   coperti da tre test.
+- 2026-10-25 — R3 (D-048): un tempo del dato oltre `max_ahead` (15 minuti)
+  è `UnexpectedContent` e non entra nello storico; dati vecchi o fermi
+  contano come risposte e l'errore porta `result`; `stuck_after` accetta
+  una durata (campo `since` nei tre store); HTML riconosciuto dal primo
+  tag dopo commenti e dichiarazione XML. Su Windows 1034 test passati, 168
+  saltati (Postgres, in CI); difetti iniettati 15, sopravvissuti 0.

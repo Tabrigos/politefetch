@@ -993,12 +993,9 @@ def test_unknown_url_has_no_data_time(store: Store) -> None:
 
 def test_first_data_time_is_one_read(store: Store) -> None:
     data_time = T - timedelta(hours=1)
-    assert store.note_data_time(URL, data_time, now=T) == DataTimeRecord(
-        url=URL, latest=data_time, reads=1, updated_at=T
-    )
-    assert store.data_time_record(URL) == DataTimeRecord(
-        url=URL, latest=data_time, reads=1, updated_at=T
-    )
+    first = DataTimeRecord(url=URL, latest=data_time, reads=1, updated_at=T, since=T)
+    assert store.note_data_time(URL, data_time, now=T) == first
+    assert store.data_time_record(URL) == first
 
 
 def test_the_same_data_time_again_counts_reads(store: Store) -> None:
@@ -1007,6 +1004,7 @@ def test_the_same_data_time_again_counts_reads(store: Store) -> None:
         record = store.note_data_time(URL, data_time, now=T + timedelta(minutes=reads))
         assert record.reads == reads
         assert record.latest == data_time
+        assert record.since == T + timedelta(minutes=1)  # the read that brought it
 
 
 def test_an_older_data_time_is_not_progress(store: Store) -> None:
@@ -1024,6 +1022,7 @@ def test_a_newer_data_time_starts_over(store: Store) -> None:
         URL, T + timedelta(hours=1), now=T + timedelta(hours=1)
     )
     assert (record.latest, record.reads) == (T + timedelta(hours=1), 1)
+    assert record.since == T + timedelta(hours=1)
 
 
 def test_data_times_are_per_url(store: Store) -> None:
@@ -1037,7 +1036,7 @@ def test_data_times_survive_a_restart(harness: Harness) -> None:
     harness.store.note_data_time(URL, T, now=T + timedelta(minutes=1))
     record = harness.restart().data_time_record(URL)
     assert record == DataTimeRecord(
-        url=URL, latest=T, reads=2, updated_at=T + timedelta(minutes=1)
+        url=URL, latest=T, reads=2, updated_at=T + timedelta(minutes=1), since=T
     )
 
 

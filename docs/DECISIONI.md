@@ -1147,3 +1147,54 @@ alla vecchia e la vecchia prende la riga "Superata da".
   timeout di lettura del client su ogni pezzo: la scadenza si controlla
   quando la testa è arrivata. Il simulatore ha lo scenario `Drip` e unisce
   gli header ripetuti, così un header mandato due volte si vede.
+
+## D-048 — Contenuto: tempi del dato, dati vecchi, HTML (R3)
+
+- **Data e tappa**: 2026-10-25, R3
+- **Contesto**: la revisione di D-045 ha riprodotto tre difetti del
+  contenuto: un solo tempo del dato nel futuro (2099) rendeva `StuckSource`
+  ogni lettura successiva, con un backoff che cresceva; dati vecchi o fermi
+  facevano crescere il backoff come un guasto della fonte e perdevano
+  validatori e contenuto; una pagina d'errore che comincia con `<!--`,
+  `<head>` o `<body>` passava per testo.
+- **Decisione**:
+  - **tempo nel futuro**: un tempo del dato oltre `now + max_ahead` è
+    `UnexpectedContent` e non entra nello storico. Default 15 minuti:
+    abbastanza per un orologio un po' avanti, non per un campo sbagliato o
+    un fuso orario scambiato. Chi legge previsioni alza `max_ahead`. Prima
+    `check_fresh` lasciava passare il futuro "per le previsioni"; ora il
+    limite c'è e si sposta;
+  - **dati vecchi o fermi** (decisione 3 di TAPPE, presa da Paolo): sono
+    risposte arrivate. Il Gate registra un esito buono, quindi vale
+    `min_interval`, i fallimenti non crescono e i validatori si salvano;
+    poi la fetch solleva `StaleData` o `StuckSource` con il `FetchResult` in
+    `result`, anche dopo un 304. Il registro mostra un esito buono: la
+    fonte ha fatto la sua parte, e il problema del dato sta nello storico
+    dei tempi e nell'eccezione;
+  - **`stuck_after` come durata**: oltre a un numero di letture accetta una
+    durata (`"6h"`): fermo se il tempo del dato non è avanzato da quando lo
+    si è letto la prima volta. Lo storico ha il campo nuovo `since`, nei tre
+    store; una riga SQLite o Postgres scritta prima prende come `since`
+    l'ultima lettura, il momento più tardi possibile, quindi segnala più
+    tardi e non prima. Una lettura sola non è mai ferma. Un 304 conta come
+    lettura: il dato non si è mosso;
+  - **HTML**: si guarda il primo tag dopo BOM, spazi, commenti e una
+    dichiarazione XML, entro il primo kB; sono HTML `<!doctype html`,
+    `<html`, `<head` e `<body` seguiti da fine, spazio, `>` o `/`. Un JSON
+    non comincia mai con `<`, quindi per JSON non ci sono falsi allarmi; per
+    il testo, un XML qualsiasi o un tag diverso passano.
+- **Alternative scartate**:
+  - scartare in silenzio un tempo nel futuro e tenere i dati: il chiamante
+    userebbe un dato con un tempo sbagliato senza saperlo;
+  - lasciare il backoff sui dati vecchi: meno richieste, ma una fonte ferma
+    per un giorno si rilegge sempre più di rado anche quando riparte;
+  - cercare `<html` in tutto il primo kB: un JSON o un testo che lo citano
+    diventerebbero pagine;
+  - un campo nuovo nel registro per segnare un esito buono ma vecchio:
+    cambierebbe lo schema delle richieste per un'informazione che lo
+    storico dei tempi ha già.
+- **Conseguenze**: `StaleData` e `StuckSource` hanno `result`, `StuckSource`
+  anche `since`; `DataTimeRecord` ha `since`; nuova funzione
+  `check_not_ahead` e nuovo argomento `max_ahead` di `get`. Un chiamante che
+  contava sui fallimenti per rallentare una fonte ferma ora vede il ritmo
+  di `min_interval`.

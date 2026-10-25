@@ -20,6 +20,9 @@ errors. Everything else happens here, the same way for every client:
    `ContentError` is raised; a 304 is checked against the data time last
    seen, because "not modified" does not mean "fresh";
 6. the outcome is recorded with its bytes before anything is returned.
+   Stale or stuck data came from a source that answered well: it is
+   recorded as an answer, and `StaleData` or `StuckSource` carries the
+   result.
 
 The deadline is checked when the head arrives and after each piece of the
 body: a request lasts at most the deadline plus one connect and one read
@@ -48,6 +51,7 @@ from politefetch.checks import (
     check_body,
     check_fresh,
     check_length,
+    check_not_ahead,
     check_redirect,
     read_data_time,
 )
@@ -56,6 +60,8 @@ from politefetch.errors import (
     ContentError,
     FetchFailed,
     SourceNotReady,
+    StaleData,
+    StuckSource,
     UnexpectedContent,
 )
 from politefetch.gate import Attempt, Gate
@@ -63,6 +69,7 @@ from politefetch.policy import parse_duration, parse_size
 
 __all__ = [
     "DEFAULT_DEADLINE",
+    "DEFAULT_MAX_AHEAD",
     "AsyncFetcher",
     "AsyncRawResponse",
     "AsyncTransport",
@@ -103,6 +110,10 @@ Timer = Callable[[], float]
 
 DEFAULT_DEADLINE = timedelta(minutes=5)
 """How long a whole request may last by default, body included."""
+
+DEFAULT_MAX_AHEAD = timedelta(minutes=15)
+"""How far ahead of now a data time may be by default: room for a clock a
+little ahead, not for a wrong field."""
 
 
 def _chain(error: BaseException) -> Iterator[BaseException]:
@@ -276,7 +287,8 @@ class _Options:
     expect: Expect
     data_time: Callable[[Any], datetime] | None
     max_age: timedelta | None
-    stuck_after: int | None
+    max_ahead: timedelta
+    stuck_after: int | timedelta | None
     allow_empty: bool
     max_bytes: int | None
 
@@ -286,17 +298,28 @@ class _Options:
         expect: Expect,
         data_time: Callable[[Any], datetime] | None,
         max_age: timedelta | str | None,
-        stuck_after: int | None,
+        max_ahead: timedelta | str,
+        stuck_after: int | timedelta | str | None,
         allow_empty: bool,
         max_bytes: int | str | None,
     ) -> "_Options":
         if (max_age is not None or stuck_after is not None) and data_time is None:
             raise ValueError("max_age and stuck_after need a data_time extractor")
-        if stuck_after is not None and stuck_after < 2:
-            raise ValueError(f"stuck_after must be at least 2, got {stuck_after}")
+        stuck: int | timedelta | None
+        if isinstance(stuck_after, int):
+            if stuck_after < 2:
+                raise ValueError(f"stuck_after must be at least 2, got {stuck_after}")
+            stuck = stuck_after
+        elif stuck_after is not None:
+            stuck = parse_duration(stuck_after)
+            if stuck <= timedelta(0):
+                raise ValueError(f"stuck_after must be positive, got {stuck}")
+        else:
+            stuck = None
         age = None if max_age is None else parse_duration(max_age)
+        ahead = parse_duration(max_ahead)
         size = None if max_bytes is None else parse_size(max_bytes)
-        return cls(expect, data_time, age, stuck_after, allow_empty, size)
+        return cls(expect, data_time, age, ahead, stuck, allow_empty, size)
 
 
 def _request_headers(
@@ -424,12 +447,21 @@ def _incomplete(attempt: Attempt, url: str, reading: _Reading) -> SourceNotReady
 # --- judging the answer ---------------------------------------------------------------
 
 
-def _judge_time(gate: Gate, url: str, data_time: datetime, options: _Options) -> None:
+def _judge_time(
+    gate: Gate, url: str, data_time: datetime, options: _Options
+) -> StaleData | StuckSource | None:
+    """Note the data time and tell whether the data is stale or stuck. Not
+    raised here: the answer is recorded as good first."""
     record = gate.note_data_time(url, data_time)
-    if options.max_age is not None:
-        check_fresh(data_time, now=gate.clock.now(), max_age=options.max_age, url=url)
-    if options.stuck_after is not None:
-        check_advancing(record, stuck_after=options.stuck_after, url=url)
+    now = gate.clock.now()
+    try:
+        if options.max_age is not None:
+            check_fresh(data_time, now=now, max_age=options.max_age, url=url)
+        if options.stuck_after is not None:
+            check_advancing(record, stuck_after=options.stuck_after, now=now, url=url)
+    except (StaleData, StuckSource) as late:
+        return late
+    return None
 
 
 def _decoded_size(
@@ -465,16 +497,15 @@ def _finish(
     if status == 304:
         size = _decoded_size(raw, headers, options) or 0
         latest = None
+        judged = None
         if options.data_time is not None:
             record = gate.store.data_time_record(url)
             if record is not None:
                 latest = record.latest
-                try:
-                    _judge_time(gate, url, latest, options)
-                except ContentError as error:
-                    raise reject(error, size) from None
+                judged = _judge_time(gate, url, latest, options)
         attempt.response(304, headers=headers, wire_bytes=wire, decoded_bytes=size)
-        return FetchResult(url, 304, headers, b"", None, True, latest, wire, size)
+        result = FetchResult(url, 304, headers, b"", None, True, latest, wire, size)
+        return _deliver(result, judged)
     if not 200 <= status < 300:
         # The status is the failure: a body cut short changes nothing.
         decoded_size = _decoded_size(raw, headers, options)
@@ -518,15 +549,29 @@ def _finish(
             url=url,
         )
         data_time = None
+        judged = None
         if options.data_time is not None:
             data_time = read_data_time(content, options.data_time, url=url)
-            _judge_time(gate, url, data_time, options)
+            now = gate.clock.now()
+            check_not_ahead(data_time, now=now, max_ahead=options.max_ahead, url=url)
+            judged = _judge_time(gate, url, data_time, options)
     except ContentError as error:
         raise reject(error, decoded) from None
     attempt.response(status, headers=headers, wire_bytes=wire, decoded_bytes=decoded)
-    return FetchResult(
+    result = FetchResult(
         url, status, headers, body, content, False, data_time, wire, len(body)
     )
+    return _deliver(result, judged)
+
+
+def _deliver(
+    result: FetchResult, judged: StaleData | StuckSource | None
+) -> FetchResult:
+    """Return the result, or raise the stale or stuck error that carries it."""
+    if judged is None:
+        return result
+    judged.result = result
+    raise judged
 
 
 # --- the fetchers ---------------------------------------------------------------------
@@ -563,22 +608,26 @@ class Fetcher:
         expect: Expect = "json",
         data_time: Callable[[Any], datetime] | None = None,
         max_age: timedelta | str | None = None,
-        stuck_after: int | None = None,
+        max_ahead: timedelta | str = DEFAULT_MAX_AHEAD,
+        stuck_after: int | timedelta | str | None = None,
         headers: Mapping[str, str] | None = None,
         allow_empty: bool = False,
         max_bytes: int | str | None = None,
     ) -> FetchResult:
         """Fetch `url` once, if the gate allows it, and check what comes back.
 
-        `data_time` reads the data time from the parsed content; `max_age`
-        rejects data older than that; `stuck_after` rejects a data time that
-        has not advanced for that many reads. `max_bytes` bounds the body, as
+        `data_time` reads the data time from the parsed content. A data time
+        more than `max_ahead` after now is `UnexpectedContent`, and is not
+        kept. `max_age` flags data older than that (`StaleData`);
+        `stuck_after` flags a data time that has not advanced for that many
+        reads, or for that long (`StuckSource`). Both are recorded as
+        answers and carry the result. `max_bytes` bounds the body, as
         transferred and as decoded; reading also stops at what is left of the
         host's byte budget. `headers` are sent too, and replace ours of the
         same name. Raises `Refused`, `FetchFailed` or a `ContentError`.
         """
         options = _Options.build(
-            expect, data_time, max_age, stuck_after, allow_empty, max_bytes
+            expect, data_time, max_age, max_ahead, stuck_after, allow_empty, max_bytes
         )
         with self.gate.attempt(url) as attempt:
             sent = _request_headers(attempt, self.user_agent, headers)
@@ -635,13 +684,14 @@ class AsyncFetcher:
         expect: Expect = "json",
         data_time: Callable[[Any], datetime] | None = None,
         max_age: timedelta | str | None = None,
-        stuck_after: int | None = None,
+        max_ahead: timedelta | str = DEFAULT_MAX_AHEAD,
+        stuck_after: int | timedelta | str | None = None,
         headers: Mapping[str, str] | None = None,
         allow_empty: bool = False,
         max_bytes: int | str | None = None,
     ) -> FetchResult:
         options = _Options.build(
-            expect, data_time, max_age, stuck_after, allow_empty, max_bytes
+            expect, data_time, max_age, max_ahead, stuck_after, allow_empty, max_bytes
         )
         async with self.gate.attempt(url) as attempt:
             sent = _request_headers(attempt, self.user_agent, headers)

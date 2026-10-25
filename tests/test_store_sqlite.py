@@ -73,3 +73,29 @@ def test_a_database_from_t1_gains_the_byte_columns(tmp_path: Path) -> None:
         assert row.reserved_bytes == 0
         assert row.outcome is not None
         assert row.outcome.wire_bytes is None
+
+
+def test_a_database_from_t3_gains_since(tmp_path: Path) -> None:
+    path = tmp_path / "t3.db"
+    conn = sqlite3.connect(path)
+    try:
+        # data_times as stage T3 created it, without `since`.
+        conn.execute(
+            "CREATE TABLE data_times (url TEXT PRIMARY KEY, latest TEXT NOT NULL,"
+            " reads INTEGER NOT NULL, updated_at TEXT NOT NULL)"
+        )
+        conn.execute(
+            "INSERT INTO data_times VALUES ('https://example.org/a',"
+            " '2026-10-16T10:00:00.000000Z', 3, '2026-10-16T11:00:00.000000Z')"
+        )
+        conn.commit()
+    finally:
+        conn.close()
+    with SqliteStore(path) as store:
+        record = store.data_time_record("https://example.org/a")
+        assert record is not None
+        # Unknown before: the last read is the latest moment it can be.
+        assert record.since == datetime(2026, 10, 16, 11, tzinfo=UTC)
+        assert record.reads == 3
+        later = store.note_data_time("https://example.org/a", record.latest, now=T)
+        assert (later.reads, later.since) == (4, record.since)

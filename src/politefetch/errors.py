@@ -10,8 +10,9 @@
         ├── SourceNotReady   truncated or empty body; transient
         ├── UnexpectedContent  HTML where data was expected, foreign redirect
         ├── BodyTooLarge     the body is longer than the fetch may read
-        ├── StaleData        the data is older than max_age
-        └── StuckSource      the data time stopped advancing
+        ├── StaleData        older than max_age: an answer all the same, in
+        │                    `result`
+        └── StuckSource      the data time stopped advancing: the same
 
 Every error keeps its constructor arguments in `args`, so it survives
 pickling across process boundaries.
@@ -19,8 +20,12 @@ pickling across process boundaries.
 
 from datetime import datetime, timedelta
 from enum import StrEnum
+from typing import TYPE_CHECKING
 
 from politefetch.clock import as_utc
+
+if TYPE_CHECKING:
+    from politefetch.adapters.base import FetchResult
 
 __all__ = [
     "BodyTooLarge",
@@ -164,7 +169,8 @@ class ContentError(PoliteFetchError):
     """A request was sent and answered, but the answer cannot be used.
 
     `shape` is a short, stable name for the kind of problem, recorded as the
-    failure shape of the request.
+    failure shape of the request; except for `StaleData` and `StuckSource`,
+    which come from sources that answered well and are recorded as answers.
     """
 
     shape = "content"
@@ -213,13 +219,19 @@ class BodyTooLarge(_DetailedContentError):
 
 
 class StaleData(ContentError):
-    """The time extracted from the body is older than `max_age`."""
+    """The time extracted from the body is older than `max_age`.
+
+    The source answered well: a fetch records it as an answer (validators
+    kept, no failure counted) and puts what came back in `result`, for a
+    caller that would rather use old data than none.
+    """
 
     shape = "stale_data"
 
     data_time: datetime
     max_age: timedelta
     age: timedelta
+    result: "FetchResult | None"
 
     def __init__(
         self,
@@ -228,6 +240,7 @@ class StaleData(ContentError):
         max_age: timedelta,
         age: timedelta,
         url: str | None = None,
+        result: "FetchResult | None" = None,
     ) -> None:
         data_time = as_utc(data_time, "data_time")
         super().__init__(data_time, max_age, age, url)
@@ -235,6 +248,7 @@ class StaleData(ContentError):
         self.max_age = max_age
         self.age = age
         self.url = url
+        self.result = result
 
     def __reduce__(self) -> tuple[object, ...]:
         fields = {
@@ -242,6 +256,7 @@ class StaleData(ContentError):
             "max_age": self.max_age,
             "age": self.age,
             "url": self.url,
+            "result": self.result,
         }
         return (_rebuild, (type(self), fields))
 
@@ -253,33 +268,55 @@ class StaleData(ContentError):
 
 
 class StuckSource(ContentError):
-    """The data time has not advanced for `reads` consecutive reads, even
-    though every request succeeded."""
+    """The data time has not advanced for `reads` consecutive reads, the
+    first of them at `since`, even though every request succeeded.
+
+    Like `StaleData`, it is recorded as an answer, and `result` holds what
+    came back.
+    """
 
     shape = "stuck_source"
 
     data_time: datetime
     reads: int
+    since: datetime | None
+    result: "FetchResult | None"
 
     def __init__(
-        self, *, data_time: datetime, reads: int, url: str | None = None
+        self,
+        *,
+        data_time: datetime,
+        reads: int,
+        since: datetime | None = None,
+        url: str | None = None,
+        result: "FetchResult | None" = None,
     ) -> None:
         if reads < 2:
             raise ValueError(f"reads must be at least 2, got {reads}")
         data_time = as_utc(data_time, "data_time")
-        super().__init__(data_time, reads, url)
+        since = None if since is None else as_utc(since, "since")
+        super().__init__(data_time, reads, since, url)
         self.data_time = data_time
         self.reads = reads
+        self.since = since
         self.url = url
+        self.result = result
 
     def __reduce__(self) -> tuple[object, ...]:
-        fields = {"data_time": self.data_time, "reads": self.reads, "url": self.url}
+        fields = {
+            "data_time": self.data_time,
+            "reads": self.reads,
+            "since": self.since,
+            "url": self.url,
+            "result": self.result,
+        }
         return (_rebuild, (type(self), fields))
 
     def __str__(self) -> str:
+        first = "" if self.since is None else f" since {self.since.isoformat()}"
         return (
             f"data time stuck at {self.data_time.isoformat()} "
-            f"for {self.reads} reads{self._where()}"
+            f"for {self.reads} reads{first}{self._where()}"
         )
 
 
