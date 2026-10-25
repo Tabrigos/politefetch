@@ -1,13 +1,15 @@
 name: Release
 
-# A tag `vX.Y.Z` publishes to PyPI once the `pypi` environment is approved,
-# then creates the GitHub release with the same files. A manual run publishes
-# to TestPyPI instead, as a rehearsal. Both use Trusted Publishing: there is
-# no token in the repository.
+# A pull request runs only the build and its checks. A tag `vX.Y.Z` publishes
+# to PyPI once the `pypi` environment is approved, then creates the GitHub
+# release with the same files. A manual run publishes to TestPyPI instead, as
+# a rehearsal. Both use Trusted Publishing: there is no token in the
+# repository.
 
 on:
   push:
     tags: ["v*"]
+  pull_request:
   workflow_dispatch:
 
 permissions:
