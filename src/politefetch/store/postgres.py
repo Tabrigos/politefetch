@@ -11,7 +11,18 @@ Safe to share between processes and machines:
 - `lock_timeout` bounds the wait for that lock: if it runs out the
   operation raises (`psycopg.errors.LockNotAvailable`) and nothing is sent;
 - a process that dies inside a transaction loses its connection, and
-  Postgres rolls the transaction back and releases the lock.
+  Postgres rolls the transaction back and releases the lock;
+- nothing is set for the session: every transaction sets its own schema,
+  time zone and lock timeout (`SET LOCAL`), and statements are not
+  prepared, so a pooler in transaction mode (pgbouncer) that resets the
+  server connection between transactions changes nothing;
+- a connection found lost when a transaction starts is opened again, and
+  the transaction runs on the new one; one lost in the middle raises, and
+  the next operation opens a new one;
+- on opening, the machine's clock is compared with the server's: every
+  machine sharing the store writes promises with its own clock, and one
+  that runs ahead would ask the source too early. Beyond `max_clock_skew`
+  the store refuses to open.
 
 Tables live in their own schema (default `politefetch`), created with
 `CREATE ... IF NOT EXISTS`. The rules are those of `politefetch.store.base`,
@@ -22,7 +33,7 @@ import hashlib
 import re
 import threading
 from collections.abc import Callable, Iterator
-from contextlib import contextmanager
+from contextlib import AbstractContextManager, ExitStack, contextmanager, suppress
 from dataclasses import replace
 from datetime import date, datetime, timedelta
 from types import TracebackType
@@ -31,8 +42,9 @@ from typing import Any, Self
 import psycopg
 from psycopg import sql
 
-from politefetch.clock import as_utc
+from politefetch.clock import Clock, SystemClock, as_utc
 from politefetch.errors import RefusalReason
+from politefetch.policy import parse_duration
 from politefetch.store.base import (
     ABANDONED,
     DataTimeRecord,
@@ -185,6 +197,9 @@ def _row(record: tuple[Any, ...]) -> RequestRow:
     )
 
 
+_Conn = psycopg.Connection[tuple[Any, ...]]
+
+
 def _lock_key(schema: str) -> int:
     digest = hashlib.sha256(f"politefetch:{schema}".encode()).digest()
     return int.from_bytes(digest[:8], "big", signed=True)
@@ -194,72 +209,123 @@ class PostgresStore:
     """A `Store` in a Postgres schema, shareable between processes."""
 
     def __init__(
-        self, conninfo: str, *, schema: str = "politefetch", lock_timeout: float = 30.0
+        self,
+        conninfo: str,
+        *,
+        schema: str = "politefetch",
+        lock_timeout: float = 30.0,
+        clock: Clock | None = None,
+        max_clock_skew: timedelta | str | None = "1m",
     ) -> None:
+        """`clock` is the machine's (by default the system clock), compared
+        once with the server's; `max_clock_skew=None` skips the check."""
         if not _SCHEMA_NAME.fullmatch(schema):
             raise ValueError(f"schema must be a lowercase identifier, got {schema!r}")
         if not lock_timeout > 0:
             raise ValueError("lock_timeout must be positive")
+        skew = None if max_clock_skew is None else parse_duration(max_clock_skew)
         self.schema = schema
+        self._conninfo = conninfo
         self._lock_key = _lock_key(schema)
         self._lock_timeout = f"{int(lock_timeout * 1000)}ms"
-        self._lock = threading.RLock()
-        self._conn: psycopg.Connection[tuple[Any, ...]] | None = psycopg.connect(
-            conninfo, autocommit=True
+        self._local = (
+            sql.SQL("SET LOCAL search_path TO {}").format(sql.Identifier(schema)),
+            sql.SQL("SET LOCAL TIME ZONE 'UTC'"),
         )
+        self._lock = threading.RLock()
+        self._conn: _Conn | None = self._connect()
         try:
-            self._conn.execute("SET TIME ZONE 'UTC'")
+            if skew is not None:
+                self._check_clock(clock if clock is not None else SystemClock(), skew)
             with self._write() as conn:
                 conn.execute(
                     sql.SQL("CREATE SCHEMA IF NOT EXISTS {}").format(
                         sql.Identifier(schema)
                     )
                 )
-                conn.execute(
-                    sql.SQL("SET LOCAL search_path TO {}").format(
-                        sql.Identifier(schema)
-                    )
-                )
                 for statement in _TABLES:
                     conn.execute(statement.encode())
-            self._conn.execute(
-                sql.SQL("SET search_path TO {}").format(sql.Identifier(schema))
-            )
         except BaseException:
             self._conn.close()
             raise
 
     # --- plumbing -----------------------------------------------------------
 
-    def _connection(self) -> psycopg.Connection[tuple[Any, ...]]:
+    def _connect(self) -> _Conn:
+        # No prepared statements: a pooler may hand the next transaction a
+        # server connection that never saw them.
+        return psycopg.connect(self._conninfo, autocommit=True, prepare_threshold=None)
+
+    def _check_clock(self, clock: Clock, max_skew: timedelta) -> None:
+        found = self._connection().execute("SELECT now()").fetchone()
+        assert found is not None
+        skew = clock.now() - found[0]
+        if abs(skew) > max_skew:
+            ahead = "ahead of" if skew > timedelta(0) else "behind"
+            raise ValueError(
+                f"this machine's clock is {abs(skew)} {ahead} the Postgres server's,"
+                f" over max_clock_skew {max_skew}: machines sharing a store must"
+                " agree on the time, or one asks the source before its promise"
+                " ends. Fix the clock (NTP), or pass max_clock_skew=None"
+            )
+
+    def _connection(self) -> _Conn:
         if self._conn is None:
             raise RuntimeError("the store is closed")
+        if self._conn.closed or self._conn.broken:
+            self._conn = self._connect()
         return self._conn
 
     @contextmanager
-    def _write(self) -> Iterator[psycopg.Connection[tuple[Any, ...]]]:
-        """A transaction that holds the schema's lock: one writer at a time."""
+    def _transaction(self, start: Callable[[_Conn], None]) -> Iterator[_Conn]:
+        """A transaction with the store's own settings, begun by `start`. A
+        connection lost before anything ran is replaced, once."""
         with self._lock:
-            conn = self._connection()
-            with conn.transaction():
-                conn.execute(
-                    sql.SQL("SET LOCAL lock_timeout = {}").format(
-                        sql.Literal(self._lock_timeout)
-                    )
-                )
-                conn.execute("SELECT pg_advisory_xact_lock(%s)", (self._lock_key,))
+            try:
+                conn, transaction = self._begin(start)
+            except psycopg.OperationalError:
+                if self._conn is None or not self._conn.broken:
+                    raise
+                conn, transaction = self._begin(start)
+            with ExitStack() as stack:
+                stack.push(transaction)
                 yield conn
 
-    @contextmanager
-    def _read(self) -> Iterator[psycopg.Connection[tuple[Any, ...]]]:
-        """A consistent snapshot, without waiting for writers."""
-        with self._lock:
-            conn = self._connection()
-            with conn.transaction():
-                conn.execute(
-                    "SET TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY"
+    def _begin(self, start: Callable[[_Conn], None]) -> tuple[_Conn, Any]:
+        conn = self._connection()
+        transaction = conn.transaction()
+        transaction.__enter__()
+        try:
+            start(conn)
+            for statement in self._local:
+                conn.execute(statement)
+        except BaseException as error:
+            # Rolling back a lost connection fails too: the first error counts.
+            with suppress(psycopg.Error):
+                transaction.__exit__(type(error), error, error.__traceback__)
+            raise
+        return conn, transaction
+
+    def _write(self) -> AbstractContextManager[_Conn]:
+        """A transaction that holds the schema's lock: one writer at a time."""
+
+        def start(conn: _Conn) -> None:
+            conn.execute(
+                sql.SQL("SET LOCAL lock_timeout = {}").format(
+                    sql.Literal(self._lock_timeout)
                 )
-                yield conn
+            )
+            conn.execute("SELECT pg_advisory_xact_lock(%s)", (self._lock_key,))
+
+        return self._transaction(start)
+
+    def _read(self) -> AbstractContextManager[_Conn]:
+        """A consistent snapshot, without waiting for writers."""
+
+        def start(conn: _Conn) -> None:
+            conn.execute("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY")
+
+        return self._transaction(start)
 
     @staticmethod
     def _state(
