@@ -8,6 +8,10 @@ All notable changes to politefetch. The format follows
 
 ### Fixed
 
+- A task cancelled while `async with gate.attempt()` was opening its row
+  left the row in flight, and the host blocked, until the reconciliation
+  (an hour by default). The row now closes as `cancelled`, as it does when
+  the cancellation arrives later.
 - The skill's example of `gate.attempt` with httpx recorded the decoded size
   as `wire_bytes`; it now uses `response.num_bytes_downloaded`.
 - The README no longer says the package is not on PyPI.

@@ -614,6 +614,61 @@ def test_a_second_cancellation_does_not_stop_the_close(clock: FakeClock) -> None
     assert store.rows()[0].outcome == Outcome(ok=False, failure=CANCELLED)
 
 
+class SlowOpen(MemoryStore):
+    """Holds every open until `release` is set."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.opening = threading.Event()
+        self.release = threading.Event()
+
+    def open_request(self, *args: Any, **kwargs: Any) -> RequestRow:
+        self.opening.set()
+        self.release.wait(timeout=10)
+        return super().open_request(*args, **kwargs)
+
+
+def cancel_while_opening(store: SlowOpen, gate: Gate) -> None:
+    """Cancel a task while the gate opens its row, then let the open end."""
+
+    async def worker() -> None:
+        async with gate.attempt(URL):
+            await asyncio.sleep(3600)
+
+    async def main() -> None:
+        task = asyncio.create_task(worker())
+        await asyncio.to_thread(store.opening.wait, 10)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        store.release.set()
+
+    asyncio.run(main())  # waits for the worker threads before it returns
+
+
+def test_a_cancellation_while_the_row_opens_closes_it(clock: FakeClock) -> None:
+    store = SlowOpen()
+    gate = Gate(store, {HOST: HostPolicy(daily_cap=10, min_interval="1m")}, clock=clock)
+    cancel_while_opening(store, gate)
+    [row] = store.rows()
+    assert row.state is RowState.CLOSED
+    assert row.outcome == Outcome(ok=False, failure=CANCELLED)
+    assert gate.status(HOST).in_flight == 0
+
+
+def test_a_cancellation_while_the_gate_refuses_opens_nothing(
+    clock: FakeClock,
+) -> None:
+    store = SlowOpen()
+    gate = Gate(store, {HOST: HostPolicy(daily_cap=10, min_interval="1m")}, clock=clock)
+    store.release.set()
+    with gate.attempt(URL) as attempt:
+        attempt.response(200)
+    store.release.clear()
+    cancel_while_opening(store, gate)  # the open raises Refused: min_interval
+    assert len(store.rows()) == 1
+
+
 # --- a store that cannot save the outcome ---------------------------------------------
 
 

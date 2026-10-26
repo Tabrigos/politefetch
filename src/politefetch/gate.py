@@ -432,8 +432,26 @@ class Attempt:
         self._close(exc)
 
     async def __aenter__(self) -> Self:
-        await asyncio.to_thread(self._open)
+        opening = asyncio.ensure_future(asyncio.to_thread(self._open))
+        try:
+            await asyncio.shield(opening)
+        except asyncio.CancelledError:
+            # The open goes on in its thread and may still open the row, and
+            # `__aexit__` will not run: close the row here, as it would.
+            closing = asyncio.ensure_future(self._close_once_open(opening))
+            _CLOSING.add(closing)
+            closing.add_done_callback(_closed)
+            with contextlib.suppress(Exception):
+                await asyncio.shield(closing)
+            raise
         return self
+
+    async def _close_once_open(self, opening: "asyncio.Future[None]") -> None:
+        try:
+            await opening
+        except Exception:
+            return  # refused, or the store failed: no row was opened
+        await asyncio.to_thread(self._close, asyncio.CancelledError())
 
     async def __aexit__(
         self,
