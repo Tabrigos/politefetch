@@ -96,6 +96,11 @@ uv run mypy
 - Prepare a release with a commit `Version X.Y.Z`: `__version__`,
   `metadata.version` of `SKILL.md` and the `CHANGELOG.md` section. Then the
   tag `vX.Y.Z`. Push them only when the maintainer asks.
+- After changing `__version__`, run `uv sync --all-extras
+  --reinstall-package politefetch` before regenerating `api.md`: the
+  default user agent in the reference comes from the installed metadata,
+  and a plain `uv sync` keeps the old version. With stale metadata the local
+  check passes and the CI fails.
 - The tag starts the workflow: it builds, checks the files and the wheel,
   waits for the maintainer's approval in the `pypi` environment, publishes,
   and creates the GitHub release with the notes of that `CHANGELOG.md`
