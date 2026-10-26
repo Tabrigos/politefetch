@@ -13,7 +13,7 @@ description: >-
   limits, even if they do not name the library. Read it instead of the
   library's source code.
 metadata:
-  version: "0.1.0"
+  version: "0.1.1"
 ---
 
 # politefetch
