@@ -327,9 +327,8 @@ with PostgreSQL 16 installed, `eval "$(scripts/postgres-for-tests.sh)"`
 starts it and sets the variable; without it those tests are skipped, and CI
 refuses to skip them.
 
-`SPEC.md` and `AGENTS.md` are in English. The development history
-(`docs/TAPPE.md`, `docs/DIARIO.md`, and `docs/DECISIONI.md` with the reasons
-behind each design choice) is in Italian.
+`SPEC.md` and `AGENTS.md` are in English. `docs/DECISIONI.md`, the reasons
+behind each design choice, is in Italian.
 
 ## License
 
