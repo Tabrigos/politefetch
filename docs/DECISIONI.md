@@ -1293,3 +1293,27 @@ alla vecchia e la vecchia prende la riga "Superata da".
     ricopiato il 2026-10-26, `source_simulator` è uscito da `NOT_API`);
   - la prova d'attivazione con un agente nuovo e la trigger eval: da fare
     quando la skill cambia descrizione o tabella, prima della release.
+
+## D-051 — Niente piano né diario nel repo: il lavoro sta nelle issue
+
+- **Data e tappa**: 2026-10-26, fuori dalle tappe (sessione locale)
+- **Contesto**: `docs/TAPPE.md` e `docs/DIARIO.md` servivano alle sessioni
+  cloud, una tappa per sessione, che non avevano altro posto dove lasciare lo
+  stato. Dal 2026-10-25 si lavora in locale, lo stato si tiene fuori dal
+  repo e il diario lo ripeteva, già divergendo. Le tappe erano tutte chiuse,
+  e 19 commit su 96 servivano solo a registrare l'avanzamento.
+- **Decisione** (scelta del maintainer):
+  - tolti `docs/TAPPE.md` e `docs/DIARIO.md`: restano nella storia git, e
+    ogni tappa ha la sua PR con le misure;
+  - il lavoro previsto sta nelle issue di GitHub, in inglese; un piano di più
+    passi è una checklist nella sua issue, e la PR che lo finisce la chiude;
+  - una decisione e la voce del CHANGELOG entrano nel commit del codice;
+    niente commit di sola registrazione;
+  - questo file resta in italiano, perché le voci non si riscrivono; le voci
+    fino a D-050 citano tappe (T0–T11, R1–R4) che ora si leggono nella storia.
+- **Alternative scartate**: un `docs/ROADMAP.md` corto in inglese (torna un
+  file di piano da aggiornare con dei commit); tutto fuori dal repo (chi
+  arriva dal repo pubblico non vede cosa è previsto); le voci nuove in
+  inglese (un file in due lingue).
+- **Conseguenze**: `AGENTS.md` (ciclo di sessione, lingue) e il README
+  cambiano nello stesso commit.
