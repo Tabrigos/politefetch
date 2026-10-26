@@ -111,7 +111,9 @@ max_bytes=None)` returns a `FetchResult`:
 `content` (parsed JSON, text or bytes according to `expect`: `"json"`,
 `"text"` or `"bytes"`), `status`, `headers`, `body`, `not_modified`,
 `data_time`, `wire_bytes`, `decoded_bytes`. It sends the conditional headers
-of the URL's last answer by itself, never follows redirects and never retries.
+of the URL's last answer by itself, and they win over the same headers passed
+in `headers`: once a URL has validators, a GET without them needs
+`gate.attempt`. It never follows redirects and never retries.
 It decodes gzip and deflate itself, the same way for every client, and stops
 reading at `max_bytes` (as transferred and as decoded) or at what is left of
 the host's byte budget: then it raises `BodyTooLarge`. A data time more than
@@ -151,10 +153,18 @@ byte_budget=None)`
 
 - Durations take a unit: `"500ms"`, `"90s"`, `"15m"`, `"2h"`, `"1d"`,
   `"1h30m"`, or a `timedelta`. Sizes: an `int` of bytes, `"50MB"`, `"1GiB"`.
-- `min_interval`: no faster than the source changes or its terms allow. After
+- `min_interval`: no faster than the source changes or its terms allow. It
+  counts from the end of the previous request, not its start. After
   a failure the pause is `backoff_base * backoff_factor ** (failures - 1)`,
   capped at `backoff_max`, never below `min_interval`. A `Retry-After` header
-  is a minimum on top of that.
+  is a minimum on top of that; one longer than the longest pause of the
+  policy freezes the host until it expires, even on a 200.
+- A cron on the same period as `min_interval` reads every other run: the
+  previous request ended a few seconds after the run started. Run the job
+  more often than `min_interval` (a refusal sends nothing) and let the gate
+  pick the moment.
+- There is no hourly cap. For a quota per hour, set `min_interval` to the
+  hour divided by the quota (2 an hour: `"30m"`).
 - `daily_cap`: below the documented quota, with margin; it counts requests
   sent, consumed before sending, per UTC day: it starts again at midnight
   UTC.
@@ -185,11 +195,11 @@ message text.
 | `FetchFailed` | Sent, no usable answer, or still arriving at the `deadline`; `shape`, `status`, and `note` when the answer froze the host (with how to lift it). The gate already recorded it and grew the pause | Do not retry now: the next call will be refused until the pause ends |
 | `OutcomeNotSaved` | Sent, but the store could not save how it ended; `shape`, `status`. The host stays blocked until the reconciliation | Check the store (a lock held too long); a person may need to apply a lost 403/429 by hand |
 | `NoPolicy` | The host has no policy and the gate no default; nothing was sent. `host` | Add a `HostPolicy` for it |
-| `SourceNotReady` | Truncated or empty body (the source is rewriting its file) | Wait for the next scheduled run |
+| `SourceNotReady` | Truncated or empty body (the source is rewriting its file), JSON cut short included even when `Content-Length` matches. Recorded as a failure: the pause of the host grows | Wait for the next scheduled run; alert when `failures` in `gate.status` keeps growing |
 | `UnexpectedContent` | HTML where data was expected, a redirect, or a body that does not decode | Report it; do not follow the redirect yourself |
 | `BodyTooLarge` | The body is longer than `max_bytes` or the byte budget left; reading stopped there | Raise `max_bytes` or `byte_budget` if the size is expected |
 | `StaleData` | Data older than `max_age`; `data_time`, `max_age`, `age`, and `result` with what came back. Recorded as an answer: the source is not slowed down | Use `result` with a warning, or the previous data, or wait |
-| `StuckSource` | The data time has not moved for `stuck_after` (a number of reads, a 304 included, or a duration such as `"6h"`); `data_time`, `reads`, `since`, `result` | Alert a person: the source is up but frozen |
+| `StuckSource` | The data time has not moved for `stuck_after` (a number of reads, a 304 included, or a duration such as `"6h"`); a data time earlier than one already seen counts as not moving. `data_time`, `reads`, `since`, `result` | Alert a person: the source is up but frozen |
 
 `RefusalReason` values: `"in_flight"` (another request to the host is
 open), `"min_interval"`, `"backoff"` (pause after a failure), `"frozen"`,
@@ -221,7 +231,7 @@ def fetch_with_my_client(gate: Gate, url: str) -> bytes | None:
         attempt.response(
             response.status_code,
             headers=response.headers,  # Retry-After, ETag, Last-Modified
-            wire_bytes=len(response.content),  # the compressed size, if known
+            wire_bytes=response.num_bytes_downloaded,  # as transferred
             decoded_bytes=len(response.content),
         )
     return response.content if response.status_code == 200 else None
@@ -260,7 +270,11 @@ def dashboard(gate: Gate) -> str:
 `throttled`, `in_flight`, `requests_today`, `daily_cap`, `wire_bytes_today`,
 `decoded_bytes_today`, `byte_budget`, and `recent` log rows, newest first.
 Given a URL it also counts the bytes that URL would reserve. It sends nothing.
-`gate.statuses()` covers the hosts with a policy of their own.
+`gate.statuses()` covers the hosts with a policy of their own. In the JSON of
+`to_json` the counts of the day sit under the key `"today"` (`"requests"`,
+`"daily_cap"`, `"wire_bytes"`, `"decoded_bytes"`, `"byte_budget"`, `"day"`).
+The log rows are never deleted in this version: the table grows with every
+request.
 
 A frozen host stays frozen until a person decides: `gate.unfreeze(host,
 by="alice", note="they lifted the block")` lifts it and leaves a trace. Never
@@ -268,11 +282,17 @@ call it from code that runs on its own.
 
 ## Testing an ingest job
 
-The package installs a pytest plugin that does nothing until asked. In
+The package registers a pytest plugin (entry point `"pytest11"`) wherever it
+is installed, as a production dependency too; it does nothing until asked,
+and `-p no:politefetch` switches it off. In
 `pyproject.toml`, `politefetch_barrier = true` under
 `[tool.pytest.ini_options]` puts every test behind a socket barrier: any
 connection that would leave the machine raises `NetworkBlockedError` before a
-packet is sent, and a test whose code swallowed it fails anyway. The
+packet is sent, and a test whose code swallowed it fails anyway, unless it
+is marked `@pytest.mark.politefetch_expects_blocked`. Only loopback and Unix
+sockets pass (private networks are blocked too), and only in the pytest
+process: child processes started by other means than `spawn` (below) run
+without it. The
 `source_simulator` fixture is a real HTTP server on 127.0.0.1 with scenarios
 for the bad days of a source (`politefetch.testing.simulator`: `Respond`,
 `Html`, `TooManyRequests`, `Truncated`, `NoAnswer`, `Reset`, `Validated`,

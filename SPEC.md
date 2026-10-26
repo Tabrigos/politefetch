@@ -36,8 +36,9 @@ promised must outlive the process**.
    request by a single point that everything passes through. It is not reset
    on restart. It is the safety net that does not depend on any other logic.
 5. **Tests are an outbound path.** The library offers a socket barrier for
-   pytest, with proof that a real call fails and a simulated one passes (the
-   proof uses a real public IP: the TEST-NET networks count as private).
+   pytest, with proof that a real call fails and a simulated one passes. Only
+   loopback and Unix sockets pass, private networks are blocked too, and the
+   proof uses a real public IP, not a TEST-NET documentation address.
 6. **The worst case is counted.** A source simulator with scenarios (refuses,
    does not respond, 429, responds truncated, HTML, stuck data, process
    killed with the request already sent, restarts in a loop) and a counter
@@ -120,7 +121,8 @@ fetch = HttpxFetcher(gate)
 result = fetch.get(url, expect="json", data_time=lambda body: ..., max_age="3h")
 ```
 
-The exact names are decided in the stages; this is the overall design.
+This is the overall design; the exact names and signatures are in the API
+reference of the skill (`src/politefetch/skill/politefetch/references/api.md`).
 
 ## What it does not do
 

@@ -8,11 +8,26 @@ All notable changes to politefetch. The format follows
 
 ### Fixed
 
+- The skill's example of `gate.attempt` with httpx recorded the decoded size
+  as `wire_bytes`; it now uses `response.num_bytes_downloaded`.
+- The README no longer says the package is not on PyPI.
+- `SPEC.md` says that the barrier blocks private networks too.
 - `python -m politefetch.skill check` without `--target` looks for the copy
   from the current directory up to the root of the repository, so it works
   from a subfolder too.
 - The API reference no longer names private bases or `Generic` in the
   "subclass of" lines.
+
+### Added
+
+- The skill says what the first users missed: `min_interval` counts from the
+  end of a request, and how to pair it with a cron; there is no hourly cap;
+  a long `Retry-After` freezes the host even on a 200; the conditional
+  headers win over the caller's; `SourceNotReady` grows the pause of the
+  host; a data time going back counts as not moving; the shape of the
+  status JSON; the log is never pruned; the pytest plugin registers itself,
+  the `politefetch_expects_blocked` marker, and what the barrier lets
+  through.
 
 ## 0.1.0 — 2026-10-26
 

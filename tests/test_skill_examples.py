@@ -7,6 +7,7 @@ shared module) are in `test_skill.py`, a copy of the common template.
 """
 
 import contextlib
+import gzip
 import importlib
 import inspect
 import re
@@ -163,6 +164,27 @@ def test_the_attempt_example_runs(
     with gate.attempt(url) as attempt:
         assert attempt.conditional_headers == {"If-None-Match": '"v1"'}
         attempt.response(304)
+
+
+def test_the_attempt_example_records_the_bytes_as_transferred(
+    examples: dict[str, Any], source_simulator: SourceSimulator
+) -> None:
+    body = b'{"ok": true, "padding": "' + b"x" * 2000 + b'"}'
+    compressed = gzip.compress(body)
+    source_simulator.scenario = Respond(
+        body=compressed, headers={"Content-Encoding": "gzip"}
+    )
+    url = source_simulator.url("/data.json")
+    gate = Gate(
+        MemoryStore(),
+        {"127.0.0.1": politefetch.HostPolicy(5, "1m")},
+        clock=FakeClock(T),
+    )
+    assert examples["fetch_with_my_client"](gate, url) == body
+    [row] = gate.status(url).recent
+    assert row.outcome is not None
+    assert row.outcome.wire_bytes == len(compressed)
+    assert row.outcome.decoded_bytes == len(body)
 
 
 def test_the_test_example_passes(
