@@ -332,6 +332,7 @@ alla vecchia e la vecchia prende la riga "Superata da".
 
 ## D-017 — Chiusura e riconciliazione
 
+- **Superata da**: D-046, solo per la chiusura tardiva
 - **Data e tappa**: 2026-10-16, T1
 - **Decisione**:
   - una chiusura con esito buono può accorciare la promessa e azzera i
@@ -391,6 +392,8 @@ alla vecchia e la vecchia prende la riga "Superata da".
 
 ## D-020 — Le politiche per host
 
+- **Superata da**: D-046, solo per i 3xx (buoni solo i 2xx e il 304) e per un
+  `Retry-After` più lungo della politica (diventa un congelamento)
 - **Data e tappa**: 2026-10-16, T2
 - **Decisione**:
   - le durate si scrivono con l'unità (`"90s"`, `"15m"`, `"2h"`, `"1d"`,
@@ -431,6 +434,8 @@ alla vecchia e la vecchia prende la riga "Superata da".
 
 ## D-022 — Il Gate
 
+- **Superata da**: D-046, per la cancellazione asincrona e per i nomi degli
+  host; D-049, per l'host senza politica (`NoPolicy`)
 - **Data e tappa**: 2026-10-16, T2
 - **Decisione**:
   - un host senza politica è rifiutato con `ValueError`, a meno di una
@@ -596,6 +601,8 @@ alla vecchia e la vecchia prende la riga "Superata da".
 
 ## D-030 — I controlli sul contenuto
 
+- **Superata da**: D-048, per i tempi del dato nel futuro e per come si
+  riconosce l'HTML
 - **Data e tappa**: 2026-10-17, T3
 - **Decisione**:
   - funzioni pure in `politefetch.checks`, una per controllo, che tornano in
@@ -672,6 +679,8 @@ alla vecchia e la vecchia prende la riga "Superata da".
 
 ## D-033 — Come lavora un adattatore
 
+- **Superata da**: D-047, per il trasporto e gli header; D-048, per i dati
+  vecchi o fermi, che non fanno più crescere la pausa
 - **Data e tappa**: 2026-10-17, T5
 - **Decisione**:
   - un nucleo comune (`adapters/base.py`, `Fetcher` e `AsyncFetcher`) fa il
@@ -720,6 +729,7 @@ alla vecchia e la vecchia prende la riga "Superata da".
 
 ## D-035 — Il driver Postgres è psycopg 3
 
+- **Superata da**: D-049, solo per l'extra, che non chiede più `[binary]`
 - **Data e tappa**: 2026-10-17, T7
 - **Contesto**: T7 chiedeva di scegliere e motivare il driver. Su PyPI il
   2026-10-17: `psycopg` 3.3.6 (settembre 2026), `psycopg2` 2.9.13, `asyncpg`
@@ -832,6 +842,7 @@ alla vecchia e la vecchia prende la riga "Superata da".
 
 ## D-040 — La skill per gli agenti dentro il pacchetto
 
+- **Superata da**: D-050
 - **Data e tappa**: 2026-10-18, T8 (decisione), T9 (lavoro)
 - **Contesto**: l'utente vuole che il pacchetto porti con sé una skill per
   gli assistenti AI, leggibile anche da una persona, aggiornata con il

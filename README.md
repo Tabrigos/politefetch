@@ -6,8 +6,8 @@ per-host promises and daily caps that survive restarts, freezing on 403/429/451)
 and keeps you safe from the source (truncated bodies, HTML instead of JSON,
 data that stopped advancing even though every request "succeeds").
 
-**Status: 0.1.0, not published on PyPI yet.** Everything in `SPEC.md`
-exists; see `CHANGELOG.md`.
+**Status: on PyPI since 0.1.0.** Everything in `SPEC.md` exists; see
+`CHANGELOG.md`.
 
 ## Why another library
 
