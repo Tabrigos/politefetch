@@ -116,7 +116,10 @@ It decodes gzip and deflate itself, the same way for every client, and stops
 reading at `max_bytes` (as transferred and as decoded) or at what is left of
 the host's byte budget: then it raises `BodyTooLarge`. A data time more than
 `max_ahead` after now is `UnexpectedContent` and is not kept (give a source
-of forecasts more room).
+of forecasts more room). `data_time` gets the parsed content and returns the
+data time as a datetime in UTC: when it raises (a missing key, a time it
+cannot parse) the answer is `UnexpectedContent`, while a naive or non-UTC
+datetime is a bug of the extractor and raises `ValueError`.
 
 ## Choosing the pieces
 
