@@ -141,7 +141,7 @@ The exceptions politefetch raises.
 
 ### `BodyTooLarge`
 
-`BodyTooLarge(detail: str, *, url: str | None = None)` (subclass of `_DetailedContentError`)
+`BodyTooLarge(detail: str, *, url: str | None = None)` (subclass of `ContentError`)
 
 The body is longer than the fetch may read: `max_bytes`, or the bytes left in the host's byte budget. Reading stopped there.
 
@@ -222,7 +222,7 @@ The gate refused the request; nothing was sent to the host.
 
 ### `SourceNotReady`
 
-`SourceNotReady(detail: str, *, url: str | None = None)` (subclass of `_DetailedContentError`)
+`SourceNotReady(detail: str, *, url: str | None = None)` (subclass of `ContentError`)
 
 The body is truncated or empty where data was required.
 
@@ -254,7 +254,7 @@ The data time has not advanced for `reads` consecutive reads, the first of them 
 
 ### `UnexpectedContent`
 
-`UnexpectedContent(detail: str, *, url: str | None = None)` (subclass of `_DetailedContentError`)
+`UnexpectedContent(detail: str, *, url: str | None = None)` (subclass of `ContentError`)
 
 The body is not what was asked for: HTML instead of JSON or text, or a redirect to another host.
 
@@ -995,7 +995,7 @@ Child processes for tests, started behind the network barrier.
 
 ### `Child`
 
-`Child(target: Callable[..., T], args: tuple[Any, ...])` (subclass of `Generic`)
+`Child(target: Callable[..., T], args: tuple[Any, ...])`
 
 A running child process started by `spawn`.
 

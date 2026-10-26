@@ -4,6 +4,16 @@ All notable changes to politefetch. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions follow
 [Semantic Versioning](https://semver.org/).
 
+## Unreleased
+
+### Fixed
+
+- `python -m politefetch.skill check` without `--target` looks for the copy
+  from the current directory up to the root of the repository, so it works
+  from a subfolder too.
+- The API reference no longer names private bases or `Generic` in the
+  "subclass of" lines.
+
 ## 0.1.0 — 2026-10-26
 
 The first version.

@@ -160,8 +160,31 @@ def install(target: Path) -> Path:
     return target
 
 
-def check(target: Path = DEFAULT_TARGET) -> tuple[bool, str]:
-    """Compare the copy in ``target`` with the bundled skill, by hash."""
+def _find_copy() -> Path:
+    """The copy from the current directory up to the one with ``.git``.
+
+    The first ``.claude/skills/<name>`` or ``.agents/skills/<name>`` with a
+    ``SKILL.md``; without one, ``.claude/skills/<name>`` at the root of the
+    repository, or in the current directory outside a repository.
+    """
+    here = Path.cwd().resolve()
+    for directory in (here, *here.parents):
+        for parent in _PARENTS:
+            copy = directory.joinpath(*parent, SKILL_NAME)
+            if (copy / "SKILL.md").is_file():
+                return copy
+        if (directory / ".git").exists():
+            return directory / DEFAULT_TARGET
+    return DEFAULT_TARGET
+
+
+def check(target: Path | None = None) -> tuple[bool, str]:
+    """Compare the copy in ``target`` with the bundled skill, by hash.
+
+    Without ``target``, the copy is looked for from the current directory up
+    to the root of the repository.
+    """
+    target = _find_copy() if target is None else target
     version = skill_version(read_skill())
     if not (target / "SKILL.md").is_file():
         return False, (
@@ -189,7 +212,7 @@ def main(argv: list[str] | None = None) -> int:
     commands.add_parser("path", help="print the directory of the bundled skill")
     commands.add_parser("show", help="print SKILL.md")
     command = commands.add_parser("check", help="exit 1 if the copy differs")
-    command.add_argument("--target", type=Path, default=DEFAULT_TARGET)
+    command.add_argument("--target", type=Path)
     command = commands.add_parser("install", help="copy into .claude/skills/<name>")
     command.add_argument("--target", type=Path, required=True)
     args = parser.parse_args(argv)

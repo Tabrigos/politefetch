@@ -262,23 +262,52 @@ def _field_table(cls: type) -> list[str]:
     return ["| Field | Type | Meaning |", "|---|---|---|", *rows, ""]
 
 
+def _private(base: type) -> bool:
+    """A private class of this package: it has no entry of its own."""
+    root = PACKAGE.split(".")[0]
+    return base.__name__.startswith("_") and base.__module__.split(".")[0] == root
+
+
+def _shown_bases(cls: type) -> list[str]:
+    """The bases a reader can look up, a private one replaced by its own."""
+    out = []
+    for base in cls.__bases__:
+        if base in (object, typing.Generic) or base in _ENUM_BASES:
+            continue
+        out += _shown_bases(base) if _private(base) else [base.__name__]
+    return out
+
+
+def _hidden_bases(cls: type) -> list[type]:
+    """The private bases whose members belong to the entry of ``cls``."""
+    out = []
+    for base in cls.__bases__:
+        if _private(base):
+            out += [base, *_hidden_bases(base)]
+    return out
+
+
 def _members(cls: type) -> list[str]:
     out = []
-    for name, member in vars(cls).items():
-        if name.startswith("_"):
-            continue
-        if isinstance(member, property):
-            out.append(f"- `.{name}` (property): {_paragraph(member)}".rstrip(": "))
-        elif isinstance(member, (staticmethod, classmethod)):
-            func = member.__func__
-            out.append(
-                f"- `.{name}{_signature(func)}`: {_paragraph(func)}".rstrip(": ")
-            )
-        elif inspect.isfunction(member):
-            out.append(
-                f"- `.{name}{_signature(member)}`: {_paragraph(member)}".rstrip(": ")
-            )
+    seen: set[str] = set()
+    for owner in (cls, *_hidden_bases(cls)):
+        for name, member in vars(owner).items():
+            if name.startswith("_") or name in seen:
+                continue
+            seen.add(name)
+            out += _member(name, member)
     return out
+
+
+def _member(name: str, member: Any) -> list[str]:
+    """The line of one member; none for an attribute that is not callable."""
+    if isinstance(member, property):
+        return [f"- `.{name}` (property): {_paragraph(member)}".rstrip(": ")]
+    if isinstance(member, (staticmethod, classmethod)):
+        member = member.__func__
+    if inspect.isfunction(member):
+        return [f"- `.{name}{_signature(member)}`: {_paragraph(member)}".rstrip(": ")]
+    return []
 
 
 def _class(name: str, cls: type) -> list[str]:
@@ -300,9 +329,7 @@ def _class(name: str, cls: type) -> list[str]:
             "",
         ]
     heading = f"`{name}{_signature(cls)}`"
-    bases = [
-        b.__name__ for b in cls.__bases__ if b is not object and b not in _ENUM_BASES
-    ]
+    bases = _shown_bases(cls)
     if bases:
         heading += f" (subclass of {', '.join(f'`{b}`' for b in bases)})"
     members = _members(cls)
