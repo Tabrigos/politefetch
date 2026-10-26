@@ -1164,7 +1164,7 @@ alla vecchia e la vecchia prende la riga "Superata da".
     un fuso orario scambiato. Chi legge previsioni alza `max_ahead`. Prima
     `check_fresh` lasciava passare il futuro "per le previsioni"; ora il
     limite c'è e si sposta;
-  - **dati vecchi o fermi** (decisione 3 di TAPPE, presa da Paolo): sono
+  - **dati vecchi o fermi** (decisione 3 di TAPPE, presa dal maintainer): sono
     risposte arrivate. Il Gate registra un esito buono, quindi vale
     `min_interval`, i fallimenti non crescono e i validatori si salvano;
     poi la fetch solleva `StaleData` o `StuckSource` con il `FetchResult` in
@@ -1216,7 +1216,7 @@ alla vecchia e la vecchia prende la riga "Superata da".
     `psycopg[binary]` dal gruppo dev. Un job CI nuovo (`lowest`) installa le
     versioni minime con `--resolution lowest-direct`, con Postgres. Il limite
     `httpx<1` si rivede prima di ogni release: lo dice `AGENTS.md`;
-  - **più endpoint dello stesso host** (decisione 1, presa da Paolo):
+  - **più endpoint dello stesso host** (decisione 1, presa dal maintainer):
     restano un intervallo e un blocco per host. Il README ha un esempio
     eseguito da un test: ogni giro del cron legge l'endpoint letto meno di
     recente, preso dalle righe recenti di `gate.status`;
