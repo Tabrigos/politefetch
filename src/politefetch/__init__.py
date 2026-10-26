@@ -25,7 +25,7 @@ from politefetch.errors import (
 from politefetch.gate import Gate
 from politefetch.policy import HostPolicy
 
-__version__ = "0.1.0"
+__version__ = "0.1.1"
 
 __all__ = [
     "BodyTooLarge",
