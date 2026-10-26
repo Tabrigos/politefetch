@@ -1289,6 +1289,7 @@ alla vecchia e la vecchia prende la riga "Superata da".
     repo è locale, e su Windows un symlink chiede la Modalità sviluppatore;
   - `source_simulator` in `NOT_API`: il generatore elenca le fixture, ma il
     controllo dei nomi del modello non le conta fra i nomi noti. È un
-    difetto del modello: va corretto lì e ricopiato, non qui;
+    difetto del modello: va corretto lì e ricopiato, non qui (corretto e
+    ricopiato il 2026-10-26, `source_simulator` è uscito da `NOT_API`);
   - la prova d'attivazione con un agente nuovo e la trigger eval: da fare
     quando la skill cambia descrizione o tabella, prima della release.
