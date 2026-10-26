@@ -100,6 +100,7 @@ _ENUM_BASES = tuple(
     for base in (enum.Enum, getattr(enum, "StrEnum", None), enum.IntEnum)
     if base is not None
 )
+_UNIONS = (typing.Union, type(int | None))  # types.UnionType, without an import
 
 
 def public_modules() -> list[str]:
@@ -143,11 +144,47 @@ def _paragraph(obj: Any) -> str:
     return _inline(first)
 
 
-def _type(annotation: Any) -> str:
-    """A type annotation with short names."""
-    if isinstance(annotation, type) and not typing.get_args(annotation):
+def _type(annotation: Any, bound: dict[Any, Any] | None = None) -> str:
+    """A type annotation with short names and every union written with ``|``.
+
+    ``str()`` prints ``S | None`` as ``Optional[S]`` when ``S`` is a type
+    variable, and only up to Python 3.13. The type variables in ``bound``
+    become the types they stand for.
+    """
+    bound = bound or {}
+    if isinstance(annotation, typing.TypeVar) and annotation in bound:
+        return _type(bound[annotation], bound)
+    if annotation is type(None):
+        return "None"
+    origin = typing.get_origin(annotation)
+    args = typing.get_args(annotation)
+    if origin in _UNIONS:
+        return " | ".join(_type(arg, bound) for arg in args)
+    if isinstance(annotation, type) and not args:
         return annotation.__name__
+    if args and origin not in (typing.Literal, typing.Annotated):
+        name = _short(str(annotation).split("[", 1)[0])
+        return f"{name}[{', '.join(_argument(arg, bound) for arg in args)}]"
     return _short(annotation if isinstance(annotation, str) else str(annotation))
+
+
+def _argument(arg: Any, bound: dict[Any, Any]) -> str:
+    """One argument of a generic: ``...``, the parameter list of a ``Callable``."""
+    if arg is Ellipsis:
+        return "..."
+    if isinstance(arg, list):
+        return f"[{', '.join(_type(item, bound) for item in arg)}]"
+    return _type(arg, bound)
+
+
+class _Shown:
+    """An annotation already written out: ``inspect`` prints it as it is."""
+
+    def __init__(self, text: str) -> None:
+        self.text = text
+
+    def __repr__(self) -> str:
+        return self.text
 
 
 def _cell(text: str) -> str:
@@ -155,7 +192,7 @@ def _cell(text: str) -> str:
     return text.replace("|", "\\|")
 
 
-def _signature(obj: Any) -> str:
+def _signature(obj: Any, bound: dict[Any, Any] | None = None) -> str:
     """The signature without ``self`` and, for classes, without ``-> None``."""
     try:
         signature = inspect.signature(obj, eval_str=True)
@@ -164,6 +201,19 @@ def _signature(obj: Any) -> str:
             signature = inspect.signature(obj)
         except (TypeError, ValueError):
             return ""
+
+    def shown(annotation: Any) -> Any:
+        if annotation is inspect.Signature.empty or isinstance(annotation, str):
+            return annotation
+        return _Shown(_type(annotation, bound))
+
+    signature = signature.replace(
+        parameters=[
+            p.replace(annotation=shown(p.annotation))
+            for p in signature.parameters.values()
+        ],
+        return_annotation=shown(signature.return_annotation),
+    )
     text = re.sub(r"^\((?:self|cls)(, )?", "(", _short(str(signature)))
     return text.removesuffix(" -> None") if inspect.isclass(obj) else text
 
@@ -287,26 +337,40 @@ def _hidden_bases(cls: type) -> list[type]:
     return out
 
 
+def _bound(cls: type) -> dict[Any, Any]:
+    """What the type variables of the private bases of ``cls`` stand for."""
+    out: dict[Any, Any] = {}
+    for base in getattr(cls, "__orig_bases__", ()):
+        origin = typing.get_origin(base)
+        if isinstance(origin, type) and _private(origin):
+            parameters = getattr(origin, "__parameters__", ())
+            out.update(zip(parameters, typing.get_args(base), strict=False))
+            out.update(_bound(origin))
+    return out
+
+
 def _members(cls: type) -> list[str]:
     out = []
     seen: set[str] = set()
+    bound = _bound(cls)
     for owner in (cls, *_hidden_bases(cls)):
         for name, member in vars(owner).items():
             if name.startswith("_") or name in seen:
                 continue
             seen.add(name)
-            out += _member(name, member)
+            out += _member(name, member, bound)
     return out
 
 
-def _member(name: str, member: Any) -> list[str]:
+def _member(name: str, member: Any, bound: dict[Any, Any]) -> list[str]:
     """The line of one member; none for an attribute that is not callable."""
     if isinstance(member, property):
         return [f"- `.{name}` (property): {_paragraph(member)}".rstrip(": ")]
     if isinstance(member, (staticmethod, classmethod)):
         member = member.__func__
     if inspect.isfunction(member):
-        return [f"- `.{name}{_signature(member)}`: {_paragraph(member)}".rstrip(": ")]
+        signature = _signature(member, bound)
+        return [f"- `.{name}{signature}`: {_paragraph(member)}".rstrip(": ")]
     return []
 
 
@@ -328,7 +392,7 @@ def _class(name: str, cls: type) -> list[str]:
             *_members(cls),
             "",
         ]
-    heading = f"`{name}{_signature(cls)}`"
+    heading = f"`{name}{_signature(cls, _bound(cls))}`"
     bases = _shown_bases(cls)
     if bases:
         heading += f" (subclass of {', '.join(f'`{b}`' for b in bases)})"
