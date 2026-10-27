@@ -1,8 +1,12 @@
 """SQLite-specific behaviour, beyond the shared contract."""
 
 import sqlite3
+import threading
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import Any
+
+import pytest
 
 from politefetch.store import SqliteStore
 
@@ -17,6 +21,49 @@ def test_settings_for_safety_across_processes(tmp_path: Path) -> None:
         assert conn.execute("PRAGMA journal_mode").fetchone() == ("wal",)
     finally:
         conn.close()
+
+
+def open_together(path: Path, start: threading.Barrier, errors: list[Any]) -> None:
+    start.wait()
+    try:
+        SqliteStore(path).close()
+    except BaseException as error:
+        errors.append(error)
+
+
+def test_processes_opening_a_new_file_at_once_all_open(tmp_path: Path) -> None:
+    # Switching a new file to WAL takes a lock that SQLite does not wait for:
+    # without a retry, all but one of the first openers failed.
+    for round_ in range(10):
+        path = tmp_path / f"{round_}.db"
+        start = threading.Barrier(4)
+        errors: list[Any] = []
+        threads = [
+            threading.Thread(target=open_together, args=(path, start, errors))
+            for _ in range(4)
+        ]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join()
+        assert errors == []
+        conn = sqlite3.connect(path)
+        try:
+            assert conn.execute("PRAGMA journal_mode").fetchone() == ("wal",)
+        finally:
+            conn.close()
+
+
+def test_a_lock_that_stays_taken_still_fails_the_open(tmp_path: Path) -> None:
+    path = tmp_path / "held.db"
+    holder = sqlite3.connect(path, isolation_level=None)
+    try:
+        holder.execute("CREATE TABLE t (x)")
+        holder.execute("BEGIN EXCLUSIVE")
+        with pytest.raises(sqlite3.OperationalError, match="locked"):
+            SqliteStore(path, busy_timeout=0.2)
+    finally:
+        holder.close()
 
 
 def test_a_database_from_an_earlier_stage_gains_new_columns(tmp_path: Path) -> None:

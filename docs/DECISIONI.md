@@ -34,6 +34,7 @@ alla vecchia e la vecchia prende la riga "Superata da".
 
 ## D-002 — T7 dopo T3 e T4, con una suite di contratto dello store
 
+- **Superata da**: D-052, solo per la parte sulle migrazioni
 - **Data e tappa**: 2026-10-15, revisione prima di T0
 - **Contesto**: T3 e T4 aggiungono metodi allo store mentre T7 implementa
   Postgres; in parallelo lo store Postgres nascerebbe incompleto.
@@ -1328,3 +1329,116 @@ alla vecchia e la vecchia prende la riga "Superata da".
   inglese (un file in due lingue).
 - **Conseguenze**: `AGENTS.md` (ciclo di sessione, lingue) e il README
   cambiano nello stesso commit.
+
+## D-052 — Versioni dello schema e migrazioni degli store
+
+- **Data e tappa**: 2026-10-27, issue #11
+- **Contesto**: gli store SQLite e Postgres creano le tabelle all'apertura e
+  non registrano una versione (D-002, che valeva fino al primo rilascio).
+  Diverse issue della 0.2 aggiungono colonne o tabelle, e uno store scritto
+  dalla 0.1 deve tenere promesse, conteggi e freeze: ricrearlo li
+  dimenticherebbe.
+- **Decisione**:
+  - una tabella `schema_version` con una riga; la versione 1 è lo schema della
+    0.1, e un database con le tabelle ma senza versione è alla versione 1;
+  - ogni versione successiva è una migrazione nel codice dello store, una
+    lista di istruzioni eseguite in ordine nella stessa transazione che
+    aggiorna la versione: una migrazione fallita lascia il database com'era;
+  - le migrazioni aggiungono soltanto (tabelle, colonne con un default,
+    indici): un processo che gira ancora con la versione vecchia continua ad
+    applicare le regole che conosce;
+  - un database più nuovo del codice si rifiuta all'apertura (`ValueError`):
+    il codice vecchio ignorerebbe uno stato che può trattenere richieste;
+  - SQLite migra all'apertura, dentro la transazione `BEGIN IMMEDIATE`, così
+    due processi che aprono insieme migrano una volta sola;
+  - Postgres crea uno schema nuovo alla versione più recente, ma uno schema
+    esistente con migrazioni in attesa si rifiuta finché non lo si apre con
+    `migrate=True`: lo possono usare altre macchine, che vanno fermate prima;
+  - tornare alla 0.1 su un file migrato non è previsto: la 0.1 non legge la
+    versione e ignorerebbe lo stato nuovo.
+- **Alternative scartate**: `PRAGMA user_version` per SQLite (collide con
+  un'applicazione che usa lo stesso file per le sue tabelle, e Postgres
+  avrebbe comunque bisogno di una tabella); migrare Postgres a ogni apertura
+  (una macchina aggiornata cambierebbe lo schema sotto le altre senza che
+  nessuno lo decida); uno strumento esterno come Alembic (una dipendenza nel
+  nucleo, che usa solo la libreria standard).
+- **Conseguenze**: `PostgresStore` prende `migrate=`. Le fixture
+  `tests/fixtures/store-0.1.1.db`, scritta dalla 0.1.1 installata da PyPI, e
+  `store-0.1.1-integration.db`, ripulita da una prima integrazione, provano
+  che un file della 0.1 si apre con ogni riga. Le migrazioni della 0.2 si
+  aggiungono a `_MIGRATIONS` nel modulo di ciascuno store.
+## D-053 — Leggere lo stato non scrive; la riconciliazione sta nell'apertura
+
+- **Data e tappa**: 2026-10-27, issue #29 (revisione dell'architettura, R5)
+- **Contesto**: ogni decisione, anche `status` e `may_fetch`, riconciliava
+  tutti gli host in una transazione di scrittura (`BEGIN IMMEDIATE`, un
+  advisory lock per lo schema in Postgres). Un pannello in un altro processo
+  riceveva `database is locked` mentre chi scaricava scriveva (riprodotto), e
+  un monitor senza diritto di scrittura non poteva esistere. Un tentativo
+  costava due transazioni di scrittura: riconciliazione e apertura.
+- **Decisione**:
+  - `open_request` prende `abandon_before`: le righe in volo dell'host aperte
+    prima si chiudono come abbandonate nella stessa transazione che apre la
+    richiesta. La chiusura resta anche se l'apertura viene rifiutata, perché
+    quelle righe possono essere proprio ciò che la rifiuta (`in_flight`): il
+    rifiuto si solleva dopo il commit;
+  - `status`, `statuses` e `may_fetch` leggono lo stato e contano le righe
+    oltre la soglia come le conterà la chiusura (un fallimento ciascuna, fuori
+    da `in_flight`), senza scrivere; `HostStatus.abandoned` le mostra;
+  - `Gate.reconcile()` resta, per chi vuole chiudere tutto a mano.
+- **Alternative scartate**: riconciliare in lettura solo quando c'è qualcosa
+  da chiudere (un monitor senza permessi fallirebbe proprio dopo un crash);
+  mostrare le righe come già riconciliate in `recent` (una chiusura che nel
+  database non c'è).
+- **Conseguenze**: le righe abbandonate di un host che nessuno interroga più
+  restano in volo nel database finché qualcuno non gli chiede una richiesta o
+  chiama `Gate.reconcile()`; lo stato letto le conta già.
+## D-054 — `reconcile_after` di default segue i fetcher
+
+- **Data e tappa**: 2026-10-28, issue #32 (revisione dell'architettura, R9)
+- **Contesto**: il default era un'ora fissa, mentre una richiesta di un
+  fetcher finisce entro la sua scadenza più i due timeout (5 minuti e 40
+  secondi con i default). Un processo ucciso a metà richiesta bloccava il suo
+  host per un'ora: due giri persi per una fonte letta ogni 30 minuti, come ha
+  misurato una prima integrazione.
+- **Decisione**:
+  - senza un valore dato a mano, `reconcile_after` è il doppio della
+    richiesta più lunga dei fetcher costruiti sul Gate, che la dichiarano con
+    `Gate.bound_requests`; senza fetcher resta un'ora;
+  - il doppio è il margine: una richiesta non può durare più della sua
+    scadenza, e la chiusura tardiva rende comunque l'host solo più prudente;
+  - un valore dato a mano vince, e il fetcher continua a rifiutare una
+    scadenza che non ci sta.
+- **Alternative scartate**: un default fisso più corto (15 minuti), che
+  sarebbe meno prudente per chi usa `gate.attempt` con un client proprio, le
+  cui richieste il Gate non può limitare; ricavarlo dalla scadenza di default
+  dei fetcher anche senza fetcher (stesso difetto).
+- **Conseguenze**: un processo che usa sia i fetcher sia `gate.attempt` con
+  un client proprio deve dare `reconcile_after` a mano, più lungo della sua
+  richiesta più lenta: lo dicono la docstring del Gate e la skill. Due
+  processi sullo stesso store con default diversi (uno con fetcher, un
+  pannello senza) contano le righe abbandonate a soglie diverse: ciascuno
+  resta prudente per sé.
+## D-055 — Il JSON si giudica dal corpo, non dal Content-Type
+
+- **Data e tappa**: 2026-10-27, issue #15
+- **Contesto**: con `expect="json"`, un corpo servito come `text/html` era
+  `UnexpectedContent` anche quando era JSON valido. Ci sono sorgenti che
+  servono i loro file JSON con il tipo sbagliato, e il dato andava perso.
+- **Decisione**:
+  - con `expect="json"` un corpo che si analizza come JSON è un dato,
+    qualunque sia il Content-Type; una pagina HTML si riconosce ancora dal
+    primo tag;
+  - un corpo servito come HTML che non si analizza resta `UnexpectedContent`
+    ("HTML where json was expected"), anche quando finisce a metà come un
+    JSON troncato: la sorgente ha detto che è una pagina, e non c'è motivo
+    di crederla un file in riscrittura. Per la pausa dell'host non cambia
+    niente, perché `SourceNotReady` e `UnexpectedContent` sono due
+    fallimenti uguali;
+  - il testo resta controllato sul Content-Type: non ha un formato con cui
+    distinguere un dato da una pagina.
+- **Alternative scartate**: ignorare il Content-Type anche per il JSON che
+  non si analizza (un `{` aperto in una pagina servita come HTML
+  diventerebbe `SourceNotReady`, cioè "riprova più tardi", per una sorgente
+  che ha risposto con una pagina).
+- **Conseguenze**: `SPEC.md` (controlli sul contenuto) e la skill lo dicono.

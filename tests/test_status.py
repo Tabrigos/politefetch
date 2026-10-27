@@ -148,7 +148,7 @@ def test_a_request_in_flight(gate: Gate) -> None:
         attempt.response(200)
 
 
-def test_an_abandoned_request_is_reconciled_first(
+def test_an_abandoned_request_shows_as_abandoned(
     gate: Gate, harness: Harness, clock: FakeClock
 ) -> None:
     harness.store.open_request(
@@ -156,8 +156,9 @@ def test_an_abandoned_request_is_reconciled_first(
     )
     clock.advance(timedelta(hours=2))
     status = gate.status(HOST)
-    assert status.in_flight == 0
-    assert [r.state for r in status.recent] == [RowState.RECONCILED]
+    assert (status.in_flight, status.abandoned) == (0, 1)
+    # Shown as it is stored: the next request to the host closes it.
+    assert [r.state for r in status.recent] == [RowState.IN_FLIGHT]
 
 
 def test_recent_rows_are_the_latest_newest_first(gate: Gate, clock: FakeClock) -> None:
@@ -250,6 +251,7 @@ def test_json_shape(gate: Gate, clock: FakeClock) -> None:
         "failures": 0,
         "throttled": 0,
         "in_flight": 0,
+        "abandoned": 0,
         "today": {
             "day": "2026-10-16",
             "requests": 1,

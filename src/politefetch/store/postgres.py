@@ -45,6 +45,7 @@ from psycopg import sql
 from politefetch.clock import Clock, SystemClock, as_utc
 from politefetch.errors import RefusalReason
 from politefetch.policy import parse_duration
+from politefetch.store._schema import BASE_VERSION, VERSION_TABLE, pending
 from politefetch.store.base import (
     ABANDONED,
     DataTimeRecord,
@@ -68,12 +69,16 @@ from politefetch.store.base import (
     check_threshold,
     check_unfreezer,
     is_late,
+    log_abandoned,
 )
 
 __all__ = ["PostgresStore"]
 
 _SCHEMA_NAME = re.compile(r"[a-z_][a-z0-9_]{0,62}")
 
+# Schema version 1, frozen: a new schema gets it and then every migration, as
+# an old one does. A column or table added here and not as a migration would
+# reach new schemas only (tests/test_store_schema.py).
 _TABLES = (
     """
     CREATE TABLE IF NOT EXISTS hosts (
@@ -153,6 +158,10 @@ _TABLES = (
     "ALTER TABLE data_times ADD COLUMN IF NOT EXISTS since timestamptz",
 )
 
+# The statements of each schema version after the first: `_MIGRATIONS[0]`
+# leads to version 2. Only additions (D-052).
+_MIGRATIONS: tuple[tuple[str, ...], ...] = ()
+
 _ROW_COLUMNS = (
     "id, host, url, opened_at, state, closed_at, ok, status, failure,"
     " reserved_bytes, wire_bytes, decoded_bytes"
@@ -216,9 +225,15 @@ class PostgresStore:
         lock_timeout: float = 30.0,
         clock: Clock | None = None,
         max_clock_skew: timedelta | str | None = "1m",
+        migrate: bool = False,
     ) -> None:
         """`clock` is the machine's (by default the system clock), compared
-        once with the server's; `max_clock_skew=None` skips the check."""
+        once with the server's; `max_clock_skew=None` skips the check.
+
+        A new schema is created at its latest version. An existing one with
+        migrations pending is refused unless `migrate=True`: other machines
+        may be using it, so stop them, then open it once with `migrate=True`.
+        """
         if not _SCHEMA_NAME.fullmatch(schema):
             raise ValueError(f"schema must be a lowercase identifier, got {schema!r}")
         if not lock_timeout > 0:
@@ -243,13 +258,39 @@ class PostgresStore:
                         sql.Identifier(schema)
                     )
                 )
+                found = conn.execute("SELECT to_regclass('hosts')").fetchone()
+                new = found is None or found[0] is None
                 for statement in _TABLES:
                     conn.execute(statement.encode())
+                self._migrate(conn, new=new, asked=migrate)
         except BaseException:
             self._conn.close()
             raise
 
     # --- plumbing -----------------------------------------------------------
+
+    def _migrate(self, conn: _Conn, *, new: bool, asked: bool) -> None:
+        """Record the version if the schema had none (a new one, or one
+        written by 0.1), then run the pending migrations: always on a new
+        schema, on an existing one only if asked."""
+        conn.execute(VERSION_TABLE.encode())
+        found = conn.execute("SELECT version FROM schema_version").fetchone()
+        if found is None:
+            conn.execute("INSERT INTO schema_version VALUES (%s)", (BASE_VERSION,))
+            current = BASE_VERSION
+        else:
+            current = int(found[0])
+        steps = pending(current, _MIGRATIONS, f"the Postgres schema {self.schema!r}")
+        if steps and not (new or asked):
+            raise ValueError(
+                f"the Postgres schema {self.schema!r} has schema version {current},"
+                f" this politefetch needs {steps[-1][0]}: stop the processes that"
+                " use it, then open it once with PostgresStore(..., migrate=True)"
+            )
+        for version, statements in steps:
+            for statement in statements:
+                conn.execute(statement.encode())
+            conn.execute("UPDATE schema_version SET version = %s", (version,))
 
     def _connect(self) -> _Conn:
         # No prepared statements: a pooler may hand the next transaction a
@@ -532,6 +573,11 @@ class PostgresStore:
             )
         return traces
 
+    def hosts(self) -> list[str]:
+        with self._read() as conn:
+            found = conn.execute("SELECT host FROM hosts ORDER BY host").fetchall()
+        return [host for (host,) in found]
+
     # --- critical operations ------------------------------------------------
 
     def open_request(
@@ -543,36 +589,60 @@ class PostgresStore:
         daily_cap: int,
         cautious: Callable[[HostState], datetime],
         byte_budget: int | None = None,
+        abandon_before: datetime | None = None,
     ) -> RequestRow:
         now = as_utc(now, "now")
+        abandoned: list[RequestRow] = []
+        opened: RequestRow | None = None
         with self._write() as conn:
+            if abandon_before is not None:
+                cutoff = as_utc(abandon_before, "abandon_before")
+                abandoned = self._abandon(conn, now, cutoff, host)
             state = self._state(conn, host, now)
             record = self._url_record(conn, url)
             reserve = record.size if record is not None and record.size else 0
             refusal = check_admission(state, now, daily_cap, byte_budget, reserve)
-            if refusal is not None:
-                raise refusal
-            promise = check_cautious(now, cautious(state))
-            inserted = conn.execute(
-                "INSERT INTO requests (host, url, opened_at, state, reserved_bytes)"
-                " VALUES (%s, %s, %s, %s, %s) RETURNING id",
-                (host, url, now, RowState.IN_FLIGHT.value, reserve),
-            ).fetchone()
-            assert inserted is not None
-            conn.execute(
-                "INSERT INTO daily_counts (host, day, requests, wire_bytes)"
-                " VALUES (%s, %s, 1, %s)"
-                " ON CONFLICT (host, day) DO UPDATE SET"
-                " requests = daily_counts.requests + 1,"
-                " wire_bytes = daily_counts.wire_bytes + excluded.wire_bytes",
-                (host, now.date(), reserve),
-            )
-            self._write_host(
-                conn,
-                replace(
-                    state, not_before=promise, not_before_reason=RefusalReason.BACKOFF
-                ),
-            )
+            if refusal is None:
+                opened = self._admit(conn, host, url, now, state, reserve, cautious)
+        for row in abandoned:  # logged once committed
+            log_abandoned(row)
+        if opened is not None:
+            return opened
+        # Raised after the commit: the abandoned rows stay closed.
+        assert refusal is not None
+        raise refusal
+
+    def _admit(
+        self,
+        conn: _Conn,
+        host: str,
+        url: str,
+        now: datetime,
+        state: HostState,
+        reserve: int,
+        cautious: Callable[[HostState], datetime],
+    ) -> RequestRow:
+        """Open the row of an admitted request, inside the caller's
+        transaction."""
+        promise = check_cautious(now, cautious(state))
+        inserted = conn.execute(
+            "INSERT INTO requests (host, url, opened_at, state, reserved_bytes)"
+            " VALUES (%s, %s, %s, %s, %s) RETURNING id",
+            (host, url, now, RowState.IN_FLIGHT.value, reserve),
+        ).fetchone()
+        assert inserted is not None
+        conn.execute(
+            "INSERT INTO daily_counts (host, day, requests, wire_bytes)"
+            " VALUES (%s, %s, 1, %s)"
+            " ON CONFLICT (host, day) DO UPDATE SET"
+            " requests = daily_counts.requests + 1,"
+            " wire_bytes = daily_counts.wire_bytes + excluded.wire_bytes",
+            (host, now.date(), reserve),
+        )
+        self._write_host(
+            conn,
+            replace(state, not_before=promise, not_before_reason=RefusalReason.BACKOFF),
+        )
         return RequestRow(
             id=int(inserted[0]),
             host=host,
@@ -648,32 +718,50 @@ class PostgresStore:
     def reconcile(self, *, now: datetime, older_than: timedelta) -> list[RequestRow]:
         now = as_utc(now, "now")
         check_threshold(older_than)
-        cutoff = now - older_than
-        abandoned = Outcome(ok=False, failure=ABANDONED)
         with self._write() as conn:
+            reconciled = self._abandon(conn, now, now - older_than)
+        for row in reconciled:  # logged once committed
+            log_abandoned(row)
+        return reconciled
+
+    @staticmethod
+    def _abandon(
+        conn: _Conn, now: datetime, cutoff: datetime, host: str | None = None
+    ) -> list[RequestRow]:
+        """Close as abandoned the rows in flight since `cutoff` or earlier, of
+        `host` or of every host, inside the caller's transaction."""
+        abandoned = Outcome(ok=False, failure=ABANDONED)
+        if host is None:
             found = conn.execute(
                 f"SELECT {_ROW_COLUMNS} FROM requests"
                 " WHERE state = %s AND opened_at <= %s ORDER BY id".encode(),
                 (RowState.IN_FLIGHT.value, cutoff),
             ).fetchall()
-            reconciled: list[RequestRow] = []
-            for record in found:
-                row = _row(record)
-                conn.execute(
-                    "UPDATE requests SET state = %s, closed_at = %s, ok = false,"
-                    " status = NULL, failure = %s WHERE id = %s",
-                    (RowState.RECONCILED.value, now, ABANDONED, row.id),
+        else:
+            found = conn.execute(
+                f"SELECT {_ROW_COLUMNS} FROM requests"
+                " WHERE state = %s AND opened_at <= %s AND host = %s"
+                " ORDER BY id".encode(),
+                (RowState.IN_FLIGHT.value, cutoff, host),
+            ).fetchall()
+        reconciled: list[RequestRow] = []
+        for record in found:
+            row = _row(record)
+            conn.execute(
+                "UPDATE requests SET state = %s, closed_at = %s, ok = false,"
+                " status = NULL, failure = %s WHERE id = %s",
+                (RowState.RECONCILED.value, now, ABANDONED, row.id),
+            )
+            conn.execute(
+                "INSERT INTO hosts (host, failures) VALUES (%s, 1)"
+                " ON CONFLICT (host) DO UPDATE SET failures = hosts.failures + 1",
+                (row.host,),
+            )
+            reconciled.append(
+                replace(
+                    row, state=RowState.RECONCILED, closed_at=now, outcome=abandoned
                 )
-                conn.execute(
-                    "INSERT INTO hosts (host, failures) VALUES (%s, 1)"
-                    " ON CONFLICT (host) DO UPDATE SET failures = hosts.failures + 1",
-                    (row.host,),
-                )
-                reconciled.append(
-                    replace(
-                        row, state=RowState.RECONCILED, closed_at=now, outcome=abandoned
-                    )
-                )
+            )
         return reconciled
 
     def note_data_time(
