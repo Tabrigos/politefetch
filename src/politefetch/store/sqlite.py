@@ -13,14 +13,15 @@ Safe to share between processes on one machine:
   is sent.
 
 Times are stored as fixed-width UTC text (`2026-10-16T12:00:00.000000Z`),
-which sorts like the times it represents. Tables are created with
-`CREATE TABLE IF NOT EXISTS`; there are no numbered migrations before the
-first release (D-002).
+which sorts like the times it represents. Opening the store creates what is
+missing and runs the pending migrations, in the same transaction
+(`politefetch.store._schema`, D-052).
 """
 
 import os
 import sqlite3
 import threading
+import time
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from dataclasses import replace
@@ -30,6 +31,7 @@ from typing import Any, Self
 
 from politefetch.clock import as_utc
 from politefetch.errors import RefusalReason
+from politefetch.store._schema import BASE_VERSION, VERSION_TABLE, pending
 from politefetch.store.base import (
     ABANDONED,
     DataTimeRecord,
@@ -60,6 +62,12 @@ __all__ = ["SqliteStore"]
 
 _TIME_FORMAT = "%Y-%m-%dT%H:%M:%S.%fZ"
 
+_WAL_PAUSE = 0.01
+"""Seconds between two tries of switching a new file to WAL."""
+
+# Schema version 1, frozen: a new store creates it and then runs every
+# migration, as an old one does. A column or table added here and not as a
+# migration would reach new stores only (tests/test_store_schema.py).
 _SCHEMA = (
     """
     CREATE TABLE IF NOT EXISTS hosts (
@@ -149,6 +157,10 @@ _ADDED_COLUMNS = (
     ("data_times", "since", "TEXT"),
 )
 
+# The statements of each schema version after the first: `_MIGRATIONS[0]`
+# leads to version 2. Only additions (D-052).
+_MIGRATIONS: tuple[tuple[str, ...], ...] = ()
+
 _ROW_COLUMNS = (
     "id, host, url, opened_at, state, closed_at, ok, status, failure,"
     " reserved_bytes, wire_bytes, decoded_bytes"
@@ -204,6 +216,22 @@ def _row(record: tuple[Any, ...]) -> RequestRow:
     )
 
 
+def _switch_to_wal(conn: sqlite3.Connection, timeout: float) -> None:
+    """Put the file in WAL mode. On a file not yet in WAL the switch needs a
+    lock that SQLite does not wait for while another connection is switching
+    too: it answers "busy" at once. Try again until the busy timeout ends."""
+    deadline = time.monotonic() + timeout
+    while True:
+        try:
+            conn.execute("PRAGMA journal_mode=WAL").fetchall()
+            return
+        except sqlite3.OperationalError as error:
+            busy = error.sqlite_errorcode == sqlite3.SQLITE_BUSY
+            if not busy or time.monotonic() >= deadline:
+                raise
+        time.sleep(_WAL_PAUSE)
+
+
 class SqliteStore:
     """A `Store` in a SQLite file, shareable between processes."""
 
@@ -219,7 +247,7 @@ class SqliteStore:
             check_same_thread=False,  # access is serialised by self._lock
         )
         try:
-            self._conn.execute("PRAGMA journal_mode=WAL").fetchall()
+            _switch_to_wal(self._conn, busy_timeout)
             self._conn.execute("PRAGMA synchronous=FULL")
             with self._transaction(immediate=True) as conn:
                 for statement in _SCHEMA:
@@ -232,11 +260,28 @@ class SqliteStore:
                         conn.execute(
                             f"ALTER TABLE {table} ADD COLUMN {column} {declaration}"
                         )
+                for version, statements in pending(
+                    self._version(conn), _MIGRATIONS, f"the SQLite store {self.path}"
+                ):
+                    for statement in statements:
+                        conn.execute(statement)
+                    conn.execute("UPDATE schema_version SET version = ?", (version,))
         except BaseException:
             self._conn.close()
             raise
 
     # --- plumbing -----------------------------------------------------------
+
+    @staticmethod
+    def _version(conn: sqlite3.Connection) -> int:
+        """The schema version, recorded as the first one if the database had
+        none (a new one, or one written by 0.1)."""
+        conn.execute(VERSION_TABLE)
+        found = conn.execute("SELECT version FROM schema_version").fetchone()
+        if found is None:
+            conn.execute("INSERT INTO schema_version VALUES (?)", (BASE_VERSION,))
+            return BASE_VERSION
+        return int(found[0])
 
     @contextmanager
     def _transaction(self, *, immediate: bool) -> Iterator[sqlite3.Connection]:
