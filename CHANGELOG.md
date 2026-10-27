@@ -6,6 +6,13 @@ All notable changes to politefetch. The format follows
 
 ## Unreleased
 
+### Added
+
+- `evals/trigger.json`: twenty requests that check the skill activates when
+  a task needs the library, mostly without naming it, and stays quiet on
+  near misses. On 0.1.1 with Sonnet 5.5 (Claude Code 2.1.312, three runs
+  each, 2026-10-27): 10 of 10 positives and 10 of 10 near misses passed.
+
 ### Fixed
 
 - Several processes opening a new SQLite store at the same time: all but one
