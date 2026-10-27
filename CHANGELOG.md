@@ -4,6 +4,15 @@ All notable changes to politefetch. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions follow
 [Semantic Versioning](https://semver.org/).
 
+## Unreleased
+
+### Fixed
+
+- Several processes opening a new SQLite store at the same time: all but one
+  could fail with `database is locked`, because switching a new file to WAL
+  takes a lock that SQLite does not wait for. The switch is now tried again
+  until the busy timeout ends. A failed open had sent nothing.
+
 ## 0.1.1 — 2026-10-26
 
 ### Fixed

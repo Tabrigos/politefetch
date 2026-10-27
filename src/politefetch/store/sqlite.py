@@ -21,6 +21,7 @@ first release (D-002).
 import os
 import sqlite3
 import threading
+import time
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from dataclasses import replace
@@ -58,6 +59,9 @@ from politefetch.store.base import (
 __all__ = ["SqliteStore"]
 
 _TIME_FORMAT = "%Y-%m-%dT%H:%M:%S.%fZ"
+
+_WAL_PAUSE = 0.01
+"""Seconds between two tries of switching a new file to WAL."""
 
 _SCHEMA = (
     """
@@ -203,6 +207,22 @@ def _row(record: tuple[Any, ...]) -> RequestRow:
     )
 
 
+def _switch_to_wal(conn: sqlite3.Connection, timeout: float) -> None:
+    """Put the file in WAL mode. On a file not yet in WAL the switch needs a
+    lock that SQLite does not wait for while another connection is switching
+    too: it answers "busy" at once. Try again until the busy timeout ends."""
+    deadline = time.monotonic() + timeout
+    while True:
+        try:
+            conn.execute("PRAGMA journal_mode=WAL").fetchall()
+            return
+        except sqlite3.OperationalError as error:
+            busy = error.sqlite_errorcode == sqlite3.SQLITE_BUSY
+            if not busy or time.monotonic() >= deadline:
+                raise
+        time.sleep(_WAL_PAUSE)
+
+
 class SqliteStore:
     """A `Store` in a SQLite file, shareable between processes."""
 
@@ -218,7 +238,7 @@ class SqliteStore:
             check_same_thread=False,  # access is serialised by self._lock
         )
         try:
-            self._conn.execute("PRAGMA journal_mode=WAL").fetchall()
+            _switch_to_wal(self._conn, busy_timeout)
             self._conn.execute("PRAGMA synchronous=FULL")
             with self._transaction(immediate=True) as conn:
                 for statement in _SCHEMA:
