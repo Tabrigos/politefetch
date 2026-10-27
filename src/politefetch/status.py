@@ -68,6 +68,10 @@ class HostStatus:
     The `*_today` counts are for `day`, the UTC day of `at`; `daily_cap` and
     `byte_budget` come from the host's policy. `recent` holds the latest log
     rows of the host, newest first.
+
+    `abandoned` counts the rows in flight for longer than `reconcile_after`:
+    they are already left out of `in_flight` and counted in `failures`, as
+    the next request to the host will count them when it closes them.
     """
 
     host: str
@@ -86,6 +90,7 @@ class HostStatus:
     decoded_bytes_today: int
     byte_budget: int | None
     recent: tuple[RequestRow, ...]
+    abandoned: int = 0
 
     def to_dict(self) -> Json:
         """The status as JSON-ready values: times as ISO 8601 strings with
@@ -100,6 +105,7 @@ class HostStatus:
             "failures": self.failures,
             "throttled": self.throttled,
             "in_flight": self.in_flight,
+            "abandoned": self.abandoned,
             "today": {
                 "day": self.day.isoformat(),
                 "requests": self.requests_today,
