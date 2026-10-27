@@ -46,7 +46,10 @@ promised must outlive the process**.
 7. **An open request is not invisible.** Every request has an `in-flight`
    state that is closed in a `finally`; those that no `finally` can close
    (killed process, cancellation) are closed by a **reconciliation** with a
-   wide threshold, and they count as failed. No statistic excludes them.
+   wide threshold, and they count as failed. No statistic excludes them. The
+   reconciliation runs in the transaction that opens the next request to the
+   host; reading the state (`status`, `may_fetch`) writes nothing and counts
+   those rows the same way.
 
 ## Content checks
 
@@ -88,7 +91,11 @@ promised must outlive the process**.
 - **Store**: an interface with three implementations: memory (tests), SQLite
   (default, the standard library's `sqlite3`), Postgres (`postgres` extra).
   The critical operations are atomic: two processes sharing the store do not
-  exceed the cap together.
+  exceed the cap together. The SQLite and Postgres stores record a schema
+  version; a later version is a migration that only adds, applied in one
+  transaction (SQLite when it opens, an existing Postgres schema only when
+  opened with `migrate=True`), and a database newer than the code is
+  refused.
 - **Transport adapters**: `urllib` (standard library, in the core), `httpx`
   and `requests` (extras). An adapter sends one GET and hands back the body
   as transferred, piece by piece; reading, the deadline, the size limit and

@@ -34,6 +34,7 @@ alla vecchia e la vecchia prende la riga "Superata da".
 
 ## D-002 — T7 dopo T3 e T4, con una suite di contratto dello store
 
+- **Superata da**: D-052, solo per la parte sulle migrazioni
 - **Data e tappa**: 2026-10-15, revisione prima di T0
 - **Contesto**: T3 e T4 aggiungono metodi allo store mentre T7 implementa
   Postgres; in parallelo lo store Postgres nascerebbe incompleto.
@@ -1329,6 +1330,69 @@ alla vecchia e la vecchia prende la riga "Superata da".
 - **Conseguenze**: `AGENTS.md` (ciclo di sessione, lingue) e il README
   cambiano nello stesso commit.
 
+## D-052 — Versioni dello schema e migrazioni degli store
+
+- **Data e tappa**: 2026-10-27, issue #11
+- **Contesto**: gli store SQLite e Postgres creano le tabelle all'apertura e
+  non registrano una versione (D-002, che valeva fino al primo rilascio).
+  Diverse issue della 0.2 aggiungono colonne o tabelle, e uno store scritto
+  dalla 0.1 deve tenere promesse, conteggi e freeze: ricrearlo li
+  dimenticherebbe.
+- **Decisione**:
+  - una tabella `schema_version` con una riga; la versione 1 è lo schema della
+    0.1, e un database con le tabelle ma senza versione è alla versione 1;
+  - ogni versione successiva è una migrazione nel codice dello store, una
+    lista di istruzioni eseguite in ordine nella stessa transazione che
+    aggiorna la versione: una migrazione fallita lascia il database com'era;
+  - le migrazioni aggiungono soltanto (tabelle, colonne con un default,
+    indici): un processo che gira ancora con la versione vecchia continua ad
+    applicare le regole che conosce;
+  - un database più nuovo del codice si rifiuta all'apertura (`ValueError`):
+    il codice vecchio ignorerebbe uno stato che può trattenere richieste;
+  - SQLite migra all'apertura, dentro la transazione `BEGIN IMMEDIATE`, così
+    due processi che aprono insieme migrano una volta sola;
+  - Postgres crea uno schema nuovo alla versione più recente, ma uno schema
+    esistente con migrazioni in attesa si rifiuta finché non lo si apre con
+    `migrate=True`: lo possono usare altre macchine, che vanno fermate prima;
+  - tornare alla 0.1 su un file migrato non è previsto: la 0.1 non legge la
+    versione e ignorerebbe lo stato nuovo.
+- **Alternative scartate**: `PRAGMA user_version` per SQLite (collide con
+  un'applicazione che usa lo stesso file per le sue tabelle, e Postgres
+  avrebbe comunque bisogno di una tabella); migrare Postgres a ogni apertura
+  (una macchina aggiornata cambierebbe lo schema sotto le altre senza che
+  nessuno lo decida); uno strumento esterno come Alembic (una dipendenza nel
+  nucleo, che usa solo la libreria standard).
+- **Conseguenze**: `PostgresStore` prende `migrate=`. Le fixture
+  `tests/fixtures/store-0.1.1.db`, scritta dalla 0.1.1 installata da PyPI, e
+  `store-0.1.1-integration.db`, ripulita da una prima integrazione, provano
+  che un file della 0.1 si apre con ogni riga. Le migrazioni della 0.2 si
+  aggiungono a `_MIGRATIONS` nel modulo di ciascuno store.
+## D-053 — Leggere lo stato non scrive; la riconciliazione sta nell'apertura
+
+- **Data e tappa**: 2026-10-27, issue #29 (revisione dell'architettura, R5)
+- **Contesto**: ogni decisione, anche `status` e `may_fetch`, riconciliava
+  tutti gli host in una transazione di scrittura (`BEGIN IMMEDIATE`, un
+  advisory lock per lo schema in Postgres). Un pannello in un altro processo
+  riceveva `database is locked` mentre chi scaricava scriveva (riprodotto), e
+  un monitor senza diritto di scrittura non poteva esistere. Un tentativo
+  costava due transazioni di scrittura: riconciliazione e apertura.
+- **Decisione**:
+  - `open_request` prende `abandon_before`: le righe in volo dell'host aperte
+    prima si chiudono come abbandonate nella stessa transazione che apre la
+    richiesta. La chiusura resta anche se l'apertura viene rifiutata, perché
+    quelle righe possono essere proprio ciò che la rifiuta (`in_flight`): il
+    rifiuto si solleva dopo il commit;
+  - `status`, `statuses` e `may_fetch` leggono lo stato e contano le righe
+    oltre la soglia come le conterà la chiusura (un fallimento ciascuna, fuori
+    da `in_flight`), senza scrivere; `HostStatus.abandoned` le mostra;
+  - `Gate.reconcile()` resta, per chi vuole chiudere tutto a mano.
+- **Alternative scartate**: riconciliare in lettura solo quando c'è qualcosa
+  da chiudere (un monitor senza permessi fallirebbe proprio dopo un crash);
+  mostrare le righe come già riconciliate in `recent` (una chiusura che nel
+  database non c'è).
+- **Conseguenze**: le righe abbandonate di un host che nessuno interroga più
+  restano in volo nel database finché qualcuno non gli chiede una richiesta o
+  chiama `Gate.reconcile()`; lo stato letto le conta già.
 ## D-054 — `reconcile_after` di default segue i fetcher
 
 - **Data e tappa**: 2026-10-28, issue #32 (revisione dell'architettura, R9)

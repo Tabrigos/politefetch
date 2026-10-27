@@ -129,6 +129,7 @@ datetime is a bug of the extractor and raises `ValueError`.
 |---|---|
 | One machine, one or more processes | `SqliteStore("ingest.db")`: the default; share the same file |
 | Several machines | `PostgresStore(conninfo, schema="politefetch")` (extra `postgres`) |
+| Upgrading politefetch over an existing store | SQLite migrates when it opens. Postgres refuses a schema with migrations pending: stop the processes that use it, open it once with `PostgresStore(..., migrate=True)`. A store newer than the code is refused; do not go back to an older version on a migrated store |
 | Tests only | `MemoryStore()`: forgets everything when the process ends |
 | No extra dependency | `politefetch.adapters.urllib.UrllibFetcher` |
 | httpx, sync or async | `HttpxFetcher`, `AsyncHttpxFetcher` in `politefetch.adapters.httpx` |
@@ -181,12 +182,13 @@ byte_budget=None)`
 - `Gate(store, policies, *, clock=None, default=None, reconcile_after=None)`:
   a host without a policy raises `NoPolicy` (a `ValueError` too) unless
   `default` is given; rows
-  left open longer than `reconcile_after` (a crashed process) are closed as
-  failed before the next decision. By default `reconcile_after` is twice the
-  longest request of the fetchers built on the gate (with the defaults, 11
-  minutes 20 seconds), or an hour while there are none. With `gate.attempt`
-  and a client of your own, give it by hand, longer than your slowest
-  request: a request still running past it can be overlapped by the next.
+  left open longer than `reconcile_after` (a crashed process) count as
+  failed, and the next request to their host closes them. By default
+  `reconcile_after` is twice the longest request of the fetchers built on the
+  gate (with the defaults, 11 minutes 20 seconds), or an hour while there are
+  none. With `gate.attempt` and a client of your own, give it by hand, longer
+  than your slowest request: a request still running past it can be
+  overlapped by the next.
 
 ## Reading the outcome
 
@@ -271,10 +273,15 @@ def dashboard(gate: Gate) -> str:
 
 `gate.status(host_or_url, recent=10)` returns a `HostStatus`: `may_fetch`,
 `reason`, `next_allowed` (`None` while frozen), `frozen`, `failures`,
-`throttled`, `in_flight`, `requests_today`, `daily_cap`, `wire_bytes_today`,
-`decoded_bytes_today`, `byte_budget`, and `recent` log rows, newest first.
-Given a URL it also counts the bytes that URL would reserve. It sends nothing.
-`gate.statuses()` covers the hosts with a policy of their own. In the JSON of
+`throttled`, `in_flight`, `abandoned` (rows past `reconcile_after`, already
+counted in `failures` and left out of `in_flight`), `requests_today`,
+`daily_cap`, `wire_bytes_today`, `decoded_bytes_today`, `byte_budget`, and
+`recent` log rows, newest first. Given a URL it also counts the bytes that URL
+would reserve. It sends nothing and writes nothing, like `may_fetch`: a
+dashboard can call it beside the process that fetches, or with read-only
+access.
+`gate.statuses()` covers the hosts with a policy of their own and, with a
+`default` policy, every host the store knows (`store.hosts()`). In the JSON of
 `to_json` the counts of the day sit under the key `"today"` (`"requests"`,
 `"daily_cap"`, `"wire_bytes"`, `"decoded_bytes"`, `"byte_budget"`, `"day"`).
 The log rows are never deleted in this version: the table grows with every
@@ -283,6 +290,12 @@ request.
 A frozen host stays frozen until a person decides: `gate.unfreeze(host,
 by="alice", note="they lifted the block")` lifts it and leaves a trace. Never
 call it from code that runs on its own.
+
+The `politefetch` logger says what a person must hear about without polling
+`status`: WARNING when a host freezes and when a row is closed as abandoned
+(`politefetch.store`), ERROR when the store could not save an outcome, the
+one lost during a cancellation included. Refusals, good answers and failures
+of the source log nothing: they are outcomes, read them from `status`.
 
 ## Testing an ingest job
 
