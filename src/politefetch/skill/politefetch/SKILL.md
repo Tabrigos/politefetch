@@ -254,9 +254,13 @@ validators saved, and the next request is conditional), or
 `attempt.reject(reason)` when you do not: `"not_ready"` for a complete body
 that is not ready (empty, half a JSON: `check_body` raises `SourceNotReady`),
 `"unusable"` when your parser refuses it. A rejected answer is still an
-answer: `min_interval` holds and the failures stay as they were. Without a
-verdict nothing is vouched for, and the next request asks for the whole
-body. `attempt.reject("not_sent")` closes an attempt that sent nothing.
+answer: `min_interval` holds, the failures stay as they were, and the
+validators of the last accepted answer stay. Without a verdict nothing is
+vouched for, and the next request asks for the whole body. A page where data
+was expected (HTML) is a failure, as in the fetchers: check the body before
+`response` and record `attempt.failure("unexpected_content", status=...,
+headers=...)`. `attempt.reject("not_sent")` closes an attempt that sent
+nothing.
 Never `accept` a body you then throw away: a 304 would follow, and you would
 have nothing. Each adapter module has a
 `failure_shape(error)` that names its client's exceptions with the shapes

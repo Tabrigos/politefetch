@@ -427,8 +427,14 @@ class Attempt:
         refused it), or `"not_sent"` for an attempt that sent nothing.
 
         A rejected answer is still an answer: `min_interval` and Retry-After
-        hold, the failures stay as they were, and no validators are saved.
-        The row records it as `"rejected:<reason>"`.
+        hold, the failures stay as they were, and its validators are not
+        saved: those of the last accepted answer stay, so the next request
+        stays conditional on the copy you kept. The row records it as
+        `"rejected:<reason>"`.
+
+        A page where data was expected (HTML) is a failure, not a rejection:
+        check it before `response` and record it with `failure`, as the
+        fetchers do.
         """
         if reason not in REJECTIONS:
             known = ", ".join(sorted(REJECTIONS))
