@@ -4,6 +4,18 @@ All notable changes to politefetch. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions follow
 [Semantic Versioning](https://semver.org/).
 
+## Unreleased
+
+### Added
+
+- The SQLite and Postgres stores record a schema version, and later versions
+  come as migrations that only add, each in one transaction with the version
+  update (#11). SQLite migrates when it opens; an existing Postgres schema
+  with migrations pending is refused until it is opened once with
+  `PostgresStore(..., migrate=True)`. A store newer than the code is refused.
+  A store written by 0.1 opens with every promise, count and freeze, as two
+  fixtures written by 0.1.1 show.
+
 ## 0.1.1 — 2026-10-26
 
 ### Fixed

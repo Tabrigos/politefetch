@@ -45,6 +45,7 @@ from psycopg import sql
 from politefetch.clock import Clock, SystemClock, as_utc
 from politefetch.errors import RefusalReason
 from politefetch.policy import parse_duration
+from politefetch.store._schema import BASE_VERSION, VERSION_TABLE, pending
 from politefetch.store.base import (
     ABANDONED,
     DataTimeRecord,
@@ -153,6 +154,10 @@ _TABLES = (
     "ALTER TABLE data_times ADD COLUMN IF NOT EXISTS since timestamptz",
 )
 
+# The statements of each schema version after the first: `_MIGRATIONS[0]`
+# leads to version 2. Only additions (D-052).
+_MIGRATIONS: tuple[tuple[str, ...], ...] = ()
+
 _ROW_COLUMNS = (
     "id, host, url, opened_at, state, closed_at, ok, status, failure,"
     " reserved_bytes, wire_bytes, decoded_bytes"
@@ -216,9 +221,15 @@ class PostgresStore:
         lock_timeout: float = 30.0,
         clock: Clock | None = None,
         max_clock_skew: timedelta | str | None = "1m",
+        migrate: bool = False,
     ) -> None:
         """`clock` is the machine's (by default the system clock), compared
-        once with the server's; `max_clock_skew=None` skips the check."""
+        once with the server's; `max_clock_skew=None` skips the check.
+
+        A new schema is created at its latest version. An existing one with
+        migrations pending is refused unless `migrate=True`: other machines
+        may be using it, so stop them, then open it once with `migrate=True`.
+        """
         if not _SCHEMA_NAME.fullmatch(schema):
             raise ValueError(f"schema must be a lowercase identifier, got {schema!r}")
         if not lock_timeout > 0:
@@ -243,13 +254,39 @@ class PostgresStore:
                         sql.Identifier(schema)
                     )
                 )
+                found = conn.execute("SELECT to_regclass('hosts')").fetchone()
+                new = found is None or found[0] is None
                 for statement in _TABLES:
                     conn.execute(statement.encode())
+                self._migrate(conn, new=new, asked=migrate)
         except BaseException:
             self._conn.close()
             raise
 
     # --- plumbing -----------------------------------------------------------
+
+    def _migrate(self, conn: _Conn, *, new: bool, asked: bool) -> None:
+        """Record the version if the schema had none (a new one, or one
+        written by 0.1), then run the pending migrations: always on a new
+        schema, on an existing one only if asked."""
+        conn.execute(VERSION_TABLE.encode())
+        found = conn.execute("SELECT version FROM schema_version").fetchone()
+        if found is None:
+            conn.execute("INSERT INTO schema_version VALUES (%s)", (BASE_VERSION,))
+            current = BASE_VERSION
+        else:
+            current = int(found[0])
+        steps = pending(current, _MIGRATIONS, f"the Postgres schema {self.schema!r}")
+        if steps and not (new or asked):
+            raise ValueError(
+                f"the Postgres schema {self.schema!r} has schema version {current},"
+                f" this politefetch needs {steps[-1][0]}: stop the processes that"
+                " use it, then open it once with PostgresStore(..., migrate=True)"
+            )
+        for version, statements in steps:
+            for statement in statements:
+                conn.execute(statement.encode())
+            conn.execute("UPDATE schema_version SET version = %s", (version,))
 
     def _connect(self) -> _Conn:
         # No prepared statements: a pooler may hand the next transaction a
