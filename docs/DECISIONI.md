@@ -1328,3 +1328,27 @@ alla vecchia e la vecchia prende la riga "Superata da".
   inglese (un file in due lingue).
 - **Conseguenze**: `AGENTS.md` (ciclo di sessione, lingue) e il README
   cambiano nello stesso commit.
+
+## D-055 — Il JSON si giudica dal corpo, non dal Content-Type
+
+- **Data e tappa**: 2026-10-27, issue #15
+- **Contesto**: con `expect="json"`, un corpo servito come `text/html` era
+  `UnexpectedContent` anche quando era JSON valido. Ci sono sorgenti che
+  servono i loro file JSON con il tipo sbagliato, e il dato andava perso.
+- **Decisione**:
+  - con `expect="json"` un corpo che si analizza come JSON è un dato,
+    qualunque sia il Content-Type; una pagina HTML si riconosce ancora dal
+    primo tag;
+  - un corpo servito come HTML che non si analizza resta `UnexpectedContent`
+    ("HTML where json was expected"), anche quando finisce a metà come un
+    JSON troncato: la sorgente ha detto che è una pagina, e non c'è motivo
+    di crederla un file in riscrittura. Per la pausa dell'host non cambia
+    niente, perché `SourceNotReady` e `UnexpectedContent` sono due
+    fallimenti uguali;
+  - il testo resta controllato sul Content-Type: non ha un formato con cui
+    distinguere un dato da una pagina.
+- **Alternative scartate**: ignorare il Content-Type anche per il JSON che
+  non si analizza (un `{` aperto in una pagina servita come HTML
+  diventerebbe `SourceNotReady`, cioè "riprova più tardi", per una sorgente
+  che ha risposto con una pagina).
+- **Conseguenze**: `SPEC.md` (controlli sul contenuto) e la skill lo dicono.

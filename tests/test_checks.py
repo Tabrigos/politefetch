@@ -140,10 +140,26 @@ def test_every_whole_json_document_passes(document: object) -> None:
 @pytest.mark.parametrize(
     "content_type", ["text/html", "text/html; charset=utf-8", "application/xhtml+xml"]
 )
-@pytest.mark.parametrize("expect", ["json", "text"])
-def test_html_content_type_is_unexpected(content_type: str, expect: Expect) -> None:
+def test_text_served_as_html_is_unexpected(content_type: str) -> None:
     with pytest.raises(UnexpectedContent, match="HTML"):
-        check_body(b'{"a": 1}', expect=expect, content_type=content_type)
+        check_body(b"time,value\n", expect="text", content_type=content_type)
+
+
+@pytest.mark.parametrize(
+    "content_type", ["text/html", "text/html; charset=utf-8", "application/xhtml+xml"]
+)
+def test_json_that_parses_is_data_whatever_the_content_type(content_type: str) -> None:
+    assert check_body(b'{"a": 1}', expect="json", content_type=content_type) == {"a": 1}
+
+
+@pytest.mark.parametrize(
+    "body",
+    [b"Service Unavailable", b'{"time": "2026-', b"caf\xe9"],
+    ids=["not json", "json cut short", "not utf-8"],
+)
+def test_json_that_does_not_parse_served_as_html_is_html(body: bytes) -> None:
+    with pytest.raises(UnexpectedContent, match="HTML"):
+        check_body(body, expect="json", content_type="text/html")
 
 
 @pytest.mark.parametrize(

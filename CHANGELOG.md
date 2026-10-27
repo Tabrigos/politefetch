@@ -4,6 +4,15 @@ All notable changes to politefetch. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions follow
 [Semantic Versioning](https://semver.org/).
 
+## Unreleased
+
+### Changed
+
+- With `expect="json"`, a body that parses as JSON is data even when served
+  as `text/html`; an HTML page is still recognised by its first tag, and a
+  body served as HTML that does not parse is still `UnexpectedContent`.
+  Text keeps the Content-Type check (#15).
+
 ## 0.1.1 — 2026-10-26
 
 ### Fixed

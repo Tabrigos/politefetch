@@ -52,10 +52,11 @@ promised must outlive the process**.
 
 - **Truncated**: body shorter than `Content-Length`, JSON that ends midway,
   empty body where data is needed → `SourceNotReady` (transient).
-- **Unexpected content**: HTML (by `Content-Type`, or by the first tag of
-  the body past white space, comments and an XML declaration) where JSON or
+- **Unexpected content**: HTML (by the first tag of the body past white
+  space, comments and an XML declaration, or by `Content-Type`) where JSON or
   text is expected, redirect to another host, a data time too far ahead of
-  now → `UnexpectedContent`. A data time from the future is not kept: one
+  now → `UnexpectedContent`. JSON is judged by its body: one that parses is
+  data even when served as `text/html`. A data time from the future is not kept: one
   alone would make every later read look stuck.
 - **Freshness on the content**: the caller provides a function that extracts
   the data's time from the body; the library compares it with `max_age`. A
