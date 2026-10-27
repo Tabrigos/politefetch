@@ -164,10 +164,15 @@ def classify(error: BaseException, *, phase: Phase) -> FailureShape:
 
 @dataclass(frozen=True, slots=True)
 class RawResponse:
-    """One HTTP answer as a transport receives it. Header names are
-    lowercase. `chunks` yields the body as transferred, piece by piece as it
-    arrives: without the transfer framing, but not decoded (a
-    Content-Encoding stays, the core undoes it)."""
+    """One HTTP answer as a transport receives it.
+
+    Attributes:
+        status: The HTTP status.
+        headers: The response headers, names in lowercase.
+        chunks: The body as transferred, piece by piece as it arrives:
+            without the transfer framing, but not decoded (a
+            Content-Encoding stays, the core undoes it).
+    """
 
     status: int
     headers: Mapping[str, str]
@@ -176,7 +181,14 @@ class RawResponse:
 
 @dataclass(frozen=True, slots=True)
 class AsyncRawResponse:
-    """`RawResponse` for an asynchronous transport."""
+    """`RawResponse` for an asynchronous transport.
+
+    Attributes:
+        status: The HTTP status.
+        headers: The response headers, names in lowercase.
+        chunks: The body as transferred, as `RawResponse.chunks`, read with
+            `async for`.
+    """
 
     status: int
     headers: Mapping[str, str]
@@ -227,10 +239,19 @@ class AsyncTransport(Protocol):
 class FetchResult:
     """A fetch that passed every check.
 
-    `content` is the parsed JSON, the decoded text or the bytes, according to
-    `expect`; `None` when the source answered 304 (`not_modified`). Then
-    `data_time` is the latest data time seen for the URL, if any. `body` is
-    decoded; `wire_bytes` counts it as transferred.
+    Attributes:
+        url: The URL fetched.
+        status: The HTTP status: a 2xx, or 304.
+        headers: The response headers, names in lowercase.
+        body: The body, decoded; empty after a 304.
+        content: The parsed JSON, the decoded text or the bytes, according
+            to `expect`; `None` when the source answered 304.
+        not_modified: True when the source answered 304.
+        data_time: The data time read from the content; after a 304, the
+            latest data time seen for the URL. `None` without a `data_time`
+            function, or when none was seen yet.
+        wire_bytes: The body as transferred (compressed, if it was).
+        decoded_bytes: The body after decoding.
     """
 
     url: str

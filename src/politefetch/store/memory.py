@@ -44,7 +44,20 @@ __all__ = ["MemoryData", "MemoryStore"]
 
 @dataclass
 class MemoryData:
-    """The persistent part of a `MemoryStore`."""
+    """The persistent part of a `MemoryStore`.
+
+    Attributes:
+        hosts: The state of each host, by host name.
+        counts: The requests opened, by host and UTC day.
+        wire: The bytes on the wire (or reserved), by host and UTC day.
+        decoded: The bytes after decoding, by host and UTC day.
+        urls: What is remembered of each URL: validators and size.
+        data_times: The data-time history of each URL.
+        rows: The request log, by row number.
+        next_id: The number of the next row.
+        unfreezes: The traces of lifted freezes, oldest first.
+        lock: Makes each operation atomic between threads.
+    """
 
     hosts: dict[str, HostState] = field(default_factory=dict)
     counts: dict[tuple[str, date], int] = field(default_factory=dict)

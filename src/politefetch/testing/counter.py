@@ -18,7 +18,16 @@ __all__ = ["RequestCounter", "SourceRequest"]
 
 @dataclass(frozen=True, slots=True)
 class SourceRequest:
-    """One request as the source saw it. Header names are lowercase."""
+    """One request as the source saw it.
+
+    Attributes:
+        number: Its place among the requests that reached the source, from 1.
+        method: The HTTP method.
+        path: The request target as it arrived, query included.
+        headers: The request headers, names in lowercase; a header sent more
+            than once is recorded once, its values joined by ", ".
+        scenario: The name of the scenario playing when it arrived.
+    """
 
     number: int
     method: str

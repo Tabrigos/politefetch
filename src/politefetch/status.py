@@ -58,16 +58,32 @@ def _row(row: RequestRow) -> Json:
 class HostStatus:
     """One host as of `at`.
 
-    `may_fetch` is what `Gate.may_fetch` would answer; if false, `reason` says
-    why and `next_allowed` when to ask again (`None` while the host is frozen
-    until a person unlocks it). If true, `next_allowed` is `at`. The answer is
-    advisory: `Gate.attempt` decides again, atomically.
+    The answer of `may_fetch` is advisory: `Gate.attempt` decides again,
+    atomically.
 
-    `frozen` is the freeze in force, if any. `failures` counts consecutive
-    failures and `throttled` the 429 answers since the last good answer.
-    The `*_today` counts are for `day`, the UTC day of `at`; `daily_cap` and
-    `byte_budget` come from the host's policy. `recent` holds the latest log
-    rows of the host, newest first.
+    Attributes:
+        host: The host name, normalized.
+        at: When the status was read; the moment every other field is for.
+        may_fetch: What `Gate.may_fetch` would answer.
+        reason: Why a request may not start now; `None` when it may.
+        next_allowed: When to ask again; `at` when a request may start now,
+            `None` while the host is frozen until a person unlocks it.
+        frozen: The freeze in force, if any.
+        failures: Consecutive failures since the last good answer.
+        throttled: The 429 answers since the last good answer.
+        in_flight: Requests to the host still open.
+        day: The UTC day of `at`, the day of the `*_today` counts.
+        requests_today: Requests opened on `day`, counted against
+            `daily_cap`.
+        daily_cap: The requests per UTC day the host's policy allows.
+        wire_bytes_today: Bytes on the wire for the requests opened on
+            `day` (real bytes, or the reservation of requests that never
+            reported theirs), counted against `byte_budget`.
+        decoded_bytes_today: Bytes after decoding, for the requests opened
+            on `day`.
+        byte_budget: The wire bytes per UTC day the host's policy allows;
+            `None` for no limit.
+        recent: The latest log rows of the host, newest first.
     """
 
     host: str

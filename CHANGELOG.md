@@ -4,6 +4,19 @@ All notable changes to politefetch. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions follow
 [Semantic Versioning](https://semver.org/).
 
+## Unreleased
+
+### Fixed
+
+- The API reference gives the meaning of every field of the public
+  classes (`HostStatus`, `RequestRow`, `Outcome`, the store records, the
+  errors...), from an `Attributes:` section of their docstrings; a test
+  fails if one is left empty (#23).
+- The skill's example of `gate.attempt` names the client's exceptions with
+  the adapter's `failure_shape` instead of by hand, and the skill says that
+  `to_json` puts the fields of a row's outcome directly in the row, while
+  `RequestRow` keeps them in `outcome` (#23).
+
 ## 0.1.1 — 2026-10-26
 
 ### Fixed
