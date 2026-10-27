@@ -8,10 +8,13 @@ of SPEC.md.
 
 Because it is a real server on loopback, any HTTP client can talk to it, and
 it passes the network barrier. Every request that arrives is counted before
-the scenario plays (`politefetch.testing.counter`).
+the scenario plays (`politefetch.testing.counter`), with the time it arrived
+on the simulator's `clock` (the system clock unless given one, such as the
+`FakeClock` of the gate under test).
 
 Scenarios: `Respond` (any status, body, headers), `TooManyRequests`, `Html`,
-`Truncated` (body shorter than its Content-Length), `Drip` (the body one
+`Truncated` (body shorter than its Content-Length), `HalfJson` (a complete
+answer whose JSON stops midway), `Drip` (the body one
 byte at a time), `NoAnswer` (holds the connection until the simulator
 stops), `Reset` (closes with a TCP reset),
 `stuck_json` and `advancing_json` (data whose time stays put or moves on),
@@ -36,10 +39,12 @@ from http import HTTPStatus
 from types import TracebackType
 from typing import Protocol, Self
 
+from politefetch.clock import Clock, SystemClock
 from politefetch.testing.counter import RequestCounter, SourceRequest
 
 __all__ = [
     "Drip",
+    "HalfJson",
     "Html",
     "NoAnswer",
     "Reset",
@@ -230,6 +235,18 @@ class Truncated:
         )
 
 
+class HalfJson(Respond):
+    """A complete answer whose JSON stops midway: the Content-Length matches
+    the body, as when a source serves a file it is still rewriting. No HTTP
+    client complains; only the content check does (`Truncated` is the other
+    truncation, a connection that closes before the announced length)."""
+
+    def __init__(
+        self, body: bytes = b'{"time": "20', *, name: str = "half json"
+    ) -> None:
+        super().__init__(200, body, name=name)
+
+
 class Drip:
     """Send the head at once, then the body one byte every `every` seconds:
     a source that keeps a request alive for as long as it likes."""
@@ -330,10 +347,17 @@ def _read_head(conn: socket.socket) -> tuple[str, str, dict[str, str]] | None:
 
 
 class SourceSimulator:
-    """A simulated source on 127.0.0.1, playing one scenario at a time."""
+    """A simulated source on 127.0.0.1, playing one scenario at a time.
 
-    def __init__(self, scenario: Scenario | None = None) -> None:
+    `clock` gives the time each request arrived (`SourceRequest.arrived`);
+    like `scenario`, it can be replaced between requests.
+    """
+
+    def __init__(
+        self, scenario: Scenario | None = None, *, clock: Clock | None = None
+    ) -> None:
         self.scenario: Scenario = scenario if scenario is not None else Respond()
+        self.clock: Clock = clock if clock is not None else SystemClock()
         self.counter = RequestCounter()
         self._server: socket.socket | None = None
         self._stop = threading.Event()
@@ -422,7 +446,9 @@ class SourceSimulator:
                     return
                 method, path, headers = head
                 scenario = self.scenario
-                request = self.counter.record(method, path, headers, scenario.name)
+                request = self.counter.record(
+                    method, path, headers, scenario.name, arrived=self.clock.now()
+                )
                 scenario.serve(conn, request, self._stop)
         except OSError:
             pass  # the client went away: nothing to answer

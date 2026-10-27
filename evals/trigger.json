@@ -1,0 +1,22 @@
+[
+  { "request": "Write a Python job that downloads the NOAA space weather JSON feed every 5 minutes and stores it in SQLite, without getting our IP banned.", "activate": true },
+  { "request": "Add a cron task to our ingest service that pulls the latest earthquake catalogue from the USGS API every 10 minutes.", "activate": true },
+  { "request": "Our poller hammered a public API right after a restart and got a 429. Make it remember the backoff across restarts.", "activate": true },
+  { "request": "I need a script that fetches a CSV from a government open-data portal once an hour. Sometimes the file is half-written when we download it.", "activate": true },
+  { "request": "Build an async worker that polls three endpoints of the same third-party host and stays under their limit of 1000 requests per day.", "activate": true },
+  { "request": "The weather feed we poll sometimes answers 200 with an HTML maintenance page and our parser crashes. Make the ingest reject it.", "activate": true },
+  { "request": "Write a test for our ingest job that proves it never sends more than one request per minute to the source, without touching the network.", "activate": true },
+  { "request": "Using politefetch, fetch https://example.org/data.json with httpx and record the outcome.", "activate": true },
+  { "request": "The data source we poll sometimes stops updating but keeps answering 200 with the same data. Detect that in the poller.", "activate": true },
+  { "request": "Two processes of our ingest service share the same daily quota on an external API. Make sure that together they never exceed it.", "activate": true },
+  { "request": "Explain what HTTP status 429 and the Retry-After header mean.", "activate": false },
+  { "request": "Write a FastAPI middleware that rate-limits our own users to 100 requests per minute.", "activate": false },
+  { "request": "Set up a systemd timer that runs ingest.py every 15 minutes.", "activate": false },
+  { "request": "Add an HTTP response cache to our httpx client so that repeated GETs are served from disk.", "activate": false },
+  { "request": "Rotate proxies in my scraper so that the site stops blocking me.", "activate": false },
+  { "request": "Write a function that parses an ISO 8601 timestamp with a timezone into a UTC datetime.", "activate": false },
+  { "request": "Upload a file with a POST request to our internal S3-compatible storage using requests.", "activate": false },
+  { "request": "Configure retries with exponential backoff for our database connections in SQLAlchemy.", "activate": false },
+  { "request": "Write a unit test for a pure function that computes the Kp index from magnetometer readings.", "activate": false },
+  { "request": "How do I read a large JSON file in Python without loading it all into memory?", "activate": false }
+]

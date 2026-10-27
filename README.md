@@ -152,6 +152,7 @@ print(to_json(gate.statuses(), indent=2))
   "failures": 0,
   "throttled": 0,
   "in_flight": 0,
+  "abandoned": 0,
   "today": {"day": "2026-10-16", "requests": 1, "daily_cap": 120,
             "wire_bytes": 2310, "decoded_bytes": 5120, "byte_budget": null},
   "recent": [{"id": 1, "url": "https://services.swpc.noaa.gov/...",

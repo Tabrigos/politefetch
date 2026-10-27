@@ -129,6 +129,7 @@ datetime is a bug of the extractor and raises `ValueError`.
 |---|---|
 | One machine, one or more processes | `SqliteStore("ingest.db")`: the default; share the same file |
 | Several machines | `PostgresStore(conninfo, schema="politefetch")` (extra `postgres`) |
+| Upgrading politefetch over an existing store | SQLite migrates when it opens. Postgres refuses a schema with migrations pending: stop the processes that use it, open it once with `PostgresStore(..., migrate=True)`. A store newer than the code is refused; do not go back to an older version on a migrated store |
 | Tests only | `MemoryStore()`: forgets everything when the process ends |
 | No extra dependency | `politefetch.adapters.urllib.UrllibFetcher` |
 | httpx, sync or async | `HttpxFetcher`, `AsyncHttpxFetcher` in `politefetch.adapters.httpx` |
@@ -178,11 +179,16 @@ byte_budget=None)`
   them.
 - `byte_budget`: bytes on the wire per UTC day; a request reserves the size
   of the URL's last full answer and is corrected when it closes.
-- `Gate(store, policies, *, clock=None, default=None, reconcile_after="1h")`:
+- `Gate(store, policies, *, clock=None, default=None, reconcile_after=None)`:
   a host without a policy raises `NoPolicy` (a `ValueError` too) unless
   `default` is given; rows
-  left open longer than `reconcile_after` (a crashed process) are closed as
-  failed before the next decision.
+  left open longer than `reconcile_after` (a crashed process) count as
+  failed, and the next request to their host closes them. By default
+  `reconcile_after` is twice the longest request of the fetchers built on the
+  gate (with the defaults, 11 minutes 20 seconds), or an hour while there are
+  none. With `gate.attempt` and a client of your own, give it by hand, longer
+  than your slowest request: a request still running past it can be
+  overlapped by the next.
 
 ## Reading the outcome
 
@@ -196,7 +202,7 @@ message text.
 | `OutcomeNotSaved` | Sent, but the store could not save how it ended; `shape`, `status`. The host stays blocked until the reconciliation | Check the store (a lock held too long); a person may need to apply a lost 403/429 by hand |
 | `NoPolicy` | The host has no policy and the gate no default; nothing was sent. `host` | Add a `HostPolicy` for it |
 | `SourceNotReady` | Truncated or empty body (the source is rewriting its file), JSON cut short included even when `Content-Length` matches. Recorded as a failure: the pause of the host grows | Wait for the next scheduled run; alert when `failures` in `gate.status` keeps growing |
-| `UnexpectedContent` | HTML where data was expected, a redirect, or a body that does not decode | Report it; do not follow the redirect yourself |
+| `UnexpectedContent` | HTML where data was expected (JSON that parses is data even when served as `text/html`), a redirect, or a body that does not decode | Report it; do not follow the redirect yourself |
 | `BodyTooLarge` | The body is longer than `max_bytes` or the byte budget left; reading stopped there | Raise `max_bytes` or `byte_budget` if the size is expected |
 | `StaleData` | Data older than `max_age`; `data_time`, `max_age`, `age`, and `result` with what came back. Recorded as an answer: the source is not slowed down | Use `result` with a warning, or the previous data, or wait |
 | `StuckSource` | The data time has not moved for `stuck_after` (a number of reads, a 304 included, or a duration such as `"6h"`); a data time earlier than one already seen counts as not moving. `data_time`, `reads`, `since`, `result` | Alert a person: the source is up but frozen |
@@ -267,10 +273,15 @@ def dashboard(gate: Gate) -> str:
 
 `gate.status(host_or_url, recent=10)` returns a `HostStatus`: `may_fetch`,
 `reason`, `next_allowed` (`None` while frozen), `frozen`, `failures`,
-`throttled`, `in_flight`, `requests_today`, `daily_cap`, `wire_bytes_today`,
-`decoded_bytes_today`, `byte_budget`, and `recent` log rows, newest first.
-Given a URL it also counts the bytes that URL would reserve. It sends nothing.
-`gate.statuses()` covers the hosts with a policy of their own. In the JSON of
+`throttled`, `in_flight`, `abandoned` (rows past `reconcile_after`, already
+counted in `failures` and left out of `in_flight`), `requests_today`,
+`daily_cap`, `wire_bytes_today`, `decoded_bytes_today`, `byte_budget`, and
+`recent` log rows, newest first. Given a URL it also counts the bytes that URL
+would reserve. It sends nothing and writes nothing, like `may_fetch`: a
+dashboard can call it beside the process that fetches, or with read-only
+access.
+`gate.statuses()` covers the hosts with a policy of their own and, with a
+`default` policy, every host the store knows (`store.hosts()`). In the JSON of
 `to_json` the counts of the day sit under the key `"today"` (`"requests"`,
 `"daily_cap"`, `"wire_bytes"`, `"decoded_bytes"`, `"byte_budget"`, `"day"`).
 The log rows are never deleted in this version: the table grows with every
@@ -279,6 +290,12 @@ request.
 A frozen host stays frozen until a person decides: `gate.unfreeze(host,
 by="alice", note="they lifted the block")` lifts it and leaves a trace. Never
 call it from code that runs on its own.
+
+The `politefetch` logger says what a person must hear about without polling
+`status`: WARNING when a host freezes and when a row is closed as abandoned
+(`politefetch.store`), ERROR when the store could not save an outcome, the
+one lost during a cancellation included. Refusals, good answers and failures
+of the source log nothing: they are outcomes, read them from `status`.
 
 ## Testing an ingest job
 
@@ -301,9 +318,19 @@ address: a host name needs a DNS lookup, which stays blocked. Children of
 `spawn` get the barrier without the listed networks. The
 `source_simulator` fixture is a real HTTP server on 127.0.0.1 with scenarios
 for the bad days of a source (`politefetch.testing.simulator`: `Respond`,
-`Html`, `TooManyRequests`, `Truncated`, `NoAnswer`, `Reset`, `Validated`,
-`stuck_json`, `advancing_json`) and a counter of the requests that actually
-reached it. Drive time with `FakeClock`.
+`Html`, `TooManyRequests`, `Truncated`, `HalfJson`, `NoAnswer`, `Reset`,
+`Validated`, `stuck_json`, `advancing_json`) and a counter of the requests
+that actually reached it. Drive time with `FakeClock`.
+
+The two truncations are different failures. `Truncated` closes the
+connection before the announced `Content-Length`, a transfer that broke off:
+the fetchers raise `SourceNotReady`, while your own client inside
+`gate.attempt` raises its own error (httpx RemoteProtocolError, requests
+ChunkedEncodingError, urllib IncompleteRead). `HalfJson` sends a complete
+answer, length matching, whose JSON stops midway: what a source rewriting
+its file serves most often. No client complains; the fetchers raise
+`SourceNotReady` ("JSON ends mid-way"), and with your own client only
+`check_body` catches it.
 
 ```python
 from datetime import UTC, datetime, timedelta
@@ -327,6 +354,39 @@ def test_ingest_gives_up_politely(source_simulator):
             pass
         clock.advance(timedelta(minutes=1))
     assert source_simulator.counter.count <= 10
+```
+
+Each request in `counter.requests` is a `SourceRequest` with `number`,
+`path`, `headers`, `scenario` and `arrived`, the time it arrived on the
+simulator's `clock` (the system clock unless given one). Give it the gate's
+`FakeClock` to count the requests per simulated hour:
+
+```python
+from collections import Counter
+from datetime import UTC, datetime, timedelta
+
+from politefetch import FakeClock, Gate, HostPolicy, Refused
+from politefetch.adapters.urllib import UrllibFetcher
+from politefetch.store import MemoryStore
+
+
+def test_two_requests_an_hour_at_most(source_simulator):
+    clock = FakeClock(datetime(2026, 1, 1, tzinfo=UTC))
+    source_simulator.clock = clock  # or SourceSimulator(clock=clock)
+    policy = HostPolicy(daily_cap=48, min_interval="30m")
+    gate = Gate(MemoryStore(), {"127.0.0.1": policy}, clock=clock)
+    fetch = UrllibFetcher(gate, timeout=1)
+    for _ in range(6 * 60):  # six hours of tries, one a minute
+        try:
+            fetch.get(source_simulator.url("/data.json"))
+        except Refused:
+            pass
+        clock.advance(timedelta(minutes=1))
+    hours = Counter(
+        request.arrived.replace(minute=0, second=0, microsecond=0)
+        for request in source_simulator.counter.requests
+    )
+    assert max(hours.values()) <= 2
 ```
 
 `politefetch.testing.processes.spawn` runs a function in a child process

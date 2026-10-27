@@ -28,6 +28,7 @@ from politefetch.policy import HostPolicy
 from politefetch.store import MemoryStore, RequestRow
 from politefetch.testing.simulator import (
     Drip,
+    HalfJson,
     Html,
     NoAnswer,
     Reset,
@@ -238,6 +239,17 @@ def test_a_truncated_body(get: Get, gate: Gate, source: SourceSimulator) -> None
     assert (outcome.ok, outcome.status, outcome.failure) == (False, 200, "not_ready")
 
 
+def test_a_complete_answer_with_half_a_json(
+    get: Get, gate: Gate, source: SourceSimulator
+) -> None:
+    source.scenario = HalfJson()
+    with pytest.raises(SourceNotReady, match="JSON ends mid-way"):
+        get(source.url())
+    outcome = last_row(gate).outcome
+    assert outcome is not None
+    assert (outcome.ok, outcome.status, outcome.failure) == (False, 200, "not_ready")
+
+
 def test_html_instead_of_json(get: Get, gate: Gate, source: SourceSimulator) -> None:
     source.scenario = Html()
     with pytest.raises(UnexpectedContent, match="HTML"):
@@ -245,6 +257,11 @@ def test_html_instead_of_json(get: Get, gate: Gate, source: SourceSimulator) -> 
     outcome = last_row(gate).outcome
     assert outcome is not None
     assert (outcome.ok, outcome.failure) == (False, "unexpected_content")
+
+
+def test_json_served_as_html_is_data(get: Get, source: SourceSimulator) -> None:
+    source.scenario = Respond(body=b'{"a": 1}', content_type="text/html")
+    assert get(source.url()).content == {"a": 1}
 
 
 def test_stale_data(get: Get, gate: Gate, source: SourceSimulator) -> None:

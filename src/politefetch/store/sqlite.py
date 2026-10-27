@@ -13,14 +13,15 @@ Safe to share between processes on one machine:
   is sent.
 
 Times are stored as fixed-width UTC text (`2026-10-16T12:00:00.000000Z`),
-which sorts like the times it represents. Tables are created with
-`CREATE TABLE IF NOT EXISTS`; there are no numbered migrations before the
-first release (D-002).
+which sorts like the times it represents. Opening the store creates what is
+missing and runs the pending migrations, in the same transaction
+(`politefetch.store._schema`, D-052).
 """
 
 import os
 import sqlite3
 import threading
+import time
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from dataclasses import replace
@@ -30,6 +31,7 @@ from typing import Any, Self
 
 from politefetch.clock import as_utc
 from politefetch.errors import RefusalReason
+from politefetch.store._schema import BASE_VERSION, VERSION_TABLE, pending
 from politefetch.store.base import (
     ABANDONED,
     DataTimeRecord,
@@ -53,12 +55,19 @@ from politefetch.store.base import (
     check_threshold,
     check_unfreezer,
     is_late,
+    log_abandoned,
 )
 
 __all__ = ["SqliteStore"]
 
 _TIME_FORMAT = "%Y-%m-%dT%H:%M:%S.%fZ"
 
+_WAL_PAUSE = 0.01
+"""Seconds between two tries of switching a new file to WAL."""
+
+# Schema version 1, frozen: a new store creates it and then runs every
+# migration, as an old one does. A column or table added here and not as a
+# migration would reach new stores only (tests/test_store_schema.py).
 _SCHEMA = (
     """
     CREATE TABLE IF NOT EXISTS hosts (
@@ -148,6 +157,10 @@ _ADDED_COLUMNS = (
     ("data_times", "since", "TEXT"),
 )
 
+# The statements of each schema version after the first: `_MIGRATIONS[0]`
+# leads to version 2. Only additions (D-052).
+_MIGRATIONS: tuple[tuple[str, ...], ...] = ()
+
 _ROW_COLUMNS = (
     "id, host, url, opened_at, state, closed_at, ok, status, failure,"
     " reserved_bytes, wire_bytes, decoded_bytes"
@@ -203,6 +216,22 @@ def _row(record: tuple[Any, ...]) -> RequestRow:
     )
 
 
+def _switch_to_wal(conn: sqlite3.Connection, timeout: float) -> None:
+    """Put the file in WAL mode. On a file not yet in WAL the switch needs a
+    lock that SQLite does not wait for while another connection is switching
+    too: it answers "busy" at once. Try again until the busy timeout ends."""
+    deadline = time.monotonic() + timeout
+    while True:
+        try:
+            conn.execute("PRAGMA journal_mode=WAL").fetchall()
+            return
+        except sqlite3.OperationalError as error:
+            busy = error.sqlite_errorcode == sqlite3.SQLITE_BUSY
+            if not busy or time.monotonic() >= deadline:
+                raise
+        time.sleep(_WAL_PAUSE)
+
+
 class SqliteStore:
     """A `Store` in a SQLite file, shareable between processes."""
 
@@ -218,7 +247,7 @@ class SqliteStore:
             check_same_thread=False,  # access is serialised by self._lock
         )
         try:
-            self._conn.execute("PRAGMA journal_mode=WAL").fetchall()
+            _switch_to_wal(self._conn, busy_timeout)
             self._conn.execute("PRAGMA synchronous=FULL")
             with self._transaction(immediate=True) as conn:
                 for statement in _SCHEMA:
@@ -231,11 +260,28 @@ class SqliteStore:
                         conn.execute(
                             f"ALTER TABLE {table} ADD COLUMN {column} {declaration}"
                         )
+                for version, statements in pending(
+                    self._version(conn), _MIGRATIONS, f"the SQLite store {self.path}"
+                ):
+                    for statement in statements:
+                        conn.execute(statement)
+                    conn.execute("UPDATE schema_version SET version = ?", (version,))
         except BaseException:
             self._conn.close()
             raise
 
     # --- plumbing -----------------------------------------------------------
+
+    @staticmethod
+    def _version(conn: sqlite3.Connection) -> int:
+        """The schema version, recorded as the first one if the database had
+        none (a new one, or one written by 0.1)."""
+        conn.execute(VERSION_TABLE)
+        found = conn.execute("SELECT version FROM schema_version").fetchone()
+        if found is None:
+            conn.execute("INSERT INTO schema_version VALUES (?)", (BASE_VERSION,))
+            return BASE_VERSION
+        return int(found[0])
 
     @contextmanager
     def _transaction(self, *, immediate: bool) -> Iterator[sqlite3.Connection]:
@@ -396,36 +442,60 @@ class SqliteStore:
         daily_cap: int,
         cautious: Callable[[HostState], datetime],
         byte_budget: int | None = None,
+        abandon_before: datetime | None = None,
     ) -> RequestRow:
         now = as_utc(now, "now")
+        abandoned: list[RequestRow] = []
+        opened: RequestRow | None = None
         with self._transaction(immediate=True) as conn:
+            if abandon_before is not None:
+                cutoff = as_utc(abandon_before, "abandon_before")
+                abandoned = self._abandon(conn, now, cutoff, host)
             state = self._state(conn, host, now)
             record = self._url_record(conn, url)
             reserve = record.size if record is not None and record.size else 0
             refusal = check_admission(state, now, daily_cap, byte_budget, reserve)
-            if refusal is not None:
-                raise refusal
-            promise = check_cautious(now, cautious(state))
-            cursor = conn.execute(
-                "INSERT INTO requests (host, url, opened_at, state, reserved_bytes)"
-                " VALUES (?, ?, ?, ?, ?)",
-                (host, url, _to_text(now), RowState.IN_FLIGHT.value, reserve),
-            )
-            conn.execute(
-                "INSERT INTO daily_counts (host, day, requests, wire_bytes)"
-                " VALUES (?, ?, 1, ?)"
-                " ON CONFLICT (host, day) DO UPDATE SET requests = requests + 1,"
-                " wire_bytes = wire_bytes + excluded.wire_bytes",
-                (host, now.date().isoformat(), reserve),
-            )
-            self._write_host(
-                conn,
-                replace(
-                    state, not_before=promise, not_before_reason=RefusalReason.BACKOFF
-                ),
-            )
-            row_id = cursor.lastrowid
-            assert row_id is not None
+            if refusal is None:
+                opened = self._admit(conn, host, url, now, state, reserve, cautious)
+        for row in abandoned:  # logged once committed
+            log_abandoned(row)
+        if opened is not None:
+            return opened
+        # Raised after the commit: the abandoned rows stay closed.
+        assert refusal is not None
+        raise refusal
+
+    def _admit(
+        self,
+        conn: sqlite3.Connection,
+        host: str,
+        url: str,
+        now: datetime,
+        state: HostState,
+        reserve: int,
+        cautious: Callable[[HostState], datetime],
+    ) -> RequestRow:
+        """Open the row of an admitted request, inside the caller's
+        transaction."""
+        promise = check_cautious(now, cautious(state))
+        cursor = conn.execute(
+            "INSERT INTO requests (host, url, opened_at, state, reserved_bytes)"
+            " VALUES (?, ?, ?, ?, ?)",
+            (host, url, _to_text(now), RowState.IN_FLIGHT.value, reserve),
+        )
+        conn.execute(
+            "INSERT INTO daily_counts (host, day, requests, wire_bytes)"
+            " VALUES (?, ?, 1, ?)"
+            " ON CONFLICT (host, day) DO UPDATE SET requests = requests + 1,"
+            " wire_bytes = wire_bytes + excluded.wire_bytes",
+            (host, now.date().isoformat(), reserve),
+        )
+        self._write_host(
+            conn,
+            replace(state, not_before=promise, not_before_reason=RefusalReason.BACKOFF),
+        )
+        row_id = cursor.lastrowid
+        assert row_id is not None
         return RequestRow(
             id=row_id,
             host=host,
@@ -568,34 +638,50 @@ class SqliteStore:
     def reconcile(self, *, now: datetime, older_than: timedelta) -> list[RequestRow]:
         now = as_utc(now, "now")
         check_threshold(older_than)
-        cutoff = now - older_than
         with self._transaction(immediate=True) as conn:
-            records = conn.execute(
-                f"SELECT {_ROW_COLUMNS} FROM requests"
-                " WHERE state = ? AND opened_at <= ? ORDER BY id",
-                (RowState.IN_FLIGHT.value, _to_text(cutoff)),
-            ).fetchall()
-            reconciled: list[RequestRow] = []
-            for record in records:
-                row = _row(record)
-                conn.execute(
-                    "UPDATE requests SET state = ?, closed_at = ?, ok = 0,"
-                    " status = NULL, failure = ? WHERE id = ?",
-                    (RowState.RECONCILED.value, _to_text(now), ABANDONED, row.id),
+            reconciled = self._abandon(conn, now, now - older_than)
+        for row in reconciled:  # logged once committed
+            log_abandoned(row)
+        return reconciled
+
+    @staticmethod
+    def _abandon(
+        conn: sqlite3.Connection,
+        now: datetime,
+        cutoff: datetime,
+        host: str | None = None,
+    ) -> list[RequestRow]:
+        """Close as abandoned the rows in flight since `cutoff` or earlier, of
+        `host` or of every host, inside the caller's transaction."""
+        query = (
+            f"SELECT {_ROW_COLUMNS} FROM requests WHERE state = ? AND opened_at <= ?"
+        )
+        parameters: tuple[str, ...] = (RowState.IN_FLIGHT.value, _to_text(cutoff))
+        if host is not None:
+            query += " AND host = ?"
+            parameters += (host,)
+        records = conn.execute(query + " ORDER BY id", parameters).fetchall()
+        reconciled: list[RequestRow] = []
+        for record in records:
+            row = _row(record)
+            conn.execute(
+                "UPDATE requests SET state = ?, closed_at = ?, ok = 0,"
+                " status = NULL, failure = ? WHERE id = ?",
+                (RowState.RECONCILED.value, _to_text(now), ABANDONED, row.id),
+            )
+            conn.execute(
+                "INSERT INTO hosts (host, failures) VALUES (?, 1)"
+                " ON CONFLICT (host) DO UPDATE SET failures = failures + 1",
+                (row.host,),
+            )
+            reconciled.append(
+                replace(
+                    row,
+                    state=RowState.RECONCILED,
+                    closed_at=now,
+                    outcome=Outcome(ok=False, failure=ABANDONED),
                 )
-                conn.execute(
-                    "INSERT INTO hosts (host, failures) VALUES (?, 1)"
-                    " ON CONFLICT (host) DO UPDATE SET failures = failures + 1",
-                    (row.host,),
-                )
-                reconciled.append(
-                    replace(
-                        row,
-                        state=RowState.RECONCILED,
-                        closed_at=now,
-                        outcome=Outcome(ok=False, failure=ABANDONED),
-                    )
-                )
+            )
         return reconciled
 
     def unfreeze(
@@ -650,6 +736,11 @@ class SqliteStore:
                 )
             )
         return traces
+
+    def hosts(self) -> list[str]:
+        with self._transaction(immediate=False) as conn:
+            records = conn.execute("SELECT host FROM hosts ORDER BY host").fetchall()
+        return [host for (host,) in records]
 
     # --- lifecycle ----------------------------------------------------------
 
