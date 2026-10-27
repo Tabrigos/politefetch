@@ -8,6 +8,10 @@ All notable changes to politefetch. The format follows
 
 ### Added
 
+- `evals/trigger.json`: twenty requests that check the skill activates when
+  a task needs the library, mostly without naming it, and stays quiet on
+  near misses. On 0.1.1 with Sonnet 5.5 (Claude Code 2.1.312, three runs
+  each, 2026-10-27): 10 of 10 positives and 10 of 10 near misses passed.
 - The SQLite and Postgres stores record a schema version, and later versions
   come as migrations that only add, each in one transaction with the version
   update (#11). SQLite migrates when it opens; an existing Postgres schema
@@ -15,6 +19,13 @@ All notable changes to politefetch. The format follows
   `PostgresStore(..., migrate=True)`. A store newer than the code is refused.
   A store written by 0.1 opens with every promise, count and freeze, as two
   fixtures written by 0.1.1 show.
+
+### Fixed
+
+- Several processes opening a new SQLite store at the same time: all but one
+  could fail with `database is locked`, because switching a new file to WAL
+  takes a lock that SQLite does not wait for. The switch is now tried again
+  until the busy timeout ends. A failed open had sent nothing.
 
 ## 0.1.1 — 2026-10-26
 
