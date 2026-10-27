@@ -181,13 +181,15 @@ def test_a_crash_leaves_the_promise_cautious(
     assert refusal is not None
     assert refusal.reason is RefusalReason.IN_FLIGHT
     assert refusal.retry_after == T + timedelta(hours=1)
-    # Past the reconciliation threshold the row counts as failed.
+    # Past the reconciliation threshold the row counts as failed, and the
+    # next request closes it.
     clock.set(T + timedelta(hours=2))
     assert restarted.may_fetch(URL)
+    with restarted.attempt(URL) as attempt:
+        attempt.failure("connect_timeout")
     state = restarted.store.host_state(HOST, clock.now())
     assert state.in_flight == 0
-    assert state.failures == 1
-    assert state.not_before == T + timedelta(hours=1)
+    assert state.failures == 2  # the abandoned row, then this one
     assert restarted.store.rows()[0].state is RowState.RECONCILED
 
 

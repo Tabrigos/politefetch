@@ -125,9 +125,12 @@ class MemoryStore:
         daily_cap: int,
         cautious: Callable[[HostState], datetime],
         byte_budget: int | None = None,
+        abandon_before: datetime | None = None,
     ) -> RequestRow:
         now = as_utc(now, "now")
         with self.data.lock:
+            if abandon_before is not None:
+                self._abandon(now, as_utc(abandon_before, "abandon_before"), host)
             state = self._state(host, now)
             record = self.data.urls.get(url)
             reserve = record.size if record is not None and record.size else 0
@@ -215,21 +218,29 @@ class MemoryStore:
     def reconcile(self, *, now: datetime, older_than: timedelta) -> list[RequestRow]:
         now = as_utc(now, "now")
         check_threshold(older_than)
-        cutoff = now - older_than
-        abandoned = Outcome(ok=False, failure=ABANDONED)
         with self.data.lock:
-            reconciled: list[RequestRow] = []
-            for row_id, row in sorted(self.data.rows.items()):
-                if row.state is not RowState.IN_FLIGHT or row.opened_at > cutoff:
-                    continue
-                closed = replace(
-                    row, state=RowState.RECONCILED, closed_at=now, outcome=abandoned
-                )
-                self.data.rows[row_id] = closed
-                state = self._state(row.host, now)
-                self.data.hosts[row.host] = replace(state, failures=state.failures + 1)
-                reconciled.append(closed)
-            return reconciled
+            return self._abandon(now, now - older_than)
+
+    def _abandon(
+        self, now: datetime, cutoff: datetime, host: str | None = None
+    ) -> list[RequestRow]:
+        """Close as abandoned the rows in flight since `cutoff` or earlier, of
+        `host` or of every host. The caller holds the lock."""
+        abandoned = Outcome(ok=False, failure=ABANDONED)
+        reconciled: list[RequestRow] = []
+        for row_id, row in sorted(self.data.rows.items()):
+            if row.state is not RowState.IN_FLIGHT or row.opened_at > cutoff:
+                continue
+            if host is not None and row.host != host:
+                continue
+            closed = replace(
+                row, state=RowState.RECONCILED, closed_at=now, outcome=abandoned
+            )
+            self.data.rows[row_id] = closed
+            state = self._state(row.host, now)
+            self.data.hosts[row.host] = replace(state, failures=state.failures + 1)
+            reconciled.append(closed)
+        return reconciled
 
     def unfreeze(
         self, host: str, *, now: datetime, by: str, note: str = ""

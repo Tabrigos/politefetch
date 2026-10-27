@@ -4,6 +4,18 @@ All notable changes to politefetch. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions follow
 [Semantic Versioning](https://semver.org/).
 
+## Unreleased
+
+### Changed
+
+- `status`, `statuses` and `may_fetch` write nothing (#29): a dashboard no
+  longer competes for the write lock with the process that fetches, and can
+  run with read-only access. A row in flight past `reconcile_after` shows in
+  the new `HostStatus.abandoned`, already counted in `failures` and left out
+  of `in_flight`; the next request to its host closes it, in the transaction
+  that opens that request, so an attempt takes one transaction instead of
+  two. `Store.open_request` takes `abandon_before` for that.
+
 ## 0.1.1 — 2026-10-26
 
 ### Fixed
