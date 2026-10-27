@@ -95,9 +95,12 @@ def test_a_crash_leaves_the_promise_cautious(
             assert refusal.reason is RefusalReason.IN_FLIGHT
         assert source.counter.count == 1  # nothing else reached the source
         clock.advance(timedelta(minutes=1))
-        assert gate.may_fetch(source.url())  # reconciled as failed
+        assert gate.may_fetch(source.url())  # counted as failed
+        status = gate.status(HOST)
+        assert (status.abandoned, status.failures) == (1, 1)
+        fetch(gate, source.url())  # the next request closes it
         assert store.rows()[0].state is RowState.RECONCILED
-        assert store.host_state(HOST, clock.now()).failures == 1
+        assert source.counter.count == 2
 
 
 def test_conditional_requests_save_bytes(source: SourceSimulator) -> None:

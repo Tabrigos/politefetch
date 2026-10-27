@@ -444,6 +444,60 @@ def test_reconcile_frees_the_host(store: Store) -> None:
     open_at(store, T + timedelta(hours=2))
 
 
+def test_opening_closes_the_abandoned_rows_of_its_host(store: Store) -> None:
+    mine = open_at(store, T)
+    other = open_at(store, T, host="other.example")
+    now = T + timedelta(hours=2)
+    row = store.open_request(
+        HOST,
+        URL,
+        now=now,
+        daily_cap=CAP,
+        cautious=lambda _s: now + timedelta(minutes=5),
+        abandon_before=now - timedelta(hours=1),
+    )
+    closed = store.row(mine.id)
+    assert closed.state is RowState.RECONCILED
+    assert closed.closed_at == now
+    assert closed.outcome == Outcome(ok=False, failure=ABANDONED)
+    state = store.host_state(HOST, now)
+    assert (state.in_flight, state.failures) == (1, 1)
+    assert store.row(row.id).state is RowState.IN_FLIGHT
+    # Another host's abandoned row waits for a request to that host.
+    assert store.row(other.id).state is RowState.IN_FLIGHT
+
+
+def test_a_refused_opening_still_closes_the_abandoned_rows(store: Store) -> None:
+    abandoned = open_at(store, T, cap=1)
+    now = T + timedelta(hours=2)
+    with pytest.raises(Refused) as refused:
+        store.open_request(
+            HOST,
+            URL,
+            now=now,
+            daily_cap=1,
+            cautious=lambda _s: now + timedelta(minutes=5),
+            abandon_before=now - timedelta(hours=1),
+        )
+    assert refused.value.reason is RefusalReason.DAILY_CAP
+    assert store.row(abandoned.id).state is RowState.RECONCILED
+    state = store.host_state(HOST, now)
+    assert (state.in_flight, state.failures, state.requests_today) == (0, 1, 1)
+
+
+def test_an_abandoned_row_does_not_block_the_opening(store: Store) -> None:
+    open_at(store, T)
+    now = T + timedelta(hours=2)
+    store.open_request(
+        HOST,
+        URL,
+        now=now,
+        daily_cap=CAP,
+        cautious=lambda _s: now + timedelta(minutes=5),
+        abandon_before=now - timedelta(hours=1),
+    )
+
+
 # --- a late close: the answer came after the reconciliation (R1) ----------------------
 
 LATE = T + timedelta(hours=3)

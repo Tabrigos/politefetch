@@ -6,12 +6,51 @@ All notable changes to politefetch. The format follows
 
 ## Unreleased
 
+### Added
+
+- `evals/trigger.json`: twenty requests that check the skill activates when
+  a task needs the library, mostly without naming it, and stays quiet on
+  near misses. On 0.1.1 with Sonnet 5.5 (Claude Code 2.1.312, three runs
+  each, 2026-10-27): 10 of 10 positives and 10 of 10 near misses passed.
+- The SQLite and Postgres stores record a schema version, and later versions
+  come as migrations that only add, each in one transaction with the version
+  update (#11). SQLite migrates when it opens; an existing Postgres schema
+  with migrations pending is refused until it is opened once with
+  `PostgresStore(..., migrate=True)`. A store newer than the code is refused.
+  A store written by 0.1 opens with every promise, count and freeze, as two
+  fixtures written by 0.1.1 show.
+- A `politefetch` logger (#30): WARNING when a host freezes and when a row is
+  closed as abandoned, ERROR when the store could not save an outcome, the
+  one lost during a cancellation included. Business outcomes log nothing.
+- `Store.hosts()`, and `gate.statuses()` with a `default` policy covers every
+  host the store knows, not only those with a policy of their own (#30).
+
 ### Changed
 
+- `status`, `statuses` and `may_fetch` write nothing (#29): a dashboard no
+  longer competes for the write lock with the process that fetches, and can
+  run with read-only access. A row in flight past `reconcile_after` shows in
+  the new `HostStatus.abandoned`, already counted in `failures` and left out
+  of `in_flight`; the next request to its host closes it, in the transaction
+  that opens that request, so an attempt takes one transaction instead of
+  two. `Store.open_request` takes `abandon_before` for that.
+- The default `reconcile_after` follows the fetchers built on the gate (#32):
+  twice their longest request (deadline plus one connect and one read
+  timeout, 11 minutes 20 seconds with the defaults), or an hour while there
+  are none. A process killed mid-request blocked its host for an hour; a
+  value given by hand still wins. `Gate.bound_requests` is how the fetchers
+  tell the gate.
 - With `expect="json"`, a body that parses as JSON is data even when served
   as `text/html`; an HTML page is still recognised by its first tag, and a
   body served as HTML that does not parse is still `UnexpectedContent`.
   Text keeps the Content-Type check (#15).
+
+### Fixed
+
+- Several processes opening a new SQLite store at the same time: all but one
+  could fail with `database is locked`, because switching a new file to WAL
+  takes a lock that SQLite does not wait for. The switch is now tried again
+  until the busy timeout ends. A failed open had sent nothing.
 
 ## 0.1.1 — 2026-10-26
 
