@@ -323,6 +323,39 @@ def test_ingest_gives_up_politely(source_simulator):
     assert source_simulator.counter.count <= 10
 ```
 
+Each request in `counter.requests` is a `SourceRequest` with `number`,
+`path`, `headers`, `scenario` and `arrived`, the time it arrived on the
+simulator's `clock` (the system clock unless given one). Give it the gate's
+`FakeClock` to count the requests per simulated hour:
+
+```python
+from collections import Counter
+from datetime import UTC, datetime, timedelta
+
+from politefetch import FakeClock, Gate, HostPolicy, Refused
+from politefetch.adapters.urllib import UrllibFetcher
+from politefetch.store import MemoryStore
+
+
+def test_two_requests_an_hour_at_most(source_simulator):
+    clock = FakeClock(datetime(2026, 1, 1, tzinfo=UTC))
+    source_simulator.clock = clock  # or SourceSimulator(clock=clock)
+    policy = HostPolicy(daily_cap=48, min_interval="30m")
+    gate = Gate(MemoryStore(), {"127.0.0.1": policy}, clock=clock)
+    fetch = UrllibFetcher(gate, timeout=1)
+    for _ in range(6 * 60):  # six hours of tries, one a minute
+        try:
+            fetch.get(source_simulator.url("/data.json"))
+        except Refused:
+            pass
+        clock.advance(timedelta(minutes=1))
+    hours = Counter(
+        request.arrived.replace(minute=0, second=0, microsecond=0)
+        for request in source_simulator.counter.requests
+    )
+    assert max(hours.values()) <= 2
+```
+
 `politefetch.testing.processes.spawn` runs a function in a child process
 behind the barrier and can kill it mid-request, to test crashes.
 

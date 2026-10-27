@@ -11,20 +11,25 @@ import threading
 from collections import Counter
 from collections.abc import Mapping
 from dataclasses import dataclass, field
+from datetime import datetime
 from types import MappingProxyType
+
+from politefetch.clock import SystemClock, as_utc
 
 __all__ = ["RequestCounter", "SourceRequest"]
 
 
 @dataclass(frozen=True, slots=True)
 class SourceRequest:
-    """One request as the source saw it. Header names are lowercase."""
+    """One request as the source saw it. Header names are lowercase;
+    `arrived` is when it arrived, on the simulator's clock."""
 
     number: int
     method: str
     path: str
     headers: Mapping[str, str] = field(default_factory=dict)
     scenario: str = ""
+    arrived: datetime = field(default_factory=SystemClock().now)
 
 
 class RequestCounter:
@@ -35,9 +40,18 @@ class RequestCounter:
         self._requests: list[SourceRequest] = []
 
     def record(
-        self, method: str, path: str, headers: Mapping[str, str], scenario: str
+        self,
+        method: str,
+        path: str,
+        headers: Mapping[str, str],
+        scenario: str,
+        *,
+        arrived: datetime | None = None,
     ) -> SourceRequest:
-        """Record one arrived request and return it, numbered from 1."""
+        """Record one arrived request and return it, numbered from 1.
+        `arrived` defaults to the system time."""
+        if arrived is None:
+            arrived = SystemClock().now()
         with self._lock:
             request = SourceRequest(
                 number=len(self._requests) + 1,
@@ -45,6 +59,7 @@ class RequestCounter:
                 path=path,
                 headers=MappingProxyType(dict(headers)),
                 scenario=scenario,
+                arrived=as_utc(arrived, "arrived"),
             )
             self._requests.append(request)
             return request

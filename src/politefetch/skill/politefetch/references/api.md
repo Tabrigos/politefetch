@@ -916,7 +916,7 @@ Protocol. How the simulated source answers one request.
 
 ### `SourceSimulator`
 
-`SourceSimulator(scenario: Scenario | None = None)`
+`SourceSimulator(scenario: Scenario | None = None, *, clock: Clock | None = None)`
 
 A simulated source on 127.0.0.1, playing one scenario at a time.
 
@@ -969,7 +969,7 @@ Worst-case counter: the requests that actually reached the simulated source, and
 
 Thread-safe record of the requests that reached the source.
 
-- `.record(method: str, path: str, headers: Mapping[str, str], scenario: str) -> SourceRequest`: Record one arrived request and return it, numbered from 1.
+- `.record(method: str, path: str, headers: Mapping[str, str], scenario: str, *, arrived: datetime | None = None) -> SourceRequest`: Record one arrived request and return it, numbered from 1. `arrived` defaults to the system time.
 - `.count` (property)
 - `.requests` (property)
 - `.by_scenario() -> dict[str, int]`: How many requests arrived while each scenario was playing.
@@ -977,9 +977,9 @@ Thread-safe record of the requests that reached the source.
 
 ### `SourceRequest`
 
-`SourceRequest(number: int, method: str, path: str, headers: Mapping[str, str] = <factory>, scenario: str = '')`
+`SourceRequest(number: int, method: str, path: str, headers: Mapping[str, str] = <factory>, scenario: str = '', arrived: datetime = <factory>)`
 
-One request as the source saw it. Header names are lowercase.
+One request as the source saw it. Header names are lowercase; `arrived` is when it arrived, on the simulator's clock.
 
 | Field | Type | Meaning |
 |---|---|---|
@@ -988,6 +988,7 @@ One request as the source saw it. Header names are lowercase.
 | `path` | `str` |  |
 | `headers` | `Mapping[str, str]` |  |
 | `scenario` | `str` |  |
+| `arrived` | `datetime` |  |
 
 ## `politefetch.testing.processes`
 

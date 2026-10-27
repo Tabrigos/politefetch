@@ -4,6 +4,15 @@ All notable changes to politefetch. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions follow
 [Semantic Versioning](https://semver.org/).
 
+## Unreleased
+
+### Added
+
+- `SourceRequest.arrived`: the time each request reached the simulator, read
+  from its `clock` (`SourceSimulator(clock=...)`, or set on a running
+  simulator; the system clock by default). The skill shows how to count the
+  requests per simulated hour with a `FakeClock` (#21).
+
 ## 0.1.1 — 2026-10-26
 
 ### Fixed
