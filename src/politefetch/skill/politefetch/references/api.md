@@ -799,7 +799,7 @@ Postgres store, behind the `postgres` extra (psycopg 3).
 
 ### `PostgresStore`
 
-`PostgresStore(conninfo: str, *, schema: str = 'politefetch', lock_timeout: float = 30.0, clock: Clock | None = None, max_clock_skew: timedelta | str | None = '1m')`
+`PostgresStore(conninfo: str, *, schema: str = 'politefetch', lock_timeout: float = 30.0, clock: Clock | None = None, max_clock_skew: timedelta | str | None = '1m', migrate: bool = False)`
 
 A `Store` in a Postgres schema, shareable between processes.
 
