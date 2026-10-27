@@ -28,6 +28,7 @@ from politefetch.policy import HostPolicy
 from politefetch.store import MemoryStore, RequestRow
 from politefetch.testing.simulator import (
     Drip,
+    HalfJson,
     Html,
     NoAnswer,
     Reset,
@@ -232,6 +233,17 @@ def test_tls_against_a_plain_server(get: Get, gate: Gate, plain_port: int) -> No
 def test_a_truncated_body(get: Get, gate: Gate, source: SourceSimulator) -> None:
     source.scenario = Truncated(b'{"time": "2026-', declared_length=200)
     with pytest.raises(SourceNotReady):
+        get(source.url())
+    outcome = last_row(gate).outcome
+    assert outcome is not None
+    assert (outcome.ok, outcome.status, outcome.failure) == (False, 200, "not_ready")
+
+
+def test_a_complete_answer_with_half_a_json(
+    get: Get, gate: Gate, source: SourceSimulator
+) -> None:
+    source.scenario = HalfJson()
+    with pytest.raises(SourceNotReady, match="JSON ends mid-way"):
         get(source.url())
     outcome = last_row(gate).outcome
     assert outcome is not None

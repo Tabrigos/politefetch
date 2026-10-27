@@ -4,6 +4,15 @@ All notable changes to politefetch. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions follow
 [Semantic Versioning](https://semver.org/).
 
+## Unreleased
+
+### Added
+
+- The simulator scenario `HalfJson`: a complete answer, its Content-Length
+  matching, whose JSON stops midway, as served by a source rewriting its
+  file. The skill tells it from `Truncated` and says which error the caller
+  sees for each (#20).
+
 ## 0.1.1 — 2026-10-26
 
 ### Fixed
