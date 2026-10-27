@@ -4,6 +4,18 @@ All notable changes to politefetch. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions follow
 [Semantic Versioning](https://semver.org/).
 
+## Unreleased
+
+### Added
+
+- `politefetch_private_networks` in the pytest configuration, empty by
+  default, lists private networks that the barrier lets through, for
+  services in containers next to the tests (#19). Only networks inside
+  10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16 and fc00::/7 are accepted;
+  any other stops the session with a usage error, and a public address
+  stays blocked. `NetworkBarrier(private_networks=...)` and
+  `is_allowed_address` take the same list.
+
 ## 0.1.1 — 2026-10-26
 
 ### Fixed

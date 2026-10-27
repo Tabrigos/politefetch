@@ -292,7 +292,13 @@ packet is sent, and a test whose code swallowed it fails anyway, unless it
 is marked `@pytest.mark.politefetch_expects_blocked`. Only loopback and Unix
 sockets pass (private networks are blocked too), and only in the pytest
 process: child processes started by other means than `spawn` (below) run
-without it. The
+without it. For services in containers next to the tests, list their
+networks with `politefetch_private_networks = ["172.17.0.0/16"]` in the same
+section (empty by default): only networks inside 10.0.0.0/8, 172.16.0.0/12,
+192.168.0.0/16 and fc00::/7 are accepted, any other stops pytest with a
+usage error, and public addresses stay blocked. Give those services by
+address: a host name needs a DNS lookup, which stays blocked. Children of
+`spawn` get the barrier without the listed networks. The
 `source_simulator` fixture is a real HTTP server on 127.0.0.1 with scenarios
 for the bad days of a source (`politefetch.testing.simulator`: `Respond`,
 `Html`, `TooManyRequests`, `Truncated`, `NoAnswer`, `Reset`, `Validated`,
