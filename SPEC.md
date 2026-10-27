@@ -37,8 +37,10 @@ promised must outlive the process**.
    on restart. It is the safety net that does not depend on any other logic.
 5. **Tests are an outbound path.** The library offers a socket barrier for
    pytest, with proof that a real call fails and a simulated one passes. Only
-   loopback and Unix sockets pass, private networks are blocked too, and the
-   proof uses a real public IP, not a TEST-NET documentation address.
+   loopback and Unix sockets pass, private networks are blocked too unless
+   the test suite lists them (only networks inside the private ranges are
+   accepted, and a public address stays blocked), and the proof uses a real
+   public IP, not a TEST-NET documentation address.
 6. **The worst case is counted.** A source simulator with scenarios (refuses,
    does not respond, 429, responds truncated, HTML, stuck data, process
    killed with the request already sent, restarts in a loop) and a counter
@@ -46,16 +48,20 @@ promised must outlive the process**.
 7. **An open request is not invisible.** Every request has an `in-flight`
    state that is closed in a `finally`; those that no `finally` can close
    (killed process, cancellation) are closed by a **reconciliation** with a
-   wide threshold, and they count as failed. No statistic excludes them.
+   wide threshold, and they count as failed. No statistic excludes them. The
+   reconciliation runs in the transaction that opens the next request to the
+   host; reading the state (`status`, `may_fetch`) writes nothing and counts
+   those rows the same way.
 
 ## Content checks
 
 - **Truncated**: body shorter than `Content-Length`, JSON that ends midway,
   empty body where data is needed → `SourceNotReady` (transient).
-- **Unexpected content**: HTML (by `Content-Type`, or by the first tag of
-  the body past white space, comments and an XML declaration) where JSON or
+- **Unexpected content**: HTML (by the first tag of the body past white
+  space, comments and an XML declaration, or by `Content-Type`) where JSON or
   text is expected, redirect to another host, a data time too far ahead of
-  now → `UnexpectedContent`. A data time from the future is not kept: one
+  now → `UnexpectedContent`. JSON is judged by its body: one that parses is
+  data even when served as `text/html`. A data time from the future is not kept: one
   alone would make every later read look stuck.
 - **Freshness on the content**: the caller provides a function that extracts
   the data's time from the body; the library compares it with `max_age`. A
@@ -88,7 +94,11 @@ promised must outlive the process**.
 - **Store**: an interface with three implementations: memory (tests), SQLite
   (default, the standard library's `sqlite3`), Postgres (`postgres` extra).
   The critical operations are atomic: two processes sharing the store do not
-  exceed the cap together.
+  exceed the cap together. The SQLite and Postgres stores record a schema
+  version; a later version is a migration that only adds, applied in one
+  transaction (SQLite when it opens, an existing Postgres schema only when
+  opened with `migrate=True`), and a database newer than the code is
+  refused.
 - **Transport adapters**: `urllib` (standard library, in the core), `httpx`
   and `requests` (extras). An adapter sends one GET and hands back the body
   as transferred, piece by piece; reading, the deadline, the size limit and

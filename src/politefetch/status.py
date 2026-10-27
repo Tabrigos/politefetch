@@ -71,7 +71,8 @@ class HostStatus:
         frozen: The freeze in force, if any.
         failures: Consecutive failures since the last good answer.
         throttled: The 429 answers since the last good answer.
-        in_flight: Requests to the host still open.
+        in_flight: Requests to the host still open, the abandoned ones left
+            out.
         day: The UTC day of `at`, the day of the `*_today` counts.
         requests_today: Requests opened on `day`, counted against
             `daily_cap`.
@@ -84,6 +85,9 @@ class HostStatus:
         byte_budget: The wire bytes per UTC day the host's policy allows;
             `None` for no limit.
         recent: The latest log rows of the host, newest first.
+        abandoned: Rows in flight for longer than `reconcile_after`: already
+            left out of `in_flight` and counted in `failures`, as the next
+            request to the host will count them when it closes them.
     """
 
     host: str
@@ -102,6 +106,7 @@ class HostStatus:
     decoded_bytes_today: int
     byte_budget: int | None
     recent: tuple[RequestRow, ...]
+    abandoned: int = 0
 
     def to_dict(self) -> Json:
         """The status as JSON-ready values: times as ISO 8601 strings with
@@ -116,6 +121,7 @@ class HostStatus:
             "failures": self.failures,
             "throttled": self.throttled,
             "in_flight": self.in_flight,
+            "abandoned": self.abandoned,
             "today": {
                 "day": self.day.isoformat(),
                 "requests": self.requests_today,

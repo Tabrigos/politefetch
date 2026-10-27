@@ -145,5 +145,87 @@ def test_simulated_call(source_simulator):
     result.assert_outcomes(passed=1)
 
 
+@pytest.mark.usefixtures("inner")
+def test_no_private_network_passes_by_default(pytester: pytest.Pytester) -> None:
+    result = run(
+        pytester,
+        "politefetch_barrier = true",
+        """
+from politefetch.testing.barrier import NetworkBarrier
+
+def test_none_listed(network_barrier):
+    assert network_barrier.private_networks == ()
+""",
+    )
+    result.assert_outcomes(passed=1)
+
+
+@pytest.mark.usefixtures("inner")
+def test_the_ini_lists_private_networks_and_public_ones_stay_blocked(
+    pytester: pytest.Pytester,
+) -> None:
+    result = run(
+        pytester,
+        "politefetch_barrier = true\n"
+        "politefetch_private_networks =\n    10.0.0.0/8\n    fd00::/8",
+        BLOCKED_CONNECT
+        + """
+import ipaddress
+
+@pytest.mark.politefetch_expects_blocked
+def test_listed(network_barrier):
+    assert network_barrier.private_networks == (
+        ipaddress.ip_network("10.0.0.0/8"),
+        ipaddress.ip_network("fd00::/8"),
+    )
+    with pytest.raises(NetworkBlockedError):
+        connect()
+    with socket.socket() as sock, pytest.raises(NetworkBlockedError):
+        sock.connect(("192.168.1.1", 80))
+    assert network_barrier.blocked == ["1.1.1.1:443", "192.168.1.1:80"]
+""",
+    )
+    result.assert_outcomes(passed=1)
+
+
+@pytest.mark.usefixtures("inner")
+def test_pyproject_lists_private_networks_as_the_skill_says(
+    pytester: pytest.Pytester,
+) -> None:
+    pytester.makepyprojecttoml(
+        "[tool.pytest.ini_options]\n"
+        "politefetch_barrier = true\n"
+        'politefetch_private_networks = ["172.17.0.0/16"]\n'
+    )
+    pytester.makepyfile(
+        """
+import ipaddress
+
+def test_listed(network_barrier):
+    assert network_barrier.private_networks == (
+        ipaddress.ip_network("172.17.0.0/16"),
+    )
+"""
+    )
+    result = pytester.runpytest_inprocess("-p", "no:cacheprovider")
+    result.assert_outcomes(passed=1)
+
+
+@pytest.mark.usefixtures("inner")
+def test_a_public_network_in_the_ini_stops_the_session(
+    pytester: pytest.Pytester,
+) -> None:
+    result = run(
+        pytester,
+        "politefetch_barrier = true\npolitefetch_private_networks = 1.1.1.0/24",
+        """
+def test_never_runs():
+    pass
+""",
+    )
+    assert result.ret == pytest.ExitCode.USAGE_ERROR
+    result.stderr.fnmatch_lines(["*politefetch_private_networks*1.1.1.0/24*"])
+
+
 def test_this_suite_runs_behind_the_barrier() -> None:
     assert NetworkBarrier.current() is not None

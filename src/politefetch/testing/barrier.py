@@ -6,6 +6,12 @@ connections, unconnected UDP sends and DNS lookups. Loopback addresses
 (127.0.0.0/8, ::1, "localhost") and Unix sockets pass, so a local source
 simulator and a local Postgres keep working.
 
+A barrier can also let through the private networks it is given, for
+services in containers next to the tests. Only networks inside 10.0.0.0/8,
+172.16.0.0/12, 192.168.0.0/16 and fc00::/7 are accepted, and the check of
+every address enforces those ranges again: the barrier never becomes a way
+out to the Internet. Host names still need a DNS lookup, which stays blocked.
+
 The barrier patches the `socket` module process-wide, so only one can be
 active at a time. It does not reach child processes. On Windows it also
 patches the proactor of asyncio's default event loop, which connects and
@@ -15,11 +21,22 @@ sends without going through `socket.socket`.
 import ipaddress
 import socket
 import sys
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 from types import TracebackType
 from typing import Any, Self
 
 __all__ = ["NetworkBarrier", "NetworkBlockedError", "is_allowed_address"]
+
+# A plain alias, not `type`: the API reference then shows the two classes.
+Network = ipaddress.IPv4Network | ipaddress.IPv6Network
+
+# The only networks a barrier may let through besides loopback: RFC 1918 and
+# the IPv6 unique local addresses. Link-local (the metadata service of clouds)
+# and the shared address space of providers stay out.
+_PRIVATE_RANGES: tuple[Network, ...] = tuple(
+    ipaddress.ip_network(network)
+    for network in ("10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16", "fc00::/7")
+)
 
 _AF_UNIX: int | None = getattr(socket, "AF_UNIX", None)
 
@@ -111,17 +128,72 @@ def _never(_: object) -> bool:
     return False
 
 
-def is_allowed_address(family: int, address: object) -> bool:
+def _is_private(network: Network) -> bool:
+    return any(
+        network.version == whole.version and network.subnet_of(whole)  # type: ignore[arg-type]
+        for whole in _PRIVATE_RANGES
+    )
+
+
+def _private_networks(values: Iterable[str | Network]) -> tuple[Network, ...]:
+    """Parse the networks a barrier lets through; refuse any that is not private."""
+    networks = []
+    for value in values:
+        try:
+            network = (
+                value
+                if isinstance(value, ipaddress.IPv4Network | ipaddress.IPv6Network)
+                else ipaddress.ip_network(value.strip())
+            )
+        except ValueError as error:
+            raise ValueError(f"not a private network: {value!r} ({error})") from None
+        if not _is_private(network):
+            ranges = ", ".join(str(whole) for whole in _PRIVATE_RANGES)
+            raise ValueError(
+                f"not a private network: {value!r}; the barrier lets through "
+                f"only networks inside {ranges}"
+            )
+        networks.append(network)
+    return tuple(networks)
+
+
+def _in_private_network(host: object, networks: Iterable[Network]) -> bool:
+    if isinstance(host, bytes):
+        try:
+            host = host.decode("ascii")
+        except UnicodeDecodeError:
+            return False
+    if not isinstance(host, str):
+        return False
+    try:
+        ip = ipaddress.ip_address(host.split("%", 1)[0])
+    except ValueError:
+        return False
+    if isinstance(ip, ipaddress.IPv6Address) and ip.ipv4_mapped is not None:
+        ip = ip.ipv4_mapped
+    # The private ranges again: a network handed here without going through
+    # the barrier's check opens nothing more than them.
+    if not any(ip in whole for whole in _PRIVATE_RANGES):
+        return False
+    return any(ip in network for network in networks)
+
+
+def is_allowed_address(
+    family: int, address: object, private_networks: Iterable[Network] = ()
+) -> bool:
     """Tell whether a socket of `family` may reach `address`.
 
-    Unix sockets pass; IPv4 and IPv6 pass only towards loopback; every other
-    family is blocked.
+    Unix sockets pass; IPv4 and IPv6 pass only towards loopback and towards
+    the `private_networks` given, and only where those lie inside the private
+    ranges; every other family is blocked.
     """
     if _AF_UNIX is not None and family == _AF_UNIX:
         return True
     if family in (socket.AF_INET, socket.AF_INET6):
         if isinstance(address, tuple) and address:
-            return _is_loopback_host(address[0])
+            return _is_loopback_host(address[0]) or _in_private_network(
+                address[0], private_networks
+            )
         return False
     return False
 
@@ -137,12 +209,21 @@ class NetworkBarrier:
 
     Use it as a context manager, or call `enable` and `disable`. Every blocked
     attempt is appended to `blocked` as "host:port" or the lookup target.
+    `private_networks` ("10.0.0.0/8", "fd00::/8", or network objects) are let
+    through as well; one that is not inside the private ranges raises
+    `ValueError`.
     """
 
     _active: "NetworkBarrier | None" = None
 
-    def __init__(self) -> None:
+    def __init__(self, private_networks: Iterable[str | Network] = ()) -> None:
         self.blocked: list[str] = []
+        self._private_networks = _private_networks(private_networks)
+
+    @property
+    def private_networks(self) -> tuple[Network, ...]:
+        """The private networks this barrier lets through, besides loopback."""
+        return self._private_networks
 
     @property
     def active(self) -> bool:
@@ -205,7 +286,9 @@ class NetworkBarrier:
 
         def guarded(sock: socket.socket, *args: Any) -> Any:
             address = _destination(name, args)
-            if address is not None and not is_allowed_address(sock.family, address):
+            if address is not None and not is_allowed_address(
+                sock.family, address, self._private_networks
+            ):
                 if name in ("connect", "connect_ex"):
                     # Callers such as socket.create_connection only close the
                     # socket on OSError; close it here so it does not leak.
@@ -224,7 +307,9 @@ class NetworkBarrier:
             proactor: object, conn: socket.socket, *args: Any, **kwargs: Any
         ) -> Any:
             address = _proactor_destination(name, args, kwargs)
-            if address is not None and not is_allowed_address(conn.family, address):
+            if address is not None and not is_allowed_address(
+                conn.family, address, self._private_networks
+            ):
                 if name == "connect":
                     conn.close()
                 raise self._block(_describe(address))

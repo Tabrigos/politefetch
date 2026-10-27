@@ -232,3 +232,10 @@ def test_the_test_example_passes(
     examples: dict[str, Any], source_simulator: SourceSimulator
 ) -> None:
     examples["test_ingest_gives_up_politely"](source_simulator)
+
+
+def test_the_requests_per_hour_example_passes(
+    examples: dict[str, Any], source_simulator: SourceSimulator
+) -> None:
+    examples["test_two_requests_an_hour_at_most"](source_simulator)
+    assert source_simulator.counter.count == 12  # every half hour for six hours

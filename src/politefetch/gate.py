@@ -31,8 +31,9 @@ attempt raises `OutcomeNotSaved`, which carries what the source answered.
 
 import asyncio
 import contextlib
+import logging
 from collections.abc import Iterable, Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime, timedelta
 from email.message import Message
 from types import TracebackType
@@ -49,6 +50,7 @@ from politefetch.store.base import (
     HostUpdate,
     Outcome,
     RequestRow,
+    RowState,
     Store,
     Unfreeze,
     Validators,
@@ -56,6 +58,8 @@ from politefetch.store.base import (
 )
 
 __all__ = ["Attempt", "Gate", "Verdict", "normalize_host"]
+
+_log = logging.getLogger("politefetch")
 
 UNRECORDED = "unrecorded"
 """Failure shape of an attempt that ended without an outcome."""
@@ -65,6 +69,9 @@ CANCELLED = "cancelled"
 
 CLOSE_TRIES = 3
 """How many times closing a row is tried before `OutcomeNotSaved`."""
+
+_RECONCILE_WITHOUT_FETCHERS = timedelta(hours=1)
+"""The default `reconcile_after` while no fetcher bounds the requests."""
 
 Headers = Mapping[str, str] | Message
 """Response headers: any mapping (httpx, requests) or an `email.message.Message`
@@ -133,12 +140,18 @@ class Gate:
         *,
         clock: Clock | None = None,
         default: HostPolicy | None = None,
-        reconcile_after: timedelta | str = "1h",
+        reconcile_after: timedelta | str | None = None,
     ) -> None:
         """`policies` maps host names to their policy. Hosts without a policy
         are refused with `ValueError` unless a `default` policy is given.
         Rows left in flight for longer than `reconcile_after` are closed as
         failed before each decision.
+
+        By default `reconcile_after` follows the fetchers built on this gate:
+        twice the longest request they allow (deadline plus one connect and
+        one read timeout), or an hour while there are none. Give it by hand
+        when you also send requests with `attempt` and a client of your own,
+        so that it outlasts the slowest of them.
         """
         self.store = store
         self.clock: Clock = clock if clock is not None else SystemClock()
@@ -146,9 +159,28 @@ class Gate:
             normalize_host(host): policy for host, policy in policies.items()
         }
         self._default = default
-        self.reconcile_after = parse_duration(reconcile_after)
-        if self.reconcile_after <= timedelta(0):
+        self._reconcile_after = (
+            None if reconcile_after is None else parse_duration(reconcile_after)
+        )
+        if self._reconcile_after is not None and self._reconcile_after <= timedelta(0):
             raise ValueError("reconcile_after must be positive")
+        self._longest_request: timedelta | None = None
+
+    @property
+    def reconcile_after(self) -> timedelta:
+        """How long a row may stay in flight before it counts as abandoned."""
+        if self._reconcile_after is not None:
+            return self._reconcile_after
+        if self._longest_request is not None:
+            return 2 * self._longest_request
+        return _RECONCILE_WITHOUT_FETCHERS
+
+    def bound_requests(self, longest: timedelta) -> None:
+        """Note that requests through this gate end within `longest`, as a
+        fetcher's do: the default `reconcile_after` follows the longest one
+        noted. Called by the fetchers; a value given by hand is kept."""
+        if self._longest_request is None or longest > self._longest_request:
+            self._longest_request = longest
 
     def policy_for(self, host: str) -> HostPolicy:
         name = normalize_host(host)
@@ -165,8 +197,9 @@ class Gate:
     def may_fetch(self, url: str) -> Verdict:
         """Tell whether a request to `url` may start now, and if not why and
         until when. Advisory: `attempt` decides again, atomically. Sends
-        nothing and opens no row; it does reconcile abandoned rows."""
-        _, _, _, refusal = self._decide(url)
+        nothing and writes nothing: rows abandoned past `reconcile_after`
+        count as the next request to the host will count them."""
+        _, _, _, _, refusal = self._decide(url)
         return Verdict(refusal)
 
     def status(self, host_or_url: str, *, recent: int = 10) -> HostStatus:
@@ -175,12 +208,12 @@ class Gate:
 
         Given a URL, the decision counts the bytes that URL would reserve
         against the byte budget, as `may_fetch` does; given a host, it counts
-        none. Like `may_fetch`, it sends nothing, opens no row and reconciles
-        abandoned rows first.
+        none. Like `may_fetch`, it sends nothing and writes nothing, so it can
+        run beside the process that fetches, or without the right to write.
         """
         if recent < 0:
             raise ValueError(f"recent must not be negative, got {recent}")
-        host, now, state, refusal = self._decide(host_or_url)
+        host, now, state, abandoned, refusal = self._decide(host_or_url)
         policy = self.policy_for(host)
         rows = self.store.rows(host=host, latest=recent) if recent else []
         freeze = state.freeze
@@ -194,6 +227,7 @@ class Gate:
             failures=state.failures,
             throttled=state.throttled,
             in_flight=state.in_flight,
+            abandoned=abandoned,
             day=state.day,
             requests_today=state.requests_today,
             daily_cap=policy.daily_cap,
@@ -207,19 +241,39 @@ class Gate:
         self, hosts: Iterable[str] | None = None, *, recent: int = 10
     ) -> list[HostStatus]:
         """`status` of each of `hosts` (hosts or URLs), in their order; by
-        default of every host with a policy of its own, sorted by name."""
-        names = sorted(self._policies) if hosts is None else list(hosts)
+        default of every host with a policy of its own and, when the gate has
+        a `default` policy, of every host the store knows, sorted by name."""
+        if hosts is None:
+            known = set(self._policies)
+            if self._default is not None:
+                known.update(self.store.hosts())
+            names = sorted(known)
+        else:
+            names = list(hosts)
         return [self.status(name, recent=recent) for name in names]
 
     def _decide(
         self, host_or_url: str
-    ) -> tuple[str, datetime, HostState, Refused | None]:
+    ) -> tuple[str, datetime, HostState, int, Refused | None]:
+        """The decision `attempt` would take now, read without writing: the
+        rows past `reconcile_after` count as the next request to the host
+        will count them when it closes them, one failure each."""
         is_url = "://" in host_or_url
         host = _host(host_or_url)
         policy = self.policy_for(host)
         now = self.clock.now()
-        self.reconcile(now)
         state = self.store.host_state(host, now)
+        cutoff = now - self.reconcile_after
+        abandoned = sum(
+            row.opened_at <= cutoff
+            for row in self.store.rows(host=host, state=RowState.IN_FLIGHT)
+        )
+        if abandoned:
+            state = replace(
+                state,
+                in_flight=max(0, state.in_flight - abandoned),
+                failures=state.failures + abandoned,
+            )
         reserve = 0
         if is_url:
             record = self.store.url_record(host_or_url)
@@ -227,7 +281,7 @@ class Gate:
         refusal = check_admission(
             state, now, policy.daily_cap, policy.byte_budget, reserve
         )
-        return host, now, state, refusal
+        return host, now, state, abandoned, refusal
 
     def attempt(self, url: str) -> "Attempt":
         """A context manager (sync or async) around one request to `url`."""
@@ -364,7 +418,6 @@ class Attempt:
             raise RuntimeError("an attempt can only be used once")
         gate, policy = self._gate, self._policy
         now = gate.clock.now()
-        gate.reconcile(now)
         self._row = gate.store.open_request(
             self.host,
             self.url,
@@ -372,6 +425,7 @@ class Attempt:
             daily_cap=policy.daily_cap,
             byte_budget=policy.byte_budget,
             cautious=lambda state: policy.cautious_until(state, now),
+            abandon_before=now - gate.reconcile_after,
         )
         if policy.byte_budget is not None:
             # Today's bytes include this request's reservation: it is part of
@@ -401,11 +455,15 @@ class Attempt:
         # The store is our own database, not the source: trying it again
         # sends nothing. Each try waits as long as the store's own timeout.
         failed: Exception | None = None
+        frozen: list[bool] = []
         for _ in range(CLOSE_TRIES):
             now = self._gate.clock.now()
 
             def update(state: HostState, now: datetime = now) -> HostUpdate:
-                return policy.after(state, now, outcome, retry_at)
+                decided = policy.after(state, now, outcome, retry_at)
+                was = state.freeze is not None and state.freeze.active(now)
+                frozen[:] = [decided.freeze is not None and not was]
+                return decided
 
             try:
                 self.result = self._gate.store.close_request(
@@ -415,9 +473,28 @@ class Attempt:
                     update=update,
                     validators=self._validators,
                 )
-                return
             except Exception as error:
                 failed = error
+                continue
+            if frozen == [True]:
+                _log.warning(
+                    "%s frozen after %s from %s: no request until a person"
+                    " lifts it with gate.unfreeze(%r, by=...)",
+                    self.host,
+                    outcome.status if outcome.status is not None else outcome.failure,
+                    self.url,
+                    self.host,
+                )
+            return
+        _log.error(
+            "the outcome of %s (row %d, %s) was not saved: the host stays"
+            " blocked until the reconciliation; a 403/429/451 may need to be"
+            " applied by hand",
+            self.url,
+            self.row.id,
+            outcome.status if outcome.status is not None else outcome.failure,
+            exc_info=failed,
+        )
         # Raised outside the handler, so an exception from the block stays the
         # context and the store's is the cause.
         raise OutcomeNotSaved(

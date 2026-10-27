@@ -35,15 +35,17 @@ One request through the gate. Record its outcome with `response` or `failure` be
 
 ### `Gate`
 
-`Gate(store: Store, policies: Mapping[str, HostPolicy], *, clock: Clock | None = None, default: HostPolicy | None = None, reconcile_after: timedelta | str = '1h')`
+`Gate(store: Store, policies: Mapping[str, HostPolicy], *, clock: Clock | None = None, default: HostPolicy | None = None, reconcile_after: timedelta | str | None = None)`
 
 The single point every request to a protected host goes through.
 
+- `.reconcile_after` (property): How long a row may stay in flight before it counts as abandoned.
+- `.bound_requests(longest: timedelta) -> None`: Note that requests through this gate end within `longest`, as a fetcher's do: the default `reconcile_after` follows the longest one noted. Called by the fetchers; a value given by hand is kept.
 - `.policy_for(host: str) -> HostPolicy`
 - `.reconcile(now: datetime | None = None) -> list[RequestRow]`: Close as failed the rows in flight for longer than `reconcile_after`.
-- `.may_fetch(url: str) -> Verdict`: Tell whether a request to `url` may start now, and if not why and until when. Advisory: `attempt` decides again, atomically. Sends nothing and opens no row; it does reconcile abandoned rows.
+- `.may_fetch(url: str) -> Verdict`: Tell whether a request to `url` may start now, and if not why and until when. Advisory: `attempt` decides again, atomically. Sends nothing and writes nothing: rows abandoned past `reconcile_after` count as the next request to the host will count them.
 - `.status(host_or_url: str, *, recent: int = 10) -> HostStatus`: The readable state of a host: the decision `may_fetch` would take, today's counts and bytes, and its latest `recent` log rows.
-- `.statuses(hosts: Iterable[str] | None = None, *, recent: int = 10) -> list[HostStatus]`: `status` of each of `hosts` (hosts or URLs), in their order; by default of every host with a policy of its own, sorted by name.
+- `.statuses(hosts: Iterable[str] | None = None, *, recent: int = 10) -> list[HostStatus]`: `status` of each of `hosts` (hosts or URLs), in their order; by default of every host with a policy of its own and, when the gate has a `default` policy, of every host the store knows, sorted by name.
 - `.attempt(url: str) -> Attempt`: A context manager (sync or async) around one request to `url`.
 - `.note_data_time(url: str, data_time: datetime) -> DataTimeRecord`: Record the data time a read of `url` returned, for stuck-source detection (`politefetch.checks.check_advancing`).
 - `.unfreeze(host_or_url: str, *, by: str, note: str = '') -> Unfreeze | None`: Lift a host's freeze by hand, leaving a trace of who did it.
@@ -105,7 +107,7 @@ Readable state per host: next allowed request, reason for any block, today's cou
 
 ### `HostStatus`
 
-`HostStatus(host: str, at: datetime, may_fetch: bool, reason: RefusalReason | None, next_allowed: datetime | None, frozen: Freeze | None, failures: int, throttled: int, in_flight: int, day: date, requests_today: int, daily_cap: int, wire_bytes_today: int, decoded_bytes_today: int, byte_budget: int | None, recent: tuple[RequestRow, ...])`
+`HostStatus(host: str, at: datetime, may_fetch: bool, reason: RefusalReason | None, next_allowed: datetime | None, frozen: Freeze | None, failures: int, throttled: int, in_flight: int, day: date, requests_today: int, daily_cap: int, wire_bytes_today: int, decoded_bytes_today: int, byte_budget: int | None, recent: tuple[RequestRow, ...], abandoned: int = 0)`
 
 One host as of `at`.
 
@@ -119,7 +121,7 @@ One host as of `at`.
 | `frozen` | `Freeze \| None` | The freeze in force, if any. |
 | `failures` | `int` | Consecutive failures since the last good answer. |
 | `throttled` | `int` | The 429 answers since the last good answer. |
-| `in_flight` | `int` | Requests to the host still open. |
+| `in_flight` | `int` | Requests to the host still open, the abandoned ones left out. |
 | `day` | `date` | The UTC day of `at`, the day of the `*_today` counts. |
 | `requests_today` | `int` | Requests opened on `day`, counted against `daily_cap`. |
 | `daily_cap` | `int` | The requests per UTC day the host's policy allows. |
@@ -127,6 +129,7 @@ One host as of `at`.
 | `decoded_bytes_today` | `int` | Bytes after decoding, for the requests opened on `day`. |
 | `byte_budget` | `int \| None` | The wire bytes per UTC day the host's policy allows; `None` for no limit. |
 | `recent` | `tuple[RequestRow, ...]` | The latest log rows of the host, newest first. |
+| `abandoned` | `int` | Rows in flight for longer than `reconcile_after`: already left out of `in_flight` and counted in `failures`, as the next request to the host will count them when it closes them. |
 
 - `.to_dict() -> dict[str, object]`: The status as JSON-ready values: times as ISO 8601 strings with their UTC offset, reasons and row states as their stored names.
 - `.to_json(*, indent: int | None = None) -> str`: `to_dict` serialised.
@@ -656,7 +659,7 @@ Protocol. Persistent state behind the gate.
 
 - `.host_state(host: str, now: datetime) -> HostState`: Return the state of `host`, with today's count for `now`'s UTC day.
 - `.requests_on(host: str, day: date) -> int`: Return how many requests to `host` were opened on the UTC `day`.
-- `.open_request(host: str, url: str, *, now: datetime, daily_cap: int, cautious: Callable[[HostState], datetime], byte_budget: int | None = None) -> RequestRow`: Admit a request, or raise `Refused` having written nothing.
+- `.open_request(host: str, url: str, *, now: datetime, daily_cap: int, cautious: Callable[[HostState], datetime], byte_budget: int | None = None, abandon_before: datetime | None = None) -> RequestRow`: Admit a request, or raise `Refused` having written nothing else.
 - `.close_request(row_id: int, *, now: datetime, outcome: Outcome, update: Callable[[HostState], HostUpdate], validators: Validators | None = None) -> RequestRow`: Close an in-flight row with its outcome and update the host.
 - `.url_record(url: str) -> UrlRecord | None`: Return what the store remembers about `url`, if anything.
 - `.note_data_time(url: str, data_time: datetime, *, now: datetime) -> DataTimeRecord`: Record the data time a read of `url` returned; see `apply_data_time`. Atomic.
@@ -665,6 +668,7 @@ Protocol. Persistent state behind the gate.
 - `.unfreeze(host: str, *, now: datetime, by: str, note: str = '') -> Unfreeze | None`: Lift the freeze of `host`, active or expired, and leave a trace.
 - `.unfreezes(*, host: str | None = None) -> list[Unfreeze]`: Return the unfreeze traces, oldest first.
 - `.row(row_id: int) -> RequestRow`: Return one row; raise `KeyError` if it does not exist.
+- `.hosts() -> list[str]`: Return the hosts the store has state for, sorted by name.
 - `.rows(*, host: str | None = None, state: RowState | None = None, latest: int | None = None) -> list[RequestRow]`: Return the rows matching the filters, oldest first; with `latest`, only the newest `latest` of them (still oldest first).
 - `.close() -> None`: Release the store's resources. The persistent state stays.
 
@@ -723,6 +727,10 @@ Return why a request to the host must be refused now, or `None`.
 
 True for a row the reconciliation closed as abandoned, whose request has not reported back yet: its outcome can still arrive, late.
 
+### `log_abandoned(row: RequestRow) -> None`
+
+Say that a row was closed as abandoned: its process died, or did not close it, and the host paused for it.
+
 ### `next_utc_midnight(now: datetime) -> datetime`
 
 ## `politefetch.store.memory`
@@ -758,7 +766,7 @@ A `Store` kept in memory.
 - `.requests_on(host: str, day: date) -> int`
 - `.row(row_id: int) -> RequestRow`
 - `.rows(*, host: str | None = None, state: RowState | None = None, latest: int | None = None) -> list[RequestRow]`
-- `.open_request(host: str, url: str, *, now: datetime, daily_cap: int, cautious: Callable[[HostState], datetime], byte_budget: int | None = None) -> RequestRow`
+- `.open_request(host: str, url: str, *, now: datetime, daily_cap: int, cautious: Callable[[HostState], datetime], byte_budget: int | None = None, abandon_before: datetime | None = None) -> RequestRow`
 - `.close_request(row_id: int, *, now: datetime, outcome: Outcome, update: Callable[[HostState], HostUpdate], validators: Validators | None = None) -> RequestRow`
 - `.url_record(url: str) -> UrlRecord | None`
 - `.note_data_time(url: str, data_time: datetime, *, now: datetime) -> DataTimeRecord`
@@ -766,6 +774,7 @@ A `Store` kept in memory.
 - `.reconcile(*, now: datetime, older_than: timedelta) -> list[RequestRow]`
 - `.unfreeze(host: str, *, now: datetime, by: str, note: str = '') -> Unfreeze | None`
 - `.unfreezes(*, host: str | None = None) -> list[Unfreeze]`
+- `.hosts() -> list[str]`
 - `.close() -> None`
 
 ## `politefetch.store.sqlite`
@@ -782,7 +791,7 @@ A `Store` in a SQLite file, shareable between processes.
 - `.requests_on(host: str, day: date) -> int`
 - `.row(row_id: int) -> RequestRow`
 - `.rows(*, host: str | None = None, state: RowState | None = None, latest: int | None = None) -> list[RequestRow]`
-- `.open_request(host: str, url: str, *, now: datetime, daily_cap: int, cautious: Callable[[HostState], datetime], byte_budget: int | None = None) -> RequestRow`
+- `.open_request(host: str, url: str, *, now: datetime, daily_cap: int, cautious: Callable[[HostState], datetime], byte_budget: int | None = None, abandon_before: datetime | None = None) -> RequestRow`
 - `.close_request(row_id: int, *, now: datetime, outcome: Outcome, update: Callable[[HostState], HostUpdate], validators: Validators | None = None) -> RequestRow`
 - `.url_record(url: str) -> UrlRecord | None`
 - `.note_data_time(url: str, data_time: datetime, *, now: datetime) -> DataTimeRecord`
@@ -790,6 +799,7 @@ A `Store` in a SQLite file, shareable between processes.
 - `.reconcile(*, now: datetime, older_than: timedelta) -> list[RequestRow]`
 - `.unfreeze(host: str, *, now: datetime, by: str, note: str = '') -> Unfreeze | None`
 - `.unfreezes(*, host: str | None = None) -> list[Unfreeze]`
+- `.hosts() -> list[str]`
 - `.close() -> None`
 
 ## `politefetch.store.postgres` (extra `postgres`)
@@ -798,7 +808,7 @@ Postgres store, behind the `postgres` extra (psycopg 3).
 
 ### `PostgresStore`
 
-`PostgresStore(conninfo: str, *, schema: str = 'politefetch', lock_timeout: float = 30.0, clock: Clock | None = None, max_clock_skew: timedelta | str | None = '1m')`
+`PostgresStore(conninfo: str, *, schema: str = 'politefetch', lock_timeout: float = 30.0, clock: Clock | None = None, max_clock_skew: timedelta | str | None = '1m', migrate: bool = False)`
 
 A `Store` in a Postgres schema, shareable between processes.
 
@@ -809,7 +819,8 @@ A `Store` in a Postgres schema, shareable between processes.
 - `.url_record(url: str) -> UrlRecord | None`
 - `.data_time_record(url: str) -> DataTimeRecord | None`
 - `.unfreezes(*, host: str | None = None) -> list[Unfreeze]`
-- `.open_request(host: str, url: str, *, now: datetime, daily_cap: int, cautious: Callable[[HostState], datetime], byte_budget: int | None = None) -> RequestRow`
+- `.hosts() -> list[str]`
+- `.open_request(host: str, url: str, *, now: datetime, daily_cap: int, cautious: Callable[[HostState], datetime], byte_budget: int | None = None, abandon_before: datetime | None = None) -> RequestRow`
 - `.close_request(row_id: int, *, now: datetime, outcome: Outcome, update: Callable[[HostState], HostUpdate], validators: Validators | None = None) -> RequestRow`
 - `.reconcile(*, now: datetime, older_than: timedelta) -> list[RequestRow]`
 - `.note_data_time(url: str, data_time: datetime, *, now: datetime) -> DataTimeRecord`
@@ -830,7 +841,7 @@ The politefetch pytest plugin.
 
 ### fixture `network_barrier`
 
-Block every outbound connection except loopback and Unix sockets.
+Block every outbound connection except loopback, Unix sockets and the private networks listed in `politefetch_private_networks`.
 
 ### fixture `source_simulator`
 
@@ -842,10 +853,11 @@ A socket barrier for tests: no packet leaves the machine.
 
 ### `NetworkBarrier`
 
-`NetworkBarrier()`
+`NetworkBarrier(private_networks: Iterable[str | IPv4Network | IPv6Network] = ())`
 
 Block network access for as long as it is active.
 
+- `.private_networks` (property): The private networks this barrier lets through, besides loopback.
 - `.active` (property)
 - `.current() -> NetworkBarrier | None`: The barrier active right now, if any.
 - `.original(name: str) -> Callable[..., Any]`: Return the unpatched `socket` function or method called `name`.
@@ -858,7 +870,7 @@ Block network access for as long as it is active.
 
 A test tried to reach the network.
 
-### `is_allowed_address(family: int, address: object) -> bool`
+### `is_allowed_address(family: int, address: object, private_networks: Iterable[IPv4Network | IPv6Network] = ()) -> bool`
 
 Tell whether a socket of `family` may reach `address`.
 
@@ -873,6 +885,12 @@ Source simulator: a real HTTP server on 127.0.0.1 that plays the scenarios of SP
 Send the head at once, then the body one byte every `every` seconds: a source that keeps a request alive for as long as it likes.
 
 - `.serve(conn: socket, request: SourceRequest, stop: Event) -> None`
+
+### `HalfJson`
+
+`HalfJson(body: bytes = b'{"time": "20', *, name: str = 'half json')` (subclass of `Respond`)
+
+A complete answer whose JSON stops midway: the Content-Length matches the body, as when a source serves a file it is still rewriting. No HTTP client complains; only the content check does (`Truncated` is the other truncation, a connection that closes before the announced length).
 
 ### `Html`
 
@@ -916,7 +934,7 @@ Protocol. How the simulated source answers one request.
 
 ### `SourceSimulator`
 
-`SourceSimulator(scenario: Scenario | None = None)`
+`SourceSimulator(scenario: Scenario | None = None, *, clock: Clock | None = None)`
 
 A simulated source on 127.0.0.1, playing one scenario at a time.
 
@@ -969,7 +987,7 @@ Worst-case counter: the requests that actually reached the simulated source, and
 
 Thread-safe record of the requests that reached the source.
 
-- `.record(method: str, path: str, headers: Mapping[str, str], scenario: str) -> SourceRequest`: Record one arrived request and return it, numbered from 1.
+- `.record(method: str, path: str, headers: Mapping[str, str], scenario: str, *, arrived: datetime | None = None) -> SourceRequest`: Record one arrived request and return it, numbered from 1. `arrived` defaults to the system time.
 - `.count` (property)
 - `.requests` (property)
 - `.by_scenario() -> dict[str, int]`: How many requests arrived while each scenario was playing.
@@ -977,7 +995,7 @@ Thread-safe record of the requests that reached the source.
 
 ### `SourceRequest`
 
-`SourceRequest(number: int, method: str, path: str, headers: Mapping[str, str] = <factory>, scenario: str = '')`
+`SourceRequest(number: int, method: str, path: str, headers: Mapping[str, str] = <factory>, scenario: str = '', arrived: datetime = <factory>)`
 
 One request as the source saw it.
 
@@ -988,6 +1006,7 @@ One request as the source saw it.
 | `path` | `str` | The request target as it arrived, query included. |
 | `headers` | `Mapping[str, str]` | The request headers, names in lowercase; a header sent more than once is recorded once, its values joined by ", ". |
 | `scenario` | `str` | The name of the scenario playing when it arrived. |
+| `arrived` | `datetime` | When it arrived, on the simulator's clock. |
 
 ## `politefetch.testing.processes`
 

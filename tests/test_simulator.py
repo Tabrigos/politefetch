@@ -10,9 +10,11 @@ from datetime import UTC, datetime, timedelta
 
 import pytest
 
+from politefetch.clock import FakeClock, SystemClock
 from politefetch.testing.counter import RequestCounter
 from politefetch.testing.simulator import (
     Drip,
+    HalfJson,
     Html,
     NoAnswer,
     Reset,
@@ -143,6 +145,24 @@ def test_truncated_body(source: SourceSimulator) -> None:
             response.read()
 
 
+def test_half_json_is_a_complete_answer(source: SourceSimulator) -> None:
+    source.scenario = HalfJson(b'{"time": "2026-')
+    status, headers, body = get(source.url())
+    assert status == 200
+    assert headers["Content-Type"] == "application/json"
+    assert headers["Content-Length"] == str(len(body))
+    assert body == b'{"time": "2026-'
+    assert source.counter.requests[0].scenario == "half json"
+
+
+def test_half_json_by_default_is_json_cut_short(source: SourceSimulator) -> None:
+    source.scenario = HalfJson()
+    body = get(source.url())[2]
+    with pytest.raises(json.JSONDecodeError):
+        json.loads(body)
+    assert body.startswith(b"{")
+
+
 def test_drip_sends_the_body_one_byte_at_a_time(source: SourceSimulator) -> None:
     source.scenario = Drip(b'{"a": 1}', every=0.02)
     with urllib.request.urlopen(source.url(), timeout=5) as response:
@@ -209,6 +229,35 @@ def test_counter_can_be_reset(source: SourceSimulator) -> None:
     assert source.counter.requests == []
     get(source.url())
     assert source.counter.requests[0].number == 1
+
+
+def test_each_request_records_when_it_arrived_on_the_clock() -> None:
+    clock = FakeClock(T)
+    with SourceSimulator(clock=clock) as source:
+        get(source.url())
+        clock.advance(timedelta(hours=1))
+        get(source.url())
+    assert [r.arrived for r in source.counter.requests] == [T, T + timedelta(hours=1)]
+
+
+def test_the_clock_can_be_given_to_a_running_simulator(
+    source: SourceSimulator,
+) -> None:
+    source.clock = FakeClock(T)
+    get(source.url())
+    assert source.counter.requests[0].arrived == T
+
+
+def test_by_default_the_arrival_is_the_system_time(source: SourceSimulator) -> None:
+    before = SystemClock().now()
+    get(source.url())
+    after = SystemClock().now()
+    assert before <= source.counter.requests[0].arrived <= after
+
+
+def test_the_counter_keeps_the_arrival_it_is_given() -> None:
+    counter = RequestCounter()
+    assert counter.record("GET", "/", {}, "s", arrived=T).arrived == T
 
 
 def test_counter_is_safe_across_threads() -> None:
