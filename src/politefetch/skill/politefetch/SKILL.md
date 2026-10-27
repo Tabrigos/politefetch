@@ -274,7 +274,8 @@ counted in `failures` and left out of `in_flight`), `requests_today`,
 would reserve. It sends nothing and writes nothing, like `may_fetch`: a
 dashboard can call it beside the process that fetches, or with read-only
 access.
-`gate.statuses()` covers the hosts with a policy of their own. In the JSON of
+`gate.statuses()` covers the hosts with a policy of their own and, with a
+`default` policy, every host the store knows (`store.hosts()`). In the JSON of
 `to_json` the counts of the day sit under the key `"today"` (`"requests"`,
 `"daily_cap"`, `"wire_bytes"`, `"decoded_bytes"`, `"byte_budget"`, `"day"`).
 The log rows are never deleted in this version: the table grows with every
@@ -283,6 +284,12 @@ request.
 A frozen host stays frozen until a person decides: `gate.unfreeze(host,
 by="alice", note="they lifted the block")` lifts it and leaves a trace. Never
 call it from code that runs on its own.
+
+The `politefetch` logger says what a person must hear about without polling
+`status`: WARNING when a host freezes and when a row is closed as abandoned
+(`politefetch.store`), ERROR when the store could not save an outcome, the
+one lost during a cancellation included. Refusals, good answers and failures
+of the source log nothing: they are outcomes, read them from `status`.
 
 ## Testing an ingest job
 

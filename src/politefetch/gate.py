@@ -31,6 +31,7 @@ attempt raises `OutcomeNotSaved`, which carries what the source answered.
 
 import asyncio
 import contextlib
+import logging
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, replace
 from datetime import datetime, timedelta
@@ -57,6 +58,8 @@ from politefetch.store.base import (
 )
 
 __all__ = ["Attempt", "Gate", "Verdict", "normalize_host"]
+
+_log = logging.getLogger("politefetch")
 
 UNRECORDED = "unrecorded"
 """Failure shape of an attempt that ended without an outcome."""
@@ -205,8 +208,15 @@ class Gate:
         self, hosts: Iterable[str] | None = None, *, recent: int = 10
     ) -> list[HostStatus]:
         """`status` of each of `hosts` (hosts or URLs), in their order; by
-        default of every host with a policy of its own, sorted by name."""
-        names = sorted(self._policies) if hosts is None else list(hosts)
+        default of every host with a policy of its own and, when the gate has
+        a `default` policy, of every host the store knows, sorted by name."""
+        if hosts is None:
+            known = set(self._policies)
+            if self._default is not None:
+                known.update(self.store.hosts())
+            names = sorted(known)
+        else:
+            names = list(hosts)
         return [self.status(name, recent=recent) for name in names]
 
     def _decide(
@@ -412,11 +422,15 @@ class Attempt:
         # The store is our own database, not the source: trying it again
         # sends nothing. Each try waits as long as the store's own timeout.
         failed: Exception | None = None
+        frozen: list[bool] = []
         for _ in range(CLOSE_TRIES):
             now = self._gate.clock.now()
 
             def update(state: HostState, now: datetime = now) -> HostUpdate:
-                return policy.after(state, now, outcome, retry_at)
+                decided = policy.after(state, now, outcome, retry_at)
+                was = state.freeze is not None and state.freeze.active(now)
+                frozen[:] = [decided.freeze is not None and not was]
+                return decided
 
             try:
                 self.result = self._gate.store.close_request(
@@ -426,9 +440,28 @@ class Attempt:
                     update=update,
                     validators=self._validators,
                 )
-                return
             except Exception as error:
                 failed = error
+                continue
+            if frozen == [True]:
+                _log.warning(
+                    "%s frozen after %s from %s: no request until a person"
+                    " lifts it with gate.unfreeze(%r, by=...)",
+                    self.host,
+                    outcome.status if outcome.status is not None else outcome.failure,
+                    self.url,
+                    self.host,
+                )
+            return
+        _log.error(
+            "the outcome of %s (row %d, %s) was not saved: the host stays"
+            " blocked until the reconciliation; a 403/429/451 may need to be"
+            " applied by hand",
+            self.url,
+            self.row.id,
+            outcome.status if outcome.status is not None else outcome.failure,
+            exc_info=failed,
+        )
         # Raised outside the handler, so an exception from the block stays the
         # context and the store's is the cause.
         raise OutcomeNotSaved(

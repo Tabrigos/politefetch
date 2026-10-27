@@ -6,6 +6,14 @@ All notable changes to politefetch. The format follows
 
 ## Unreleased
 
+### Added
+
+- A `politefetch` logger (#30): WARNING when a host freezes and when a row is
+  closed as abandoned, ERROR when the store could not save an outcome, the
+  one lost during a cancellation included. Business outcomes log nothing.
+- `Store.hosts()`, and `gate.statuses()` with a `default` policy covers every
+  host the store knows, not only those with a policy of their own (#30).
+
 ### Changed
 
 - `status`, `statuses` and `may_fetch` write nothing (#29): a dashboard no

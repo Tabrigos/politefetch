@@ -68,6 +68,7 @@ from politefetch.store.base import (
     check_threshold,
     check_unfreezer,
     is_late,
+    log_abandoned,
 )
 
 __all__ = ["PostgresStore"]
@@ -532,6 +533,11 @@ class PostgresStore:
             )
         return traces
 
+    def hosts(self) -> list[str]:
+        with self._read() as conn:
+            found = conn.execute("SELECT host FROM hosts ORDER BY host").fetchall()
+        return [host for (host,) in found]
+
     # --- critical operations ------------------------------------------------
 
     def open_request(
@@ -546,17 +552,24 @@ class PostgresStore:
         abandon_before: datetime | None = None,
     ) -> RequestRow:
         now = as_utc(now, "now")
+        abandoned: list[RequestRow] = []
+        opened: RequestRow | None = None
         with self._write() as conn:
             if abandon_before is not None:
                 cutoff = as_utc(abandon_before, "abandon_before")
-                self._abandon(conn, now, cutoff, host)
+                abandoned = self._abandon(conn, now, cutoff, host)
             state = self._state(conn, host, now)
             record = self._url_record(conn, url)
             reserve = record.size if record is not None and record.size else 0
             refusal = check_admission(state, now, daily_cap, byte_budget, reserve)
             if refusal is None:
-                return self._admit(conn, host, url, now, state, reserve, cautious)
+                opened = self._admit(conn, host, url, now, state, reserve, cautious)
+        for row in abandoned:  # logged once committed
+            log_abandoned(row)
+        if opened is not None:
+            return opened
         # Raised after the commit: the abandoned rows stay closed.
+        assert refusal is not None
         raise refusal
 
     def _admit(
@@ -666,7 +679,10 @@ class PostgresStore:
         now = as_utc(now, "now")
         check_threshold(older_than)
         with self._write() as conn:
-            return self._abandon(conn, now, now - older_than)
+            reconciled = self._abandon(conn, now, now - older_than)
+        for row in reconciled:  # logged once committed
+            log_abandoned(row)
+        return reconciled
 
     @staticmethod
     def _abandon(
