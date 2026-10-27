@@ -66,6 +66,9 @@ CANCELLED = "cancelled"
 CLOSE_TRIES = 3
 """How many times closing a row is tried before `OutcomeNotSaved`."""
 
+_RECONCILE_WITHOUT_FETCHERS = timedelta(hours=1)
+"""The default `reconcile_after` while no fetcher bounds the requests."""
+
 Headers = Mapping[str, str] | Message
 """Response headers: any mapping (httpx, requests) or an `email.message.Message`
 (urllib, http.client)."""
@@ -128,12 +131,18 @@ class Gate:
         *,
         clock: Clock | None = None,
         default: HostPolicy | None = None,
-        reconcile_after: timedelta | str = "1h",
+        reconcile_after: timedelta | str | None = None,
     ) -> None:
         """`policies` maps host names to their policy. Hosts without a policy
         are refused with `ValueError` unless a `default` policy is given.
         Rows left in flight for longer than `reconcile_after` are closed as
         failed before each decision.
+
+        By default `reconcile_after` follows the fetchers built on this gate:
+        twice the longest request they allow (deadline plus one connect and
+        one read timeout), or an hour while there are none. Give it by hand
+        when you also send requests with `attempt` and a client of your own,
+        so that it outlasts the slowest of them.
         """
         self.store = store
         self.clock: Clock = clock if clock is not None else SystemClock()
@@ -141,9 +150,28 @@ class Gate:
             normalize_host(host): policy for host, policy in policies.items()
         }
         self._default = default
-        self.reconcile_after = parse_duration(reconcile_after)
-        if self.reconcile_after <= timedelta(0):
+        self._reconcile_after = (
+            None if reconcile_after is None else parse_duration(reconcile_after)
+        )
+        if self._reconcile_after is not None and self._reconcile_after <= timedelta(0):
             raise ValueError("reconcile_after must be positive")
+        self._longest_request: timedelta | None = None
+
+    @property
+    def reconcile_after(self) -> timedelta:
+        """How long a row may stay in flight before it counts as abandoned."""
+        if self._reconcile_after is not None:
+            return self._reconcile_after
+        if self._longest_request is not None:
+            return 2 * self._longest_request
+        return _RECONCILE_WITHOUT_FETCHERS
+
+    def bound_requests(self, longest: timedelta) -> None:
+        """Note that requests through this gate end within `longest`, as a
+        fetcher's do: the default `reconcile_after` follows the longest one
+        noted. Called by the fetchers; a value given by hand is kept."""
+        if self._longest_request is None or longest > self._longest_request:
+            self._longest_request = longest
 
     def policy_for(self, host: str) -> HostPolicy:
         name = normalize_host(host)

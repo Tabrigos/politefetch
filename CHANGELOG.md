@@ -4,6 +4,17 @@ All notable changes to politefetch. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions follow
 [Semantic Versioning](https://semver.org/).
 
+## Unreleased
+
+### Changed
+
+- The default `reconcile_after` follows the fetchers built on the gate (#32):
+  twice their longest request (deadline plus one connect and one read
+  timeout, 11 minutes 20 seconds with the defaults), or an hour while there
+  are none. A process killed mid-request blocked its host for an hour; a
+  value given by hand still wins. `Gate.bound_requests` is how the fetchers
+  tell the gate.
+
 ## 0.1.1 — 2026-10-26
 
 ### Fixed

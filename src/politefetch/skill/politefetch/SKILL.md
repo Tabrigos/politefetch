@@ -178,11 +178,15 @@ byte_budget=None)`
   them.
 - `byte_budget`: bytes on the wire per UTC day; a request reserves the size
   of the URL's last full answer and is corrected when it closes.
-- `Gate(store, policies, *, clock=None, default=None, reconcile_after="1h")`:
+- `Gate(store, policies, *, clock=None, default=None, reconcile_after=None)`:
   a host without a policy raises `NoPolicy` (a `ValueError` too) unless
   `default` is given; rows
   left open longer than `reconcile_after` (a crashed process) are closed as
-  failed before the next decision.
+  failed before the next decision. By default `reconcile_after` is twice the
+  longest request of the fetchers built on the gate (with the defaults, 11
+  minutes 20 seconds), or an hour while there are none. With `gate.attempt`
+  and a client of your own, give it by hand, longer than your slowest
+  request: a request still running past it can be overlapped by the next.
 
 ## Reading the outcome
 

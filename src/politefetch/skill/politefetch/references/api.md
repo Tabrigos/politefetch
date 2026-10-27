@@ -35,10 +35,12 @@ One request through the gate. Record its outcome with `response` or `failure` be
 
 ### `Gate`
 
-`Gate(store: Store, policies: Mapping[str, HostPolicy], *, clock: Clock | None = None, default: HostPolicy | None = None, reconcile_after: timedelta | str = '1h')`
+`Gate(store: Store, policies: Mapping[str, HostPolicy], *, clock: Clock | None = None, default: HostPolicy | None = None, reconcile_after: timedelta | str | None = None)`
 
 The single point every request to a protected host goes through.
 
+- `.reconcile_after` (property): How long a row may stay in flight before it counts as abandoned.
+- `.bound_requests(longest: timedelta) -> None`: Note that requests through this gate end within `longest`, as a fetcher's do: the default `reconcile_after` follows the longest one noted. Called by the fetchers; a value given by hand is kept.
 - `.policy_for(host: str) -> HostPolicy`
 - `.reconcile(now: datetime | None = None) -> list[RequestRow]`: Close as failed the rows in flight for longer than `reconcile_after`.
 - `.may_fetch(url: str) -> Verdict`: Tell whether a request to `url` may start now, and if not why and until when. Advisory: `attempt` decides again, atomically. Sends nothing and opens no row; it does reconcile abandoned rows.
