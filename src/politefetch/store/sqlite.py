@@ -60,6 +60,9 @@ __all__ = ["SqliteStore"]
 
 _TIME_FORMAT = "%Y-%m-%dT%H:%M:%S.%fZ"
 
+# Schema version 1, frozen: a new store creates it and then runs every
+# migration, as an old one does. A column or table added here and not as a
+# migration would reach new stores only (tests/test_store_schema.py).
 _SCHEMA = (
     """
     CREATE TABLE IF NOT EXISTS hosts (

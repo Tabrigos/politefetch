@@ -75,6 +75,9 @@ __all__ = ["PostgresStore"]
 
 _SCHEMA_NAME = re.compile(r"[a-z_][a-z0-9_]{0,62}")
 
+# Schema version 1, frozen: a new schema gets it and then every migration, as
+# an old one does. A column or table added here and not as a migration would
+# reach new schemas only (tests/test_store_schema.py).
 _TABLES = (
     """
     CREATE TABLE IF NOT EXISTS hosts (

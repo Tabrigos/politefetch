@@ -244,6 +244,47 @@ def test_two_stores_opening_at_once_migrate_once(
         monkeypatch.undo()
 
 
+def shape(path: Path) -> dict[str, Any]:
+    """The columns of every table and the columns of every index."""
+    conn = raw(path)
+    try:
+        found: dict[str, Any] = {}
+        for (table,) in conn.execute(
+            "SELECT name FROM sqlite_master WHERE type = 'table'"
+            " AND name NOT LIKE 'sqlite_%' ORDER BY name"
+        ):
+            found[table] = [r[1:] for r in conn.execute(f"PRAGMA table_info({table})")]
+        for index, table in conn.execute(
+            "SELECT name, tbl_name FROM sqlite_master WHERE type = 'index'"
+            " AND name NOT LIKE 'sqlite_%' ORDER BY name"
+        ):
+            on = [r[2] for r in conn.execute(f"PRAGMA index_info({index})")]
+            found[f"index {index}"] = (table, on)
+        return found
+    finally:
+        conn.close()
+
+
+@pytest.mark.parametrize(
+    "migrations", [None, COLUMN_THEN_INDEX], ids=["as shipped", "two more"]
+)
+def test_a_new_store_has_the_schema_of_a_migrated_one(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    migrations: tuple[tuple[str, ...], ...] | None,
+) -> None:
+    # The base schema stays at version 1: a column added to it, and not as a
+    # migration, would reach new stores and not migrated ones.
+    if migrations is not None:
+        monkeypatch.setattr("politefetch.store.sqlite._MIGRATIONS", migrations)
+    new = tmp_path / "new.db"
+    SqliteStore(new).close()
+    old = copy("store-0.1.1.db", tmp_path)
+    SqliteStore(old).close()
+    assert len(shape(new)) >= 9  # tables and indexes to compare
+    assert shape(new) == shape(old)
+
+
 # --- Postgres -----------------------------------------------------------------
 
 
@@ -358,3 +399,50 @@ def test_a_postgres_schema_from_a_newer_version_is_refused(schema: str) -> None:
     with pytest.raises(ValueError, match="version 99"):
         PostgresStore(POSTGRES_DSN, schema=schema, migrate=True)
     assert pg_version(schema) == 99
+
+
+def pg_shape(schema: str) -> dict[str, Any]:
+    """Columns and indexes, with the schema's name taken out."""
+    columns = pg(
+        schema,
+        "SELECT table_name, column_name, data_type, is_nullable, column_default"
+        f" FROM information_schema.columns WHERE table_schema = '{schema}'"
+        " ORDER BY table_name, ordinal_position",
+    )
+    indexes = pg(
+        schema,
+        "SELECT indexname, indexdef FROM pg_indexes"
+        f" WHERE schemaname = '{schema}' ORDER BY indexname",
+    )
+    return {
+        "columns": [tuple(str(v).replace(schema, "S") for v in r) for r in columns],
+        "indexes": [(n, d.replace(schema, "S")) for n, d in indexes],
+    }
+
+
+@needs_postgres
+@pytest.mark.parametrize(
+    "migrations", [None, COLUMN_THEN_INDEX], ids=["as shipped", "two more"]
+)
+def test_a_new_postgres_schema_has_the_schema_of_a_migrated_one(
+    schema: str,
+    monkeypatch: pytest.MonkeyPatch,
+    migrations: tuple[tuple[str, ...], ...] | None,
+) -> None:
+    if migrations is not None:
+        monkeypatch.setattr("politefetch.store.postgres._MIGRATIONS", migrations)
+    # `schema` gets the tables exactly as 0.1.1 created them, then migrates.
+    pg(schema, f"CREATE SCHEMA {schema}")
+    ddl = (FIXTURES / "postgres-0.1.1.sql").read_text(encoding="utf-8")
+    for statement in ddl.splitlines():
+        if statement and not statement.startswith("--"):
+            pg(schema, statement)
+    PostgresStore(POSTGRES_DSN, schema=schema, migrate=True).close()
+    new = fresh_schema()
+    try:
+        PostgresStore(POSTGRES_DSN, schema=new).close()
+        expected = pg_shape(schema)
+        assert len(expected["columns"]) > 30  # tables to compare
+        assert pg_shape(new) == expected
+    finally:
+        drop_schema(new)
