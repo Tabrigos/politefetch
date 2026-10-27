@@ -13,7 +13,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 
 from politefetch.errors import RefusalReason
-from politefetch.store.base import Freeze, HostState, HostUpdate, Outcome
+from politefetch.store.base import Freeze, HostState, HostUpdate, Outcome, rejected
 
 __all__ = ["HostPolicy", "parse_duration", "parse_retry_after", "parse_size"]
 
@@ -249,7 +249,7 @@ class HostPolicy:
         longest = now + max(self.min_interval, self.backoff_max)
         asked_long = retry_at is not None and retry_at > longest
         promised = None if asked_long else retry_at
-        if outcome.ok:
+        if outcome.ok or rejected(outcome):
             until = now + self.min_interval
             if promised is not None:
                 until = max(until, promised)

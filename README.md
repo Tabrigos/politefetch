@@ -235,6 +235,8 @@ minutes. To read them more often, ask the source what it allows and lower
               wire_bytes=response.num_bytes_downloaded,  # as transferred
               decoded_bytes=len(response.content),
           )
+          if response.status_code in (200, 304):
+              attempt.accept()  # you keep it: now its validators are saved
           return response.content if response.status_code == 200 else None
 
 
@@ -245,8 +247,11 @@ minutes. To read them more often, ask the source what it allows and lower
   gate never admitted.
 
   `attempt.conditional_headers` carries `If-None-Match` and
-  `If-Modified-Since` from the URL's last answer; `gate.may_fetch(url)` says
-  whether a request may start now. A policy also takes the backoff
+  `If-Modified-Since` from the URL's last accepted answer: `attempt.accept()`
+  says you kept the body, `attempt.reject(reason)` that you did not
+  (`"not_ready"`, `"unusable"`), and without either the next request asks
+  for the whole body. `gate.may_fetch(url)` says whether a request may start
+  now. A policy also takes the backoff
   (`backoff_base`, `backoff_factor`, `backoff_max`), a freeze with an expiry
   (`freeze_for`) and `respect_retry_after_429`, which honours the first 429
   that carries a Retry-After and freezes on the second.

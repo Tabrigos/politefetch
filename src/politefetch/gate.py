@@ -45,6 +45,8 @@ from politefetch.errors import NoPolicy, OutcomeNotSaved, Refused
 from politefetch.policy import HostPolicy, parse_duration, parse_retry_after
 from politefetch.status import HostStatus
 from politefetch.store.base import (
+    REJECTED,
+    REJECTIONS,
     DataTimeRecord,
     HostState,
     HostUpdate,
@@ -301,8 +303,10 @@ class Gate:
 
 
 class Attempt:
-    """One request through the gate. Record its outcome with `response` or
-    `failure` before the block ends."""
+    """One request through the gate. Record what the source did with
+    `response` or `failure` before the block ends, and, for a good answer,
+    the verdict on its body: `accept` when you take it, `reject` when not.
+    `reject("not_sent")` closes an attempt that sent nothing."""
 
     def __init__(self, gate: Gate, url: str, host: str, policy: HostPolicy) -> None:
         self.url = url
@@ -313,6 +317,7 @@ class Attempt:
         self._outcome: Outcome | None = None
         self._retry_at: datetime | None = None
         self._validators: Validators | None = None
+        self._verdict: str | None = None
         self._conditional: dict[str, str] = {}
         self.result: RequestRow | None = None
         """The closed row, once the block has ended (`None` if it could not be
@@ -354,6 +359,9 @@ class Attempt:
         reads Retry-After, ETag and Last-Modified; `retry_after`, if given,
         wins over the header. `wire_bytes` is the body as transferred,
         `decoded_bytes` after decoding.
+
+        The validators of a good answer are saved only if you then `accept`
+        it: without a verdict the next request asks for the whole body.
         """
         if not 100 <= status <= 599:
             raise ValueError(f"not an HTTP status: {status}")
@@ -402,6 +410,60 @@ class Attempt:
         retry_at = parse_retry_after(found.get("retry-after"), self._gate.clock.now())
         self._record(outcome, retry_at, None)
 
+    def accept(self) -> None:
+        """Record that you took the body of the good answer recorded with
+        `response`: its validators are saved, so the next request can be
+        conditional, and the host's failures start again from zero."""
+        outcome = self._outcome
+        if outcome is None or not outcome.ok:
+            raise RuntimeError(
+                "accept() needs a 2xx or 304 answer recorded with response() first"
+            )
+        self._give("accepted")
+
+    def reject(self, reason: str) -> None:
+        """Record why you did not take a good answer: `"not_ready"` (complete
+        but not ready, such as half a JSON), `"unusable"` (your parser
+        refused it), or `"not_sent"` for an attempt that sent nothing.
+
+        A rejected answer is still an answer: `min_interval` and Retry-After
+        hold, the failures stay as they were, and no validators are saved.
+        The row records it as `"rejected:<reason>"`.
+        """
+        if reason not in REJECTIONS:
+            known = ", ".join(sorted(REJECTIONS))
+            raise ValueError(f"reason must be one of {known}, got {reason!r}")
+        outcome = self._outcome
+        if reason == "not_sent":
+            if outcome is not None:
+                raise RuntimeError(
+                    "reject('not_sent') is for an attempt that sent nothing,"
+                    " and this one has an outcome"
+                )
+        elif outcome is None or not outcome.ok:
+            raise RuntimeError(
+                "reject() needs a 2xx or 304 answer recorded with response();"
+                " an answer that failed is recorded by response() or failure()"
+            )
+        self._give(reason)
+
+    def _give(self, verdict: str) -> None:
+        if self._verdict is not None:
+            raise RuntimeError("the verdict of this attempt is given once")
+        self._verdict = verdict
+
+    def _settled(self) -> tuple[Outcome | None, Validators | None]:
+        """The outcome to close with, and the validators to save, after the
+        verdict."""
+        outcome, verdict = self._outcome, self._verdict
+        if verdict == "not_sent":
+            return Outcome(ok=False, failure=REJECTED + verdict), None
+        if verdict in REJECTIONS and outcome is not None:
+            return replace(outcome, ok=False, failure=REJECTED + verdict), None
+        if verdict is None and outcome is not None and outcome.ok:
+            return outcome, None  # not vouched for: no validators
+        return outcome, self._validators
+
     def _record(
         self, outcome: Outcome, retry_at: datetime | None, validators: Validators | None
     ) -> None:
@@ -441,7 +503,7 @@ class Attempt:
                 self._conditional["If-Modified-Since"] = record.validators.last_modified
 
     def _close(self, exc: BaseException | None) -> None:
-        outcome = self._outcome
+        outcome, validators = self._settled()
         if outcome is None:
             if exc is None:
                 shape = UNRECORDED
@@ -471,7 +533,7 @@ class Attempt:
                     now=now,
                     outcome=outcome,
                     update=update,
-                    validators=self._validators,
+                    validators=validators,
                 )
             except Exception as error:
                 failed = error

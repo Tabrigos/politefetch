@@ -22,6 +22,7 @@ from politefetch.errors import RefusalReason, Refused
 
 __all__ = [
     "ABANDONED",
+    "REJECTIONS",
     "DataTimeRecord",
     "Freeze",
     "HostState",
@@ -39,12 +40,34 @@ __all__ = [
     "is_late",
     "log_abandoned",
     "next_utc_midnight",
+    "rejected",
 ]
 
 _log = logging.getLogger("politefetch.store")
 
 ABANDONED = "abandoned"
 """Failure shape recorded on rows closed by reconciliation."""
+
+REJECTIONS = ("not_ready", "not_sent", "unusable")
+"""Why a caller did not take an answer (`Attempt.reject`): the source
+answered (or nothing was sent), so the host is neither punished nor
+cleared. `not_ready`: complete, but not ready (empty, half a JSON);
+`unusable`: the caller's parser refused it; `not_sent`: nothing left."""
+
+REJECTED = "rejected:"
+"""Prefix of the failure shape a rejection is stored with
+(`"rejected:not_ready"`): apart from the failure shapes, such as the
+`"not_ready"` of a transfer cut short, which is a failure."""
+
+
+def rejected(outcome: "Outcome") -> bool:
+    """True for an outcome the caller rejected: an answer, not a failure."""
+    return (
+        not outcome.ok
+        and outcome.failure is not None
+        and outcome.failure.startswith(REJECTED)
+        and outcome.failure.removeprefix(REJECTED) in REJECTIONS
+    )
 
 
 class RowState(StrEnum):
@@ -486,17 +509,19 @@ def apply_close(state: HostState, outcome: Outcome, update: HostUpdate) -> HostS
     """Return the host state after closing one of its requests.
 
     A good answer may freeze the host only until a time the source asked for
-    (a Retry-After longer than the policy's own pauses), never for ever.
+    (a Retry-After longer than the policy's own pauses), never for ever. A
+    rejected answer (`REJECTIONS`) takes the promise as a good one does, and
+    leaves the failure counts as they were.
     """
-    if outcome.ok:
+    if outcome.ok or rejected(outcome):
         if update.freeze is not None and update.freeze.until is None:
             raise ValueError("a successful outcome cannot freeze the host for ever")
         return replace(
             state,
             not_before=update.not_before,
             not_before_reason=update.reason,
-            failures=0,
-            throttled=0,
+            failures=0 if outcome.ok else state.failures,
+            throttled=0 if outcome.ok else state.throttled,
             freeze=_longer_freeze(state.freeze, update.freeze),
             in_flight=max(state.in_flight - 1, 0),
         )

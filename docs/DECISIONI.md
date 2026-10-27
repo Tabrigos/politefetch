@@ -1478,3 +1478,47 @@ alla vecchia e la vecchia prende la riga "Superata da".
 - **Conseguenze**: la regola 5 di `SPEC.md` dice che le reti private sono
   bloccate salvo elenco; la prova con l'indirizzo pubblico vero resta, anche
   con un elenco attivo.
+
+## D-057 — Il verdetto del chiamante, separato dalla risposta della fonte
+
+- **Data e tappa**: 2026-10-28, issue #28, parte 1 (revisione
+  dell'architettura, R1 e R4)
+- **Contesto**: `response()` registrava insieme due fatti, cosa ha risposto
+  la fonte e se il chiamante teneva il corpo, e salvava i validatori a ogni
+  2xx. Un corpo rifiutato dopo (JSON a metà, un parser che fallisce, un crash
+  prima di salvare) veniva garantito: la GET condizionale successiva prendeva
+  un 304 e il dato andava perso finché la fonte non cambiava. Un 200 con il
+  corpo a metà non aveva una registrazione giusta: `response()` salvava i
+  validatori, `failure()` puniva l'host. Una GET senza condizioni non si
+  poteva fare con un fetcher.
+- **Decisione** (scelte del maintainer del 27/10: a-A):
+  - `response()` registra cosa ha fatto la fonte; `accept()` che il
+    chiamante ha preso il corpo, e solo allora si salvano i validatori e i
+    fallimenti si azzerano; `reject(motivo)` perché no: `not_ready`
+    (completo ma non pronto), `unusable` (il parser l'ha rifiutato),
+    `not_sent` (non è partito niente, l'ex #22);
+  - una risposta rifiutata è una risposta: `min_interval` e Retry-After
+    valgono, i fallimenti e i 429 restano com'erano, nessun validatore. Nel
+    registro è `"rejected:<motivo>"`, una forma a sé, perché `"not_ready"` è
+    già la forma di fallimento di un trasferimento interrotto;
+  - un 2xx senza verdetto non garantisce niente: nessun validatore, per il
+    resto come prima (i fallimenti si azzerano). Costa più byte, nessuna
+    richiesta in più;
+  - nei fetcher, un corpo vuoto o un JSON a metà dentro una risposta completa
+    è `reject("not_ready")`; un trasferimento interrotto (più corto del
+    `Content-Length`, gzip tagliato, connessione chiusa a metà) resta un
+    fallimento, perché un firewall taglia le connessioni allo stesso modo;
+    l'HTML al posto dei dati resta un fallimento;
+  - `parse=` sui fetcher gira dentro il tentativo, prima di leggere l'ora del
+    dato: se solleva, `reject("unusable")` e l'eccezione risale;
+    `conditional=False` toglie le intestazioni condizionali.
+- **Alternative scartate**: un 2xx senza verdetto ancora garantito (il
+  difetto resterebbe per tutto il codice che usa `gate.attempt`); `not_ready`
+  per ogni `SourceNotReady` (toglierebbe il backoff a una fonte che taglia le
+  connessioni); un `not_ready()` e un `not_sent()` come metodi a sé (tre
+  metodi dove ne basta uno).
+- **Conseguenze**: chi usa `gate.attempt` con un client proprio deve
+  chiamare `accept()` per avere di nuovo le richieste condizionali: lo
+  dicono il CHANGELOG ("Changed"), la skill e il README. Le issue #13 e #22
+  sono coperte da questa parte; il contatore per URL della #13 e la parte 2
+  (il limitatore, i fallimenti per URL) restano nella #28.

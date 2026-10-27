@@ -25,13 +25,15 @@ The gate: decides whether a request may start and keeps the request log.
 
 `Attempt(gate: Gate, url: str, host: str, policy: HostPolicy)`
 
-One request through the gate. Record its outcome with `response` or `failure` before the block ends.
+One request through the gate. Record what the source did with `response` or `failure` before the block ends, and, for a good answer, the verdict on its body: `accept` when you take it, `reject` when not. `reject("not_sent")` closes an attempt that sent nothing.
 
 - `.row` (property): The log row opened for this request.
 - `.outcome` (property)
 - `.conditional_headers` (property): `If-None-Match` and `If-Modified-Since` for this URL, from the validators of its last answer; send them with the request.
 - `.response(status: int, *, headers: Mapping[str, str] | Message | None = None, retry_after: str | None = None, wire_bytes: int | None = None, decoded_bytes: int | None = None) -> None`: Record that the source answered with HTTP `status`.
 - `.failure(shape: str, *, status: int | None = None, headers: Mapping[str, str] | Message | None = None, wire_bytes: int | None = None, decoded_bytes: int | None = None) -> None`: Record that no usable answer came, and how it failed (connect timeout, reset, refusal, TLS, truncated body, stale data...).
+- `.accept() -> None`: Record that you took the body of the good answer recorded with `response`: its validators are saved, so the next request can be conditional, and the host's failures start again from zero.
+- `.reject(reason: str) -> None`: Record why you did not take a good answer: `"not_ready"` (complete but not ready, such as half a JSON), `"unusable"` (your parser refused it), or `"not_sent"` for an attempt that sent nothing.
 
 ### `Gate`
 
@@ -353,7 +355,7 @@ What every adapter shares: the fetch cycle, the result, the failure shapes.
 
 Fetch through the gate with an asynchronous transport. Same meaning as `Fetcher`; store work runs in a worker thread.
 
-- `.get(url: str, *, expect: Literal['json', 'text', 'bytes'] = 'json', data_time: Callable[[Any], datetime] | None = None, max_age: timedelta | str | None = None, max_ahead: timedelta | str = timedelta(seconds=900), stuck_after: int | timedelta | str | None = None, headers: Mapping[str, str] | None = None, allow_empty: bool = False, max_bytes: int | str | None = None) -> FetchResult`
+- `.get(url: str, *, expect: Literal['json', 'text', 'bytes'] = 'json', data_time: Callable[[Any], datetime] | None = None, max_age: timedelta | str | None = None, max_ahead: timedelta | str = timedelta(seconds=900), stuck_after: int | timedelta | str | None = None, headers: Mapping[str, str] | None = None, allow_empty: bool = False, max_bytes: int | str | None = None, parse: Callable[[Any], Any] | None = None, conditional: bool = True) -> FetchResult`
 - `.aclose() -> None`
 
 ### `AsyncRawResponse`
@@ -413,7 +415,7 @@ A fetch that passed every check.
 
 Fetch through the gate with a synchronous transport.
 
-- `.get(url: str, *, expect: Literal['json', 'text', 'bytes'] = 'json', data_time: Callable[[Any], datetime] | None = None, max_age: timedelta | str | None = None, max_ahead: timedelta | str = timedelta(seconds=900), stuck_after: int | timedelta | str | None = None, headers: Mapping[str, str] | None = None, allow_empty: bool = False, max_bytes: int | str | None = None) -> FetchResult`: Fetch `url` once, if the gate allows it, and check what comes back.
+- `.get(url: str, *, expect: Literal['json', 'text', 'bytes'] = 'json', data_time: Callable[[Any], datetime] | None = None, max_age: timedelta | str | None = None, max_ahead: timedelta | str = timedelta(seconds=900), stuck_after: int | timedelta | str | None = None, headers: Mapping[str, str] | None = None, allow_empty: bool = False, max_bytes: int | str | None = None, parse: Callable[[Any], Any] | None = None, conditional: bool = True) -> FetchResult`: Fetch `url` once, if the gate allows it, and check what comes back.
 - `.close() -> None`
 
 ### `IncompleteBody`
@@ -552,6 +554,10 @@ The store interface, its records, and the rules every store applies.
 ### `ABANDONED`
 
 `'abandoned'`
+
+### `REJECTIONS`
+
+`('not_ready', 'not_sent', 'unusable')`
 
 ### `DataTimeRecord`
 
@@ -732,6 +738,10 @@ True for a row the reconciliation closed as abandoned, whose request has not rep
 Say that a row was closed as abandoned: its process died, or did not close it, and the host paused for it.
 
 ### `next_utc_midnight(now: datetime) -> datetime`
+
+### `rejected(outcome: Outcome) -> bool`
+
+True for an outcome the caller rejected: an answer, not a failure.
 
 ## `politefetch.store.memory`
 

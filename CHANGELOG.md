@@ -42,6 +42,21 @@ All notable changes to politefetch. The format follows
 
 ### Changed
 
+- **The caller's verdict is recorded apart from the source's answer**
+  (#28, part 1; covers #22). `attempt.accept()` says you took the body of a
+  good answer: only then are its validators saved and the failures reset.
+  `attempt.reject(reason)` says why not (`"not_ready"`, `"unusable"`, or
+  `"not_sent"` for an attempt that sent nothing): still an answer,
+  `min_interval` holds and the failures stay as they were; the row records
+  `"rejected:<reason>"`. **With `gate.attempt` and a client of your own,
+  call `accept()`**: a 2xx without a verdict saves no validators, so the next
+  request asks for the whole body. The fetchers call it themselves.
+- The fetchers record an empty body or half a JSON in a complete answer as
+  `reject("not_ready")`, an answer, instead of a failure; a transfer cut
+  short stays a failure. They take `parse=`, run inside the attempt (if it
+  raises, the answer is rejected as `"unusable"` and the exception goes on),
+  and `conditional=False`.
+
 - `status`, `statuses` and `may_fetch` write nothing (#29): a dashboard no
   longer competes for the write lock with the process that fetches, and can
   run with read-only access. A row in flight past `reconcile_after` shows in

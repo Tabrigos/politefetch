@@ -54,4 +54,5 @@ def fetch(gate: Gate, url: str, *, timeout: float = 0.3) -> Attempt:
                     wire_bytes=len(body),
                     decoded_bytes=len(body),
                 )
+                attempt.accept()
     return attempt

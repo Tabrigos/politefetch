@@ -201,7 +201,7 @@ message text.
 | `FetchFailed` | Sent, no usable answer, or still arriving at the `deadline`; `shape`, `status`, and `note` when the answer froze the host (with how to lift it). The gate already recorded it and grew the pause | Do not retry now: the next call will be refused until the pause ends |
 | `OutcomeNotSaved` | Sent, but the store could not save how it ended; `shape`, `status`. The host stays blocked until the reconciliation | Check the store (a lock held too long); a person may need to apply a lost 403/429 by hand |
 | `NoPolicy` | The host has no policy and the gate no default; nothing was sent. `host` | Add a `HostPolicy` for it |
-| `SourceNotReady` | Truncated or empty body (the source is rewriting its file), JSON cut short included even when `Content-Length` matches. Recorded as a failure: the pause of the host grows | Wait for the next scheduled run; alert when `failures` in `gate.status` keeps growing |
+| `SourceNotReady` | Empty body, or JSON cut short in a complete answer (the source is rewriting its file): recorded as a rejected answer (`"rejected:not_ready"`), `min_interval` holds and the failures stay. A transfer cut short (shorter than its `Content-Length`, gzip cut, connection broken mid-body) is recorded as a failure: the pause of the host grows | Wait for the next scheduled run; alert when it keeps coming back in `recent` |
 | `UnexpectedContent` | HTML where data was expected (JSON that parses is data even when served as `text/html`), a redirect, or a body that does not decode | Report it; do not follow the redirect yourself |
 | `BodyTooLarge` | The body is longer than `max_bytes` or the byte budget left; reading stopped there | Raise `max_bytes` or `byte_budget` if the size is expected |
 | `StaleData` | Data older than `max_age`; `data_time`, `max_age`, `age`, and `result` with what came back. Recorded as an answer: the source is not slowed down | Use `result` with a warning, or the previous data, or wait |
@@ -241,12 +241,24 @@ def fetch_with_my_client(gate: Gate, url: str) -> bytes | None:
             wire_bytes=response.num_bytes_downloaded,  # as transferred
             decoded_bytes=len(response.content),
         )
+        if response.status_code in (200, 304):
+            attempt.accept()  # you keep it: now its validators are saved
     return response.content if response.status_code == 200 else None
 ```
 
 Record exactly one outcome per attempt: `attempt.response(status, ...)` for
 any HTTP answer (the policy decides what a status means), or
-`attempt.failure(shape, ...)` when none came. Each adapter module has a
+`attempt.failure(shape, ...)` when none came. Then, for a good answer, the
+verdict on its body: `attempt.accept()` when you take it (only then are its
+validators saved, and the next request is conditional), or
+`attempt.reject(reason)` when you do not: `"not_ready"` for a complete body
+that is not ready (empty, half a JSON: `check_body` raises `SourceNotReady`),
+`"unusable"` when your parser refuses it. A rejected answer is still an
+answer: `min_interval` holds and the failures stay as they were. Without a
+verdict nothing is vouched for, and the next request asks for the whole
+body. `attempt.reject("not_sent")` closes an attempt that sent nothing.
+Never `accept` a body you then throw away: a 304 would follow, and you would
+have nothing. Each adapter module has a
 `failure_shape(error)` that names its client's exceptions with the shapes
 of `FetchFailed.shape` (`politefetch.adapters.urllib` and
 `politefetch.adapters.requests` too). An attempt left without an outcome,
