@@ -312,9 +312,19 @@ process: child processes started by other means than `spawn` (below) run
 without it. The
 `source_simulator` fixture is a real HTTP server on 127.0.0.1 with scenarios
 for the bad days of a source (`politefetch.testing.simulator`: `Respond`,
-`Html`, `TooManyRequests`, `Truncated`, `NoAnswer`, `Reset`, `Validated`,
-`stuck_json`, `advancing_json`) and a counter of the requests that actually
-reached it. Drive time with `FakeClock`.
+`Html`, `TooManyRequests`, `Truncated`, `HalfJson`, `NoAnswer`, `Reset`,
+`Validated`, `stuck_json`, `advancing_json`) and a counter of the requests
+that actually reached it. Drive time with `FakeClock`.
+
+The two truncations are different failures. `Truncated` closes the
+connection before the announced `Content-Length`, a transfer that broke off:
+the fetchers raise `SourceNotReady`, while your own client inside
+`gate.attempt` raises its own error (httpx RemoteProtocolError, requests
+ChunkedEncodingError, urllib IncompleteRead). `HalfJson` sends a complete
+answer, length matching, whose JSON stops midway: what a source rewriting
+its file serves most often. No client complains; the fetchers raise
+`SourceNotReady` ("JSON ends mid-way"), and with your own client only
+`check_body` catches it.
 
 ```python
 from datetime import UTC, datetime, timedelta

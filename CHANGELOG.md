@@ -24,6 +24,10 @@ All notable changes to politefetch. The format follows
   one lost during a cancellation included. Business outcomes log nothing.
 - `Store.hosts()`, and `gate.statuses()` with a `default` policy covers every
   host the store knows, not only those with a policy of their own (#30).
+- The simulator scenario `HalfJson`: a complete answer, its Content-Length
+  matching, whose JSON stops midway, as served by a source rewriting its
+  file. The skill tells it from `Truncated` and says which error the caller
+  sees for each (#20).
 
 ### Changed
 

@@ -13,6 +13,7 @@ import pytest
 from politefetch.testing.counter import RequestCounter
 from politefetch.testing.simulator import (
     Drip,
+    HalfJson,
     Html,
     NoAnswer,
     Reset,
@@ -141,6 +142,24 @@ def test_truncated_body(source: SourceSimulator) -> None:
         assert response.headers["Content-Length"] == "200"
         with pytest.raises(http.client.IncompleteRead):
             response.read()
+
+
+def test_half_json_is_a_complete_answer(source: SourceSimulator) -> None:
+    source.scenario = HalfJson(b'{"time": "2026-')
+    status, headers, body = get(source.url())
+    assert status == 200
+    assert headers["Content-Type"] == "application/json"
+    assert headers["Content-Length"] == str(len(body))
+    assert body == b'{"time": "2026-'
+    assert source.counter.requests[0].scenario == "half json"
+
+
+def test_half_json_by_default_is_json_cut_short(source: SourceSimulator) -> None:
+    source.scenario = HalfJson()
+    body = get(source.url())[2]
+    with pytest.raises(json.JSONDecodeError):
+        json.loads(body)
+    assert body.startswith(b"{")
 
 
 def test_drip_sends_the_body_one_byte_at_a_time(source: SourceSimulator) -> None:

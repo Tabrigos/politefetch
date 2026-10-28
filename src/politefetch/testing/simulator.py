@@ -11,7 +11,8 @@ it passes the network barrier. Every request that arrives is counted before
 the scenario plays (`politefetch.testing.counter`).
 
 Scenarios: `Respond` (any status, body, headers), `TooManyRequests`, `Html`,
-`Truncated` (body shorter than its Content-Length), `Drip` (the body one
+`Truncated` (body shorter than its Content-Length), `HalfJson` (a complete
+answer whose JSON stops midway), `Drip` (the body one
 byte at a time), `NoAnswer` (holds the connection until the simulator
 stops), `Reset` (closes with a TCP reset),
 `stuck_json` and `advancing_json` (data whose time stays put or moves on),
@@ -40,6 +41,7 @@ from politefetch.testing.counter import RequestCounter, SourceRequest
 
 __all__ = [
     "Drip",
+    "HalfJson",
     "Html",
     "NoAnswer",
     "Reset",
@@ -228,6 +230,18 @@ class Truncated:
             self.body,
             declared_length=self.declared_length,
         )
+
+
+class HalfJson(Respond):
+    """A complete answer whose JSON stops midway: the Content-Length matches
+    the body, as when a source serves a file it is still rewriting. No HTTP
+    client complains; only the content check does (`Truncated` is the other
+    truncation, a connection that closes before the announced length)."""
+
+    def __init__(
+        self, body: bytes = b'{"time": "20', *, name: str = "half json"
+    ) -> None:
+        super().__init__(200, body, name=name)
 
 
 class Drip:

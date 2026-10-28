@@ -885,6 +885,12 @@ Send the head at once, then the body one byte every `every` seconds: a source th
 
 - `.serve(conn: socket, request: SourceRequest, stop: Event) -> None`
 
+### `HalfJson`
+
+`HalfJson(body: bytes = b'{"time": "20', *, name: str = 'half json')` (subclass of `Respond`)
+
+A complete answer whose JSON stops midway: the Content-Length matches the body, as when a source serves a file it is still rewriting. No HTTP client complains; only the content check does (`Truncated` is the other truncation, a connection that closes before the announced length).
+
 ### `Html`
 
 `Html(status: int = 200, *, name: str = 'html')` (subclass of `Respond`)
