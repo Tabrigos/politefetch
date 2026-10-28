@@ -202,7 +202,7 @@ message text.
 | `OutcomeNotSaved` | Sent, but the store could not save how it ended; `shape`, `status`. The host stays blocked until the reconciliation | Check the store (a lock held too long); a person may need to apply a lost 403/429 by hand |
 | `NoPolicy` | The host has no policy and the gate no default; nothing was sent. `host` | Add a `HostPolicy` for it |
 | `SourceNotReady` | Truncated or empty body (the source is rewriting its file), JSON cut short included even when `Content-Length` matches. Recorded as a failure: the pause of the host grows | Wait for the next scheduled run; alert when `failures` in `gate.status` keeps growing |
-| `UnexpectedContent` | HTML where data was expected, a redirect, or a body that does not decode | Report it; do not follow the redirect yourself |
+| `UnexpectedContent` | HTML where data was expected (JSON that parses is data even when served as `text/html`), a redirect, or a body that does not decode | Report it; do not follow the redirect yourself |
 | `BodyTooLarge` | The body is longer than `max_bytes` or the byte budget left; reading stopped there | Raise `max_bytes` or `byte_budget` if the size is expected |
 | `StaleData` | Data older than `max_age`; `data_time`, `max_age`, `age`, and `result` with what came back. Recorded as an answer: the source is not slowed down | Use `result` with a warning, or the previous data, or wait |
 | `StuckSource` | The data time has not moved for `stuck_after` (a number of reads, a 304 included, or a duration such as `"6h"`); a data time earlier than one already seen counts as not moving. `data_time`, `reads`, `since`, `result` | Alert a person: the source is up but frozen |

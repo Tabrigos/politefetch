@@ -96,9 +96,14 @@ def _first_tag(body: bytes) -> bytes:
             return head
 
 
-def _looks_like_html(body: bytes, content_type: str | None) -> bool:
-    if content_type and content_type.split(";")[0].strip().lower() in _HTML_TYPES:
-        return True
+def _served_as_html(content_type: str | None) -> bool:
+    if not content_type:
+        return False
+    return content_type.split(";")[0].strip().lower() in _HTML_TYPES
+
+
+def _looks_like_html(body: bytes) -> bool:
+    """Tell an HTML page by its first tag, whatever its Content-Type."""
     tag = _first_tag(body)
     for start in _HTML_STARTS:
         if tag.startswith(start):
@@ -146,12 +151,17 @@ def check_body(
         return body if expect == "bytes" else ""
     if expect == "bytes":
         return body
-    if _looks_like_html(body, content_type):
+    # JSON is judged by the body: one that parses is data even when served
+    # as a page. Text has nothing else to go by, so its Content-Type counts.
+    as_html = _served_as_html(content_type)
+    if _looks_like_html(body) or (as_html and expect == "text"):
         raise UnexpectedContent(f"HTML where {expect} was expected", url=url)
     charset = _charset(content_type)
     try:
         text = body.removeprefix(_BOM).decode(charset)
     except (UnicodeDecodeError, LookupError):
+        if as_html:
+            raise UnexpectedContent("HTML where json was expected", url=url) from None
         if expect == "json" and _open_at_end(body.decode("utf-8", errors="replace")):
             raise SourceNotReady("JSON ends mid-way", url=url) from None
         raise UnexpectedContent(f"text that is not valid {charset}", url=url) from None
@@ -160,6 +170,8 @@ def check_body(
     try:
         return json.loads(text)
     except json.JSONDecodeError as error:
+        if as_html:
+            raise UnexpectedContent("HTML where json was expected", url=url) from error
         if _open_at_end(text):
             raise SourceNotReady("JSON ends mid-way", url=url) from error
         raise UnexpectedContent(f"not valid JSON: {error.msg}", url=url) from error

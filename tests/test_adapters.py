@@ -247,6 +247,11 @@ def test_html_instead_of_json(get: Get, gate: Gate, source: SourceSimulator) -> 
     assert (outcome.ok, outcome.failure) == (False, "unexpected_content")
 
 
+def test_json_served_as_html_is_data(get: Get, source: SourceSimulator) -> None:
+    source.scenario = Respond(body=b'{"a": 1}', content_type="text/html")
+    assert get(source.url()).content == {"a": 1}
+
+
 def test_stale_data(get: Get, gate: Gate, source: SourceSimulator) -> None:
     source.scenario = stuck_json(T - timedelta(hours=5))
     with pytest.raises(StaleData):

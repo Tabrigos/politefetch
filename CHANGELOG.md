@@ -40,6 +40,10 @@ All notable changes to politefetch. The format follows
   are none. A process killed mid-request blocked its host for an hour; a
   value given by hand still wins. `Gate.bound_requests` is how the fetchers
   tell the gate.
+- With `expect="json"`, a body that parses as JSON is data even when served
+  as `text/html`; an HTML page is still recognised by its first tag, and a
+  body served as HTML that does not parse is still `UnexpectedContent`.
+  Text keeps the Content-Type check (#15).
 
 ### Fixed
 
