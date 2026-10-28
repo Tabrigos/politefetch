@@ -4,6 +4,15 @@ All notable changes to politefetch. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions follow
 [Semantic Versioning](https://semver.org/).
 
+## Unreleased
+
+### Added
+
+- `evals/trigger.json`: twenty requests that check the skill activates when
+  a task needs the library, mostly without naming it, and stays quiet on
+  near misses. On 0.1.1 with Sonnet 5.5 (Claude Code 2.1.312, three runs
+  each, 2026-10-27): 10 of 10 positives and 10 of 10 near misses passed.
+
 ## 0.1.1 — 2026-10-26
 
 ### Fixed
