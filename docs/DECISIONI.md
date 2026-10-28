@@ -1442,3 +1442,39 @@ alla vecchia e la vecchia prende la riga "Superata da".
   diventerebbe `SourceNotReady`, cioè "riprova più tardi", per una sorgente
   che ha risposto con una pagina).
 - **Conseguenze**: `SPEC.md` (controlli sul contenuto) e la skill lo dicono.
+## D-056 — Le reti private che la barriera lascia passare
+
+- **Data e tappa**: 2026-10-27, issue #19
+- **Contesto**: la barriera lascia passare solo il loopback e i socket Unix
+  (D-008); una suite che parla con servizi in container accanto ai test non
+  aveva modo di ammetterli. L'elenco non deve diventare un modo di uscire su
+  Internet.
+- **Decisione**:
+  - l'opzione `politefetch_private_networks` (una rete per riga, o una lista
+    in `pyproject.toml`), vuota di default; il plugin la passa a
+    `NetworkBarrier(private_networks=...)`;
+  - sono ammesse solo reti contenute in 10.0.0.0/8, 172.16.0.0/12,
+    192.168.0.0/16 e fc00::/7, scritte con un elenco esplicito invece di
+    `is_private` di `ipaddress`, che conta come private anche il link-local
+    169.254.0.0/16 (il servizio di metadati dei cloud), i TEST-NET, 0.0.0.0/8,
+    240.0.0.0/4 e gli indirizzi IPv4 mappati in IPv6 (verificato su Python
+    3.12.14). Restano fuori anche lo spazio condiviso dei provider
+    100.64.0.0/10 e le reti IPv4 mappate scritte come rete IPv6;
+  - una rete fuori da quegli intervalli, o una riga che non è una rete
+    (anche con bit di host), ferma la sessione con un errore d'uso al
+    `pytest_configure`, prima di ogni test;
+  - `is_allowed_address` controlla di nuovo gli intervalli privati per ogni
+    indirizzo: una rete passata senza la verifica della barriera (anche
+    `0.0.0.0/0`) non apre altro. Un indirizzo IPv4 mappato in IPv6 si
+    confronta con le reti IPv4;
+  - le risoluzioni DNS restano bloccate per ogni nome diverso da
+    `localhost`: anche quelle mandano un pacchetto, e un nome non dice dove
+    va. I servizi si indicano per indirizzo;
+  - i figli di `processes.spawn` restano con la barriera senza reti: è il
+    caso più prudente, e passare l'elenco al figlio è un cambiamento a sé.
+- **Alternative scartate**: `is_private` di `ipaddress` (vedi sopra);
+  un'opzione da riga di comando propria (c'è già `-o` di pytest); ammettere le risoluzioni dei nomi quando c'è un elenco (il
+  resolver può stare su Internet).
+- **Conseguenze**: la regola 5 di `SPEC.md` dice che le reti private sono
+  bloccate salvo elenco; la prova con l'indirizzo pubblico vero resta, anche
+  con un elenco attivo.

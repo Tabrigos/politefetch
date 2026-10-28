@@ -32,6 +32,13 @@ All notable changes to politefetch. The format follows
   from its `clock` (`SourceSimulator(clock=...)`, or set on a running
   simulator; the system clock by default). The skill shows how to count the
   requests per simulated hour with a `FakeClock` (#21).
+- `politefetch_private_networks` in the pytest configuration, empty by
+  default, lists private networks that the barrier lets through, for
+  services in containers next to the tests (#19). Only networks inside
+  10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16 and fc00::/7 are accepted;
+  any other stops the session with a usage error, and a public address
+  stays blocked. `NetworkBarrier(private_networks=...)` and
+  `is_allowed_address` take the same list.
 
 ### Changed
 

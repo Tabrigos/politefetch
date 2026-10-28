@@ -5,6 +5,9 @@ nothing until asked:
 
 - `politefetch_barrier = true` in the pytest configuration puts every test
   behind the network barrier;
+- `politefetch_private_networks`, one network per line and empty by default,
+  lists the private networks the barrier lets through (containers next to
+  the tests); a network that is not private stops the session;
 - the `network_barrier` fixture puts one test behind it (or returns the
   active barrier);
 - the `source_simulator` fixture starts a `SourceSimulator` for one test.
@@ -24,6 +27,7 @@ from politefetch.testing.barrier import NetworkBarrier
 from politefetch.testing.simulator import SourceSimulator
 
 INI_SWITCH = "politefetch_barrier"
+PRIVATE_NETWORKS = "politefetch_private_networks"
 EXPECTS_BLOCKED = "politefetch_expects_blocked"
 
 
@@ -34,9 +38,19 @@ def pytest_addoption(parser: pytest.Parser) -> None:
         default=False,
         help="politefetch: run every test behind the network barrier",
     )
+    parser.addini(
+        PRIVATE_NETWORKS,
+        type="linelist",
+        default=[],
+        help="politefetch: private networks the network barrier lets through",
+    )
 
 
 def pytest_configure(config: pytest.Config) -> None:
+    try:
+        NetworkBarrier(private_networks=config.getini(PRIVATE_NETWORKS))
+    except ValueError as error:
+        raise pytest.UsageError(f"{PRIVATE_NETWORKS}: {error}") from None
     config.addinivalue_line(
         "markers",
         f"{EXPECTS_BLOCKED}: the test hits the politefetch network barrier on purpose",
@@ -45,8 +59,10 @@ def pytest_configure(config: pytest.Config) -> None:
 
 @pytest.fixture
 def network_barrier(request: pytest.FixtureRequest) -> Iterator[NetworkBarrier]:
-    """Block every outbound connection except loopback and Unix sockets."""
-    with NetworkBarrier() as barrier:
+    """Block every outbound connection except loopback, Unix sockets and the
+    private networks listed in `politefetch_private_networks`."""
+    networks: list[str] = request.config.getini(PRIVATE_NETWORKS)
+    with NetworkBarrier(private_networks=networks) as barrier:
         yield barrier
         blocked = list(barrier.blocked)
     if blocked and request.node.get_closest_marker(EXPECTS_BLOCKED) is None:

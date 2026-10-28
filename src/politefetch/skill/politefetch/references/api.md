@@ -841,7 +841,7 @@ The politefetch pytest plugin.
 
 ### fixture `network_barrier`
 
-Block every outbound connection except loopback and Unix sockets.
+Block every outbound connection except loopback, Unix sockets and the private networks listed in `politefetch_private_networks`.
 
 ### fixture `source_simulator`
 
@@ -853,10 +853,11 @@ A socket barrier for tests: no packet leaves the machine.
 
 ### `NetworkBarrier`
 
-`NetworkBarrier()`
+`NetworkBarrier(private_networks: Iterable[str | IPv4Network | IPv6Network] = ())`
 
 Block network access for as long as it is active.
 
+- `.private_networks` (property): The private networks this barrier lets through, besides loopback.
 - `.active` (property)
 - `.current() -> NetworkBarrier | None`: The barrier active right now, if any.
 - `.original(name: str) -> Callable[..., Any]`: Return the unpatched `socket` function or method called `name`.
@@ -869,7 +870,7 @@ Block network access for as long as it is active.
 
 A test tried to reach the network.
 
-### `is_allowed_address(family: int, address: object) -> bool`
+### `is_allowed_address(family: int, address: object, private_networks: Iterable[IPv4Network | IPv6Network] = ()) -> bool`
 
 Tell whether a socket of `family` may reach `address`.
 

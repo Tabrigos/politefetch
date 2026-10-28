@@ -265,6 +265,8 @@ minutes. To read them more often, ask the source what it allows and lower
     behind a socket barrier: any attempt to leave the machine raises
     `NetworkBlockedError` before a packet is sent, loopback and Unix sockets
     keep working, and a test whose code swallowed the error fails anyway;
+    `politefetch_private_networks` lists the private networks it lets
+    through as well (containers next to the tests), empty by default;
   - the `source_simulator` fixture is a real HTTP server on 127.0.0.1 that
     plays the bad days of a source (never answers, resets, 429, truncated
     body, HTML, stuck data) and counts the requests that actually reached it;

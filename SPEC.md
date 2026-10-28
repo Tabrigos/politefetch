@@ -37,8 +37,10 @@ promised must outlive the process**.
    on restart. It is the safety net that does not depend on any other logic.
 5. **Tests are an outbound path.** The library offers a socket barrier for
    pytest, with proof that a real call fails and a simulated one passes. Only
-   loopback and Unix sockets pass, private networks are blocked too, and the
-   proof uses a real public IP, not a TEST-NET documentation address.
+   loopback and Unix sockets pass, private networks are blocked too unless
+   the test suite lists them (only networks inside the private ranges are
+   accepted, and a public address stays blocked), and the proof uses a real
+   public IP, not a TEST-NET documentation address.
 6. **The worst case is counted.** A source simulator with scenarios (refuses,
    does not respond, 429, responds truncated, HTML, stuck data, process
    killed with the request already sent, restarts in a loop) and a counter

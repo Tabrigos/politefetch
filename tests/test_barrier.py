@@ -13,6 +13,7 @@ import socket
 import ssl
 import sys
 import urllib.request
+from collections.abc import Iterator
 from pathlib import Path
 from types import ModuleType
 
@@ -392,3 +393,185 @@ def test_unknown_hostnames_never_pass(host: str) -> None:
 
 def test_unknown_families_are_blocked() -> None:
     assert not is_allowed_address(-1, ("127.0.0.1", 80))
+
+
+# --- private networks, when listed -----------------------------------------
+
+PRIVATE_RANGES = [
+    ipaddress.ip_network(network)
+    for network in ("10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16", "fc00::/7")
+]
+EVERYTHING = [ipaddress.ip_network("0.0.0.0/0"), ipaddress.ip_network("::/0")]
+
+
+@st.composite
+def private_networks(
+    draw: st.DrawFn,
+) -> ipaddress.IPv4Network | ipaddress.IPv6Network:
+    """A network inside one of the private ranges, of any size."""
+    whole = draw(st.sampled_from(PRIVATE_RANGES))
+    prefix = draw(st.integers(whole.prefixlen, whole.max_prefixlen))
+    offset = draw(st.integers(0, whole.num_addresses - 1))
+    return ipaddress.ip_network((whole.network_address + offset, prefix), strict=False)
+
+
+def family_of(ip: ipaddress.IPv4Address | ipaddress.IPv6Address) -> int:
+    return socket.AF_INET if ip.version == 4 else socket.AF_INET6
+
+
+def reached(
+    ip: ipaddress.IPv4Address | ipaddress.IPv6Address,
+) -> ipaddress.IPv4Address | ipaddress.IPv6Address:
+    """The address a connection to `ip` reaches: IPv4-mapped is IPv4."""
+    if isinstance(ip, ipaddress.IPv6Address) and ip.ipv4_mapped is not None:
+        return ip.ipv4_mapped
+    return ip
+
+
+def test_a_listed_private_network_passes_and_nothing_else(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # A fake socket: a listed address must reach connect without a packet
+    # leaving the machine.
+    monkeypatch.setattr(socket, "socket", SocketWithoutSendmsg)
+    fresh = load_fresh_barrier()
+    sock = SocketWithoutSendmsg()
+    with fresh.NetworkBarrier(private_networks=["10.0.0.0/8"]) as guard:
+        sock.connect(("10.1.2.3", 5432))
+        for address in (PUBLIC_IP, "192.168.1.1", "172.17.0.2", TEST_NET_IP):
+            with pytest.raises(fresh.NetworkBlockedError):
+                sock.connect((address, 5432))
+        with pytest.raises(fresh.NetworkBlockedError):
+            sock.sendto(b"query", (PUBLIC_IP, 53))
+        sock.sendto(b"query", ("10.9.9.9", 53))
+    assert sock.reached == [("10.1.2.3", 5432), ("10.9.9.9", 53)]
+    assert guard.blocked == [
+        f"{PUBLIC_IP}:5432",
+        "192.168.1.1:5432",
+        "172.17.0.2:5432",
+        f"{TEST_NET_IP}:5432",
+        f"{PUBLIC_IP}:53",
+    ]
+
+
+@pytest.fixture
+def listed(network_barrier: NetworkBarrier) -> Iterator[NetworkBarrier]:
+    """The suite's barrier, replaced by one that lets 10.0.0.0/8 through."""
+    network_barrier.disable()
+    try:
+        with NetworkBarrier(private_networks=["10.0.0.0/8"]) as barrier:
+            yield barrier
+    finally:
+        network_barrier.enable()
+
+
+def test_a_public_address_is_still_blocked_with_networks_listed(
+    listed: NetworkBarrier,
+) -> None:
+    assert NetworkBarrier.current() is listed
+    with (
+        socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock,
+        pytest.raises(NetworkBlockedError, match=PUBLIC_IP),
+    ):
+        sock.connect((PUBLIC_IP, 443))
+    with pytest.raises(NetworkBlockedError):
+        urllib.request.urlopen(f"http://{PUBLIC_IP}/", timeout=5)
+    assert listed.blocked == [f"{PUBLIC_IP}:443", f"{PUBLIC_IP}:80"]
+
+
+@pytest.mark.usefixtures("listed")
+def test_names_are_still_looked_up_only_for_loopback() -> None:
+    # A lookup sends a packet to a DNS server: listing networks does not
+    # open it.
+    with pytest.raises(NetworkBlockedError):
+        socket.getaddrinfo("db.internal", 5432)
+    assert socket.getaddrinfo("10.1.2.3", 5432)
+
+
+def test_the_listed_networks_are_parsed() -> None:
+    barrier = NetworkBarrier(
+        private_networks=["10.0.0.0/8", "172.17.0.0/16", "192.168.1.5", "fd12::/16"]
+    )
+    assert barrier.private_networks == (
+        ipaddress.ip_network("10.0.0.0/8"),
+        ipaddress.ip_network("172.17.0.0/16"),
+        ipaddress.ip_network("192.168.1.5/32"),
+        ipaddress.ip_network("fd12::/16"),
+    )
+    assert NetworkBarrier().private_networks == ()
+
+
+@pytest.mark.parametrize(
+    "network",
+    [
+        "1.1.1.0/24",  # public
+        "0.0.0.0/0",  # everything
+        "::/0",
+        "8.0.0.0/6",  # holds 10.0.0.0/8 and public addresses
+        "10.0.0.0/7",  # 10.0.0.0/8 and the public 11.0.0.0/8
+        "10.0.0.1/8",  # host bits set
+        "169.254.0.0/16",  # link-local: the metadata service of clouds
+        "100.64.0.0/10",  # shared address space of providers
+        "192.0.2.0/24",  # TEST-NET
+        "2001:db8::/32",
+        "::ffff:10.0.0.0/104",  # IPv4-mapped
+        "not a network",
+    ],
+)
+def test_a_network_that_is_not_private_is_refused(network: str) -> None:
+    with pytest.raises(ValueError, match="private network"):
+        NetworkBarrier(private_networks=[network])
+
+
+@given(st.lists(private_networks(), max_size=3), st.ip_addresses())
+def test_an_address_passes_only_if_loopback_or_listed(
+    networks: list[ipaddress.IPv4Network | ipaddress.IPv6Network],
+    ip: ipaddress.IPv4Address | ipaddress.IPv6Address,
+) -> None:
+    allowed = is_allowed_address(family_of(ip), (str(ip), 443), networks)
+    target = reached(ip)
+    assert allowed == (target.is_loopback or any(target in n for n in networks))
+
+
+@given(private_networks(), st.data())
+def test_every_address_of_a_listed_network_passes(
+    network: ipaddress.IPv4Network | ipaddress.IPv6Network, data: st.DataObject
+) -> None:
+    offset = data.draw(st.integers(0, network.num_addresses - 1))
+    ip = network.network_address + offset
+    assert is_allowed_address(family_of(ip), (str(ip), 5432), [network])
+
+
+@given(st.ip_addresses())
+def test_no_global_address_passes_whatever_is_listed(
+    ip: ipaddress.IPv4Address | ipaddress.IPv6Address,
+) -> None:
+    # Even networks handed to the check without going through the barrier,
+    # which refuses them, open only the private ranges.
+    for networks in (PRIVATE_RANGES, EVERYTHING):
+        allowed = is_allowed_address(family_of(ip), (str(ip), 443), networks)
+        target = reached(ip)
+        assert allowed == (
+            target.is_loopback or any(target in n for n in PRIVATE_RANGES)
+        )
+        if ip.is_global:
+            assert not allowed
+
+
+@given(st.ip_addresses(), st.integers(0, 128))
+def test_the_barrier_accepts_only_networks_inside_the_private_ranges(
+    ip: ipaddress.IPv4Address | ipaddress.IPv6Address, prefix: int
+) -> None:
+    network = ipaddress.ip_network((ip, min(prefix, ip.max_prefixlen)), strict=False)
+    inside = any(
+        network.version == whole.version and network.subnet_of(whole)  # type: ignore[arg-type]
+        for whole in PRIVATE_RANGES
+    )
+    try:
+        NetworkBarrier(private_networks=[network])
+    except ValueError:
+        assert not inside
+    else:
+        assert inside
+        assert not network.network_address.is_global
+        assert not network.broadcast_address.is_global
