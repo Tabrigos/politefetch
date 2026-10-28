@@ -224,6 +224,7 @@ block from an outage; the library does not guess.
 import httpx
 
 from politefetch import Gate
+from politefetch.adapters.httpx import failure_shape
 
 
 def fetch_with_my_client(gate: Gate, url: str) -> bytes | None:
@@ -231,8 +232,8 @@ def fetch_with_my_client(gate: Gate, url: str) -> bytes | None:
     with gate.attempt(url) as attempt:  # raises Refused: nothing is sent
         try:
             response = httpx.get(url, headers=attempt.conditional_headers)
-        except httpx.TimeoutException:
-            attempt.failure("read_timeout")
+        except httpx.TransportError as error:  # no answer: name how it failed
+            attempt.failure(failure_shape(error))
             raise
         attempt.response(
             response.status_code,
@@ -245,9 +246,12 @@ def fetch_with_my_client(gate: Gate, url: str) -> bytes | None:
 
 Record exactly one outcome per attempt: `attempt.response(status, ...)` for
 any HTTP answer (the policy decides what a status means), or
-`attempt.failure(shape, ...)` when none came. An attempt left without an
-outcome, or ended by an exception, counts as failed. `async with
-gate.attempt(url)` works the same; a cancelled task closes its row too, as
+`attempt.failure(shape, ...)` when none came. Each adapter module has a
+`failure_shape(error)` that names its client's exceptions with the shapes
+of `FetchFailed.shape` (`politefetch.adapters.urllib` and
+`politefetch.adapters.requests` too). An attempt left without an outcome,
+or ended by an exception, counts as failed. `async with gate.attempt(url)`
+works the same; a cancelled task closes its row too, as
 `"cancelled"` or with the outcome it recorded. `gate.may_fetch(url)` asks
 without sending; it is advisory, `attempt` decides again atomically.
 
@@ -284,6 +288,10 @@ access.
 `default` policy, every host the store knows (`store.hosts()`). In the JSON of
 `to_json` the counts of the day sit under the key `"today"` (`"requests"`,
 `"daily_cap"`, `"wire_bytes"`, `"decoded_bytes"`, `"byte_budget"`, `"day"`).
+For each row of `"recent"`, `to_json` puts the fields of the outcome
+directly in the row (`ok`, `status`, `failure`, `wire_bytes`,
+`decoded_bytes`, null while in flight), while the dataclass keeps them in
+`RequestRow.outcome`. The meaning of every field is in `references/api.md`.
 The log rows are never deleted in this version: the table grows with every
 request.
 

@@ -10,6 +10,7 @@ import contextlib
 import gzip
 import importlib
 import inspect
+import json
 import re
 from datetime import UTC, datetime, timedelta
 from typing import Any
@@ -23,8 +24,9 @@ from politefetch.clock import FakeClock
 from politefetch.errors import RefusalReason
 from politefetch.gate import Gate
 from politefetch.skill import read_skill
+from politefetch.status import to_json
 from politefetch.store import MemoryStore
-from politefetch.testing.simulator import Respond, SourceSimulator
+from politefetch.testing.simulator import Reset, Respond, SourceSimulator
 
 SKILL = read_skill()
 BODY = SKILL.split("\n---\n", 1)[1]
@@ -185,6 +187,45 @@ def test_the_attempt_example_records_the_bytes_as_transferred(
     assert row.outcome is not None
     assert row.outcome.wire_bytes == len(compressed)
     assert row.outcome.decoded_bytes == len(body)
+
+
+def test_the_attempt_example_names_the_failure_with_the_adapter(
+    examples: dict[str, Any], source_simulator: SourceSimulator
+) -> None:
+    httpx = pytest.importorskip("httpx")
+    source_simulator.scenario = Reset()
+    url = source_simulator.url("/data.json")
+    gate = Gate(
+        MemoryStore(),
+        {"127.0.0.1": politefetch.HostPolicy(5, "1m")},
+        clock=FakeClock(T),
+    )
+    with pytest.raises(httpx.TransportError):
+        examples["fetch_with_my_client"](gate, url)
+    [row] = gate.status(url).recent
+    assert row.outcome is not None
+    assert row.outcome.failure == FailureShape.RESET
+
+
+def test_the_status_json_flattens_the_outcome_as_the_skill_says() -> None:
+    gate = Gate(
+        MemoryStore(),
+        {"example.org": politefetch.HostPolicy(5, "1m")},
+        clock=FakeClock(T),
+    )
+    with gate.attempt("https://example.org/data.json") as attempt:
+        attempt.failure("read_timeout")
+    [row] = gate.status("example.org").recent
+    assert row.outcome is not None
+    [shown] = json.loads(to_json(gate.statuses()))[0]["recent"]
+    named = re.search(r"`to_json` puts\s.*?\s`RequestRow\.outcome`", PROSE, re.DOTALL)
+    assert named, "the skill no longer says how the JSON shows a row's outcome"
+    keys = set(re.findall(r"`(\w+)`", named[0])) - {"to_json"}
+    assert {"failure", "status"} <= keys
+    assert keys <= set(shown), sorted(keys - set(shown))
+    assert "outcome" not in shown
+    assert shown["failure"] == row.outcome.failure == "read_timeout"
+    assert shown["status"] is None
 
 
 def test_the_test_example_passes(

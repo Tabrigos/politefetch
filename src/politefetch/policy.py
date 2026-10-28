@@ -133,18 +133,25 @@ def parse_retry_after(value: str | None, now: datetime) -> datetime | None:
 class HostPolicy:
     """How carefully to treat one host.
 
-    - `daily_cap`: requests per UTC day, the safety net (rule 4).
-    - `min_interval`: pause after a good answer, counted from the end of the
-      request.
-    - `backoff_base`, `backoff_factor`, `backoff_max`: the pause after the
-      n-th consecutive failure is `base * factor**(n-1)`, at most `max`.
-    - `freeze_for`: how long a 403/429/451 freeze lasts; `None` (default)
-      means until a person unlocks the host. Never shorter than Retry-After.
-    - `respect_retry_after_429`: off by default. When on, the first 429 since
-      the last good answer that carries a Retry-After only pauses; any other
-      429 freezes.
-    - `byte_budget`: wire bytes per UTC day, `None` (default) for no limit.
-      Each request reserves the size of its URL's last full answer.
+    Attributes:
+        daily_cap: Requests per UTC day, the safety net (rule 4).
+        min_interval: Pause after a good answer, counted from the end of the
+            request.
+        backoff_base: The pause after the first consecutive failure; after
+            the n-th it is `backoff_base * backoff_factor**(n-1)`, at most
+            `backoff_max`.
+        backoff_factor: How much the pause grows with each further
+            consecutive failure.
+        backoff_max: Where the pause after failures stops growing. The
+            pause is never shorter than `min_interval`.
+        freeze_for: How long a 403/429/451 freeze lasts; `None` (default)
+            means until a person unlocks the host. Never shorter than
+            Retry-After.
+        respect_retry_after_429: Off by default. When on, the first 429 since
+            the last good answer that carries a Retry-After only pauses; any
+            other 429 freezes.
+        byte_budget: Wire bytes per UTC day, `None` (default) for no limit.
+            Each request reserves the size of its URL's last full answer.
 
     Durations accept a `timedelta` or a string such as "90s" or "2h"; sizes an
     int (bytes) or a string such as "50MB".

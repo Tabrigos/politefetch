@@ -73,9 +73,13 @@ class RefusalReason(StrEnum):
 class Refused(PoliteFetchError):
     """The gate refused the request; nothing was sent to the host.
 
-    `retry_after` is the earliest time at which asking again may succeed. It
-    is `None` only for a freeze without expiry, which lasts until a person
-    unlocks the host.
+    Attributes:
+        host: The host the request was for.
+        reason: Why the gate refused it; when several reasons apply, the one
+            that ends last.
+        retry_after: The earliest time at which asking again may succeed.
+            `None` only for a freeze without expiry, which lasts until a
+            person unlocks the host.
     """
 
     host: str
@@ -107,12 +111,17 @@ class Refused(PoliteFetchError):
 class FetchFailed(PoliteFetchError):
     """A request was sent but no usable HTTP answer came back.
 
-    `shape` says how it failed: a connect or read timeout, a refused or reset
-    connection, TLS, DNS, another connection error, `deadline` for an answer
-    still arriving when its time was up, or `http` for an error status.
-    `status` is the HTTP status, when an answer had started. The gate has
-    already recorded it. `note` says what the failure did to the host, such
-    as a freeze and how to lift it.
+    The gate has already recorded it.
+
+    Attributes:
+        url: The URL of the request.
+        shape: How it failed: a connect or read timeout, a refused or reset
+            connection, TLS, DNS, another connection error, `deadline` for an
+            answer still arriving when its time was up, or `http` for an
+            error status.
+        status: The HTTP status, when an answer had started.
+        note: What the failure did to the host, such as a freeze and how to
+            lift it; empty otherwise.
     """
 
     url: str
@@ -142,7 +151,11 @@ class FetchFailed(PoliteFetchError):
 
 class NoPolicy(PoliteFetchError, ValueError):
     """The gate has no policy for `host` and no default one: no request was
-    sent. A `ValueError` too, as it was before it had a class of its own."""
+    sent. A `ValueError` too, as it was before it had a class of its own.
+
+    Attributes:
+        host: The host without a policy.
+    """
 
     host: str
 
@@ -166,6 +179,13 @@ class OutcomeNotSaved(PoliteFetchError):
     `status`) is lost to the store, which is why this error carries it. The
     store's own exception is the `__cause__`; an exception raised inside
     the attempt is the `__context__`.
+
+    Attributes:
+        url: The URL of the request.
+        row_id: The log row that stays in flight.
+        shape: The failure shape that could not be saved (`http` for an
+            error status); `None` for a good answer.
+        status: The HTTP status the source answered, if any.
     """
 
     url: str
@@ -197,6 +217,9 @@ class ContentError(PoliteFetchError):
     `shape` is a short, stable name for the kind of problem, recorded as the
     failure shape of the request; except for `StaleData` and `StuckSource`,
     which come from sources that answered well and are recorded as answers.
+
+    Attributes:
+        url: The URL of the request, when known.
     """
 
     shape = "content"
@@ -250,6 +273,12 @@ class StaleData(ContentError):
     The source answered well: a fetch records it as an answer (validators
     kept, no failure counted) and puts what came back in `result`, for a
     caller that would rather use old data than none.
+
+    Attributes:
+        data_time: The data time extracted from the body, in UTC.
+        max_age: The oldest the data may be.
+        age: How old the data was when it was checked.
+        result: What came back, when a fetch raised the error.
     """
 
     shape = "stale_data"
@@ -299,6 +328,13 @@ class StuckSource(ContentError):
 
     Like `StaleData`, it is recorded as an answer, and `result` holds what
     came back.
+
+    Attributes:
+        data_time: The data time that does not advance, in UTC.
+        reads: Consecutive reads that have not gone past `data_time`, the
+            read that brought it included; at least 2.
+        since: When the first of those reads happened, if known.
+        result: What came back, when a fetch raised the error.
     """
 
     shape = "stuck_source"

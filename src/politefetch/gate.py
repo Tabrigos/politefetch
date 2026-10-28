@@ -86,7 +86,12 @@ def _lowercase(headers: Headers | None) -> dict[str, str]:
 
 @dataclass(frozen=True, slots=True)
 class Verdict:
-    """The answer of `Gate.may_fetch`: true if a request may start now."""
+    """The answer of `Gate.may_fetch`: true if a request may start now.
+
+    Attributes:
+        refusal: Why a request may not start now, and until when: the
+            `Refused` the gate's decision would raise. `None` when it may.
+    """
 
     refusal: Refused | None = None
 

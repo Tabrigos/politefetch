@@ -65,7 +65,12 @@ _IO_TIMEOUT = 5.0
 
 
 class Scenario(Protocol):
-    """How the simulated source answers one request."""
+    """How the simulated source answers one request.
+
+    Attributes:
+        name: What the counter records for the requests that arrive while
+            the scenario plays (`RequestCounter.by_scenario`).
+    """
 
     name: str
 

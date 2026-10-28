@@ -58,7 +58,7 @@ The answer of `Gate.may_fetch`: true if a request may start now.
 
 | Field | Type | Meaning |
 |---|---|---|
-| `refusal` | `Refused \| None` |  |
+| `refusal` | `Refused \| None` | Why a request may not start now, and until when: the `Refused` the gate's decision would raise. `None` when it may. |
 
 ### `normalize_host(host: str) -> str`
 
@@ -76,14 +76,14 @@ How carefully to treat one host.
 
 | Field | Type | Meaning |
 |---|---|---|
-| `daily_cap` | `int` |  |
-| `min_interval` | `timedelta` |  |
-| `backoff_base` | `timedelta` |  |
-| `backoff_factor` | `float` |  |
-| `backoff_max` | `timedelta` |  |
-| `freeze_for` | `timedelta \| None` |  |
-| `respect_retry_after_429` | `bool` |  |
-| `byte_budget` | `int \| None` |  |
+| `daily_cap` | `int` | Requests per UTC day, the safety net (rule 4). |
+| `min_interval` | `timedelta` | Pause after a good answer, counted from the end of the request. |
+| `backoff_base` | `timedelta` | The pause after the first consecutive failure; after the n-th it is `backoff_base * backoff_factor**(n-1)`, at most `backoff_max`. |
+| `backoff_factor` | `float` | How much the pause grows with each further consecutive failure. |
+| `backoff_max` | `timedelta` | Where the pause after failures stops growing. The pause is never shorter than `min_interval`. |
+| `freeze_for` | `timedelta \| None` | How long a 403/429/451 freeze lasts; `None` (default) means until a person unlocks the host. Never shorter than Retry-After. |
+| `respect_retry_after_429` | `bool` | Off by default. When on, the first 429 since the last good answer that carries a Retry-After only pauses; any other 429 freezes. |
+| `byte_budget` | `int \| None` | Wire bytes per UTC day, `None` (default) for no limit. Each request reserves the size of its URL's last full answer. |
 
 - `.backoff(failures: int) -> timedelta`: The pause after the `failures`-th consecutive failure.
 - `.cautious_until(state: HostState, now: datetime) -> datetime`: The promise written before a request: as if it were going to fail.
@@ -113,23 +113,23 @@ One host as of `at`.
 
 | Field | Type | Meaning |
 |---|---|---|
-| `host` | `str` |  |
-| `at` | `datetime` |  |
-| `may_fetch` | `bool` |  |
-| `reason` | `RefusalReason \| None` |  |
-| `next_allowed` | `datetime \| None` |  |
-| `frozen` | `Freeze \| None` |  |
-| `failures` | `int` |  |
-| `throttled` | `int` |  |
-| `in_flight` | `int` |  |
-| `day` | `date` |  |
-| `requests_today` | `int` |  |
-| `daily_cap` | `int` |  |
-| `wire_bytes_today` | `int` |  |
-| `decoded_bytes_today` | `int` |  |
-| `byte_budget` | `int \| None` |  |
-| `recent` | `tuple[RequestRow, ...]` |  |
-| `abandoned` | `int` |  |
+| `host` | `str` | The host name, normalized. |
+| `at` | `datetime` | When the status was read; the moment every other field is for. |
+| `may_fetch` | `bool` | What `Gate.may_fetch` would answer. |
+| `reason` | `RefusalReason \| None` | Why a request may not start now; `None` when it may. |
+| `next_allowed` | `datetime \| None` | When to ask again; `at` when a request may start now, `None` while the host is frozen until a person unlocks it. |
+| `frozen` | `Freeze \| None` | The freeze in force, if any. |
+| `failures` | `int` | Consecutive failures since the last good answer. |
+| `throttled` | `int` | The 429 answers since the last good answer. |
+| `in_flight` | `int` | Requests to the host still open, the abandoned ones left out. |
+| `day` | `date` | The UTC day of `at`, the day of the `*_today` counts. |
+| `requests_today` | `int` | Requests opened on `day`, counted against `daily_cap`. |
+| `daily_cap` | `int` | The requests per UTC day the host's policy allows. |
+| `wire_bytes_today` | `int` | Bytes on the wire for the requests opened on `day` (real bytes, or the reservation of requests that never reported theirs), counted against `byte_budget`. |
+| `decoded_bytes_today` | `int` | Bytes after decoding, for the requests opened on `day`. |
+| `byte_budget` | `int \| None` | The wire bytes per UTC day the host's policy allows; `None` for no limit. |
+| `recent` | `tuple[RequestRow, ...]` | The latest log rows of the host, newest first. |
+| `abandoned` | `int` | Rows in flight for longer than `reconcile_after`: already left out of `in_flight` and counted in `failures`, as the next request to the host will count them when it closes them. |
 
 - `.to_dict() -> dict[str, object]`: The status as JSON-ready values: times as ISO 8601 strings with their UTC offset, reasons and row states as their stored names.
 - `.to_json(*, indent: int | None = None) -> str`: `to_dict` serialised.
@@ -156,7 +156,7 @@ A request was sent and answered, but the answer cannot be used.
 
 | Field | Type | Meaning |
 |---|---|---|
-| `url` | `str \| None` |  |
+| `url` | `str \| None` | The URL of the request, when known. |
 
 ### `FetchFailed`
 
@@ -166,10 +166,10 @@ A request was sent but no usable HTTP answer came back.
 
 | Field | Type | Meaning |
 |---|---|---|
-| `url` | `str` |  |
-| `shape` | `str` |  |
-| `status` | `int \| None` |  |
-| `note` | `str` |  |
+| `url` | `str` | The URL of the request. |
+| `shape` | `str` | How it failed: a connect or read timeout, a refused or reset connection, TLS, DNS, another connection error, `deadline` for an answer still arriving when its time was up, or `http` for an error status. |
+| `status` | `int \| None` | The HTTP status, when an answer had started. |
+| `note` | `str` | What the failure did to the host, such as a freeze and how to lift it; empty otherwise. |
 
 ### `NoPolicy`
 
@@ -179,7 +179,7 @@ The gate has no policy for `host` and no default one: no request was sent. A `Va
 
 | Field | Type | Meaning |
 |---|---|---|
-| `host` | `str` |  |
+| `host` | `str` | The host without a policy. |
 
 ### `OutcomeNotSaved`
 
@@ -189,10 +189,10 @@ A request was sent, but the store could not save how it ended, even after trying
 
 | Field | Type | Meaning |
 |---|---|---|
-| `url` | `str` |  |
-| `row_id` | `int` |  |
-| `shape` | `str \| None` |  |
-| `status` | `int \| None` |  |
+| `url` | `str` | The URL of the request. |
+| `row_id` | `int` | The log row that stays in flight. |
+| `shape` | `str \| None` | The failure shape that could not be saved (`http` for an error status); `None` for a good answer. |
+| `status` | `int \| None` | The HTTP status the source answered, if any. |
 
 ### `PoliteFetchError`
 
@@ -219,9 +219,9 @@ The gate refused the request; nothing was sent to the host.
 
 | Field | Type | Meaning |
 |---|---|---|
-| `host` | `str` |  |
-| `reason` | `RefusalReason` |  |
-| `retry_after` | `datetime \| None` |  |
+| `host` | `str` | The host the request was for. |
+| `reason` | `RefusalReason` | Why the gate refused it; when several reasons apply, the one that ends last. |
+| `retry_after` | `datetime \| None` | The earliest time at which asking again may succeed. `None` only for a freeze without expiry, which lasts until a person unlocks the host. |
 
 ### `SourceNotReady`
 
@@ -237,10 +237,10 @@ The time extracted from the body is older than `max_age`.
 
 | Field | Type | Meaning |
 |---|---|---|
-| `data_time` | `datetime` |  |
-| `max_age` | `timedelta` |  |
-| `age` | `timedelta` |  |
-| `result` | `FetchResult \| None` |  |
+| `data_time` | `datetime` | The data time extracted from the body, in UTC. |
+| `max_age` | `timedelta` | The oldest the data may be. |
+| `age` | `timedelta` | How old the data was when it was checked. |
+| `result` | `FetchResult \| None` | What came back, when a fetch raised the error. |
 
 ### `StuckSource`
 
@@ -250,10 +250,10 @@ The data time has not advanced for `reads` consecutive reads, the first of them 
 
 | Field | Type | Meaning |
 |---|---|---|
-| `data_time` | `datetime` |  |
-| `reads` | `int` |  |
-| `since` | `datetime \| None` |  |
-| `result` | `FetchResult \| None` |  |
+| `data_time` | `datetime` | The data time that does not advance, in UTC. |
+| `reads` | `int` | Consecutive reads that have not gone past `data_time`, the read that brought it included; at least 2. |
+| `since` | `datetime \| None` | When the first of those reads happened, if known. |
+| `result` | `FetchResult \| None` | What came back, when a fetch raised the error. |
 
 ### `UnexpectedContent`
 
@@ -364,9 +364,9 @@ Fetch through the gate with an asynchronous transport. Same meaning as `Fetcher`
 
 | Field | Type | Meaning |
 |---|---|---|
-| `status` | `int` |  |
-| `headers` | `Mapping[str, str]` |  |
-| `chunks` | `AsyncIterator[bytes]` |  |
+| `status` | `int` | The HTTP status. |
+| `headers` | `Mapping[str, str]` | The response headers, names in lowercase. |
+| `chunks` | `AsyncIterator[bytes]` | The body as transferred, as `RawResponse.chunks`, read with `async for`. |
 
 ### `AsyncTransport`
 
@@ -397,15 +397,15 @@ A fetch that passed every check.
 
 | Field | Type | Meaning |
 |---|---|---|
-| `url` | `str` |  |
-| `status` | `int` |  |
-| `headers` | `Mapping[str, str]` |  |
-| `body` | `bytes` |  |
-| `content` | `Any` |  |
-| `not_modified` | `bool` |  |
-| `data_time` | `datetime \| None` |  |
-| `wire_bytes` | `int` |  |
-| `decoded_bytes` | `int` |  |
+| `url` | `str` | The URL fetched. |
+| `status` | `int` | The HTTP status: a 2xx, or 304. |
+| `headers` | `Mapping[str, str]` | The response headers, names in lowercase. |
+| `body` | `bytes` | The body, decoded; empty after a 304. |
+| `content` | `Any` | The parsed JSON, the decoded text or the bytes, according to `expect`; `None` when the source answered 304. |
+| `not_modified` | `bool` | True when the source answered 304. |
+| `data_time` | `datetime \| None` | The data time read from the content; after a 304, the latest data time seen for the URL. `None` without a `data_time` function, or when none was seen yet. |
+| `wire_bytes` | `int` | The body as transferred (compressed, if it was). |
+| `decoded_bytes` | `int` | The body after decoding. |
 
 ### `Fetcher`
 
@@ -426,13 +426,13 @@ The body broke off before its end: raised by a transport while the body is read,
 
 `RawResponse(status: int, headers: Mapping[str, str], chunks: Iterator[bytes])`
 
-One HTTP answer as a transport receives it. Header names are lowercase. `chunks` yields the body as transferred, piece by piece as it arrives: without the transfer framing, but not decoded (a Content-Encoding stays, the core undoes it).
+One HTTP answer as a transport receives it.
 
 | Field | Type | Meaning |
 |---|---|---|
-| `status` | `int` |  |
-| `headers` | `Mapping[str, str]` |  |
-| `chunks` | `Iterator[bytes]` |  |
+| `status` | `int` | The HTTP status. |
+| `headers` | `Mapping[str, str]` | The response headers, names in lowercase. |
+| `chunks` | `Iterator[bytes]` | The body as transferred, piece by piece as it arrives: without the transfer framing, but not decoded (a Content-Encoding stays, the core undoes it). |
 
 ### `Timer`
 
@@ -557,15 +557,15 @@ The store interface, its records, and the rules every store applies.
 
 `DataTimeRecord(url: str, latest: datetime, reads: int, updated_at: datetime, since: datetime)`
 
-The data-time history of one URL: the latest data time seen, how many consecutive reads have not gone past it (the read that brought it included), and `since`, when that first read happened.
+The data-time history of one URL.
 
 | Field | Type | Meaning |
 |---|---|---|
-| `url` | `str` |  |
-| `latest` | `datetime` |  |
-| `reads` | `int` |  |
-| `updated_at` | `datetime` |  |
-| `since` | `datetime` |  |
+| `url` | `str` | The URL. |
+| `latest` | `datetime` | The latest data time seen. |
+| `reads` | `int` | How many consecutive reads have not gone past `latest`, the read that brought it included. |
+| `updated_at` | `datetime` | When the last of those reads happened. |
+| `since` | `datetime` | When the first of those reads happened, the one that brought `latest`. |
 
 ### `Freeze`
 
@@ -575,10 +575,10 @@ A host frozen after 403, 429 or 451.
 
 | Field | Type | Meaning |
 |---|---|---|
-| `since` | `datetime` |  |
-| `until` | `datetime \| None` |  |
-| `status` | `int \| None` |  |
-| `note` | `str` |  |
+| `since` | `datetime` | When the freeze started. |
+| `until` | `datetime \| None` | When it expires; `None` for a freeze that lasts until a person unlocks the host. |
+| `status` | `int \| None` | The HTTP status of the answer that froze the host. |
+| `note` | `str` | Why, in words: `HTTP 403`, or the Retry-After that asked for a pause longer than any of the policy's. |
 
 - `.active(now: datetime) -> bool`
 
@@ -590,17 +590,17 @@ Everything the store knows about one host, as of one moment.
 
 | Field | Type | Meaning |
 |---|---|---|
-| `host` | `str` |  |
-| `day` | `date` |  |
-| `requests_today` | `int` |  |
-| `not_before` | `datetime \| None` |  |
-| `not_before_reason` | `RefusalReason \| None` |  |
-| `failures` | `int` |  |
-| `freeze` | `Freeze \| None` |  |
-| `in_flight` | `int` |  |
-| `throttled` | `int` |  |
-| `wire_bytes_today` | `int` |  |
-| `decoded_bytes_today` | `int` |  |
+| `host` | `str` | The host name. |
+| `day` | `date` | The UTC day of the moment the state was read for. |
+| `requests_today` | `int` | The requests opened on `day`. |
+| `not_before` | `datetime \| None` | The promise: no request to the host before then; `None` before the first request. |
+| `not_before_reason` | `RefusalReason \| None` | What the promise is for: `backoff` for the cautious promise written before a request, else the reason written when a request closed (`min_interval` or `backoff`). |
+| `failures` | `int` | Consecutive failures since the last good answer. |
+| `freeze` | `Freeze \| None` | The host's freeze, if any; it may have expired. |
+| `in_flight` | `int` | Requests to the host still open. |
+| `throttled` | `int` | The 429 answers since the last good answer. |
+| `wire_bytes_today` | `int` | Bytes on the wire for the requests opened on `day`: real bytes, or the reservation of requests that never reported theirs. |
+| `decoded_bytes_today` | `int` | Bytes after decoding, for the requests opened on `day`. |
 
 ### `HostUpdate`
 
@@ -610,9 +610,9 @@ What the caller wants written after a request: the next promise, and a freeze if
 
 | Field | Type | Meaning |
 |---|---|---|
-| `not_before` | `datetime` |  |
-| `reason` | `RefusalReason` |  |
-| `freeze` | `Freeze \| None` |  |
+| `not_before` | `datetime` | The next promise: no request to the host before then. |
+| `reason` | `RefusalReason` | What the promise is for: `min_interval` after a good answer, `backoff` after a failure. |
+| `freeze` | `Freeze \| None` | The freeze the answer calls for, if any. |
 
 ### `Outcome`
 
@@ -622,11 +622,11 @@ How a request ended, as the caller records it.
 
 | Field | Type | Meaning |
 |---|---|---|
-| `ok` | `bool` |  |
-| `status` | `int \| None` |  |
-| `failure` | `str \| None` |  |
-| `wire_bytes` | `int \| None` |  |
-| `decoded_bytes` | `int \| None` |  |
+| `ok` | `bool` | True for a good answer (a 2xx or a 304, and data stale or stuck, which came from a source that answered well). |
+| `status` | `int \| None` | The HTTP status, when an answer came. |
+| `failure` | `str \| None` | The shape of the failure (connect timeout, reset, refusal, TLS, `http` for an error status...); `None` for a good answer. The adapters record a `FailureShape` or the `shape` of a `ContentError`; the gate records `unrecorded`, `cancelled` or `exception:<name>` for an attempt that ended without an outcome, and a row the reconciliation closed has `abandoned`. |
+| `wire_bytes` | `int \| None` | The body as transferred (compressed, if it was); `None` when unknown. |
+| `decoded_bytes` | `int \| None` | The body after decoding; `None` when unknown. |
 
 ### `RequestRow`
 
@@ -636,14 +636,14 @@ One request in the log.
 
 | Field | Type | Meaning |
 |---|---|---|
-| `id` | `int` |  |
-| `host` | `str` |  |
-| `url` | `str` |  |
-| `opened_at` | `datetime` |  |
-| `state` | `RowState` |  |
-| `closed_at` | `datetime \| None` |  |
-| `outcome` | `Outcome \| None` |  |
-| `reserved_bytes` | `int` |  |
+| `id` | `int` | The number of the row in the store. |
+| `host` | `str` | The host of the request. |
+| `url` | `str` | The URL of the request. |
+| `opened_at` | `datetime` | When the row opened, before the request was sent. |
+| `state` | `RowState` | Where the row is: in flight, closed, or closed by the reconciliation. |
+| `closed_at` | `datetime \| None` | When the row closed; `None` while in flight. |
+| `outcome` | `Outcome \| None` | How the request ended; `None` while in flight. The JSON of `politefetch.status.to_json` puts its fields directly in the row. |
+| `reserved_bytes` | `int` | The bytes reserved against the byte budget when the row opened: the wire size of the URL's last full answer. |
 
 ### `RowState`
 
@@ -680,12 +680,12 @@ The trace left when a person lifts a freeze.
 
 | Field | Type | Meaning |
 |---|---|---|
-| `id` | `int` |  |
-| `host` | `str` |  |
-| `at` | `datetime` |  |
-| `by` | `str` |  |
-| `note` | `str` |  |
-| `freeze` | `Freeze` |  |
+| `id` | `int` | The number of the trace in the store. |
+| `host` | `str` | The host unfrozen. |
+| `at` | `datetime` | When the freeze was lifted. |
+| `by` | `str` | Who lifted it. |
+| `note` | `str` | Why, in the words of who lifted it. |
+| `freeze` | `Freeze` | The freeze that was lifted. |
 
 ### `UrlRecord`
 
@@ -695,10 +695,10 @@ What the store remembers about one URL: its validators and the wire size of its 
 
 | Field | Type | Meaning |
 |---|---|---|
-| `url` | `str` |  |
-| `validators` | `Validators` |  |
-| `size` | `int \| None` |  |
-| `updated_at` | `datetime` |  |
+| `url` | `str` | The URL. |
+| `validators` | `Validators` | The validators of its last 200, refreshed by a 304 that carries some. |
+| `size` | `int \| None` | The wire size of its last full (200) answer, reserved against the byte budget by the next request; `None` when unknown. |
+| `updated_at` | `datetime` | When the record was last written. |
 
 ### `Validators`
 
@@ -708,8 +708,8 @@ What a source said about a resource's version: raw `ETag` and `Last-Modified` he
 
 | Field | Type | Meaning |
 |---|---|---|
-| `etag` | `str \| None` |  |
-| `last_modified` | `str \| None` |  |
+| `etag` | `str \| None` | The raw `ETag` header value, if the source sent one. |
+| `last_modified` | `str \| None` | The raw `Last-Modified` header value, if the source sent one. |
 
 ### `apply_close(state: HostState, outcome: Outcome, update: HostUpdate) -> HostState`
 
@@ -745,16 +745,16 @@ The persistent part of a `MemoryStore`.
 
 | Field | Type | Meaning |
 |---|---|---|
-| `hosts` | `dict[str, HostState]` |  |
-| `counts` | `dict[tuple[str, date], int]` |  |
-| `wire` | `dict[tuple[str, date], int]` |  |
-| `decoded` | `dict[tuple[str, date], int]` |  |
-| `urls` | `dict[str, UrlRecord]` |  |
-| `data_times` | `dict[str, DataTimeRecord]` |  |
-| `rows` | `dict[int, RequestRow]` |  |
-| `next_id` | `int` |  |
-| `unfreezes` | `list[Unfreeze]` |  |
-| `lock` | `RLock` |  |
+| `hosts` | `dict[str, HostState]` | The state of each host, by host name. |
+| `counts` | `dict[tuple[str, date], int]` | The requests opened, by host and UTC day. |
+| `wire` | `dict[tuple[str, date], int]` | The bytes on the wire (or reserved), by host and UTC day. |
+| `decoded` | `dict[tuple[str, date], int]` | The bytes after decoding, by host and UTC day. |
+| `urls` | `dict[str, UrlRecord]` | What is remembered of each URL: validators and size. |
+| `data_times` | `dict[str, DataTimeRecord]` | The data-time history of each URL. |
+| `rows` | `dict[int, RequestRow]` | The request log, by row number. |
+| `next_id` | `int` | The number of the next row. |
+| `unfreezes` | `list[Unfreeze]` | The traces of lifted freezes, oldest first. |
+| `lock` | `RLock` | Makes each operation atomic between threads. |
 
 ### `MemoryStore`
 
@@ -928,7 +928,7 @@ Protocol. How the simulated source answers one request.
 
 | Field | Type | Meaning |
 |---|---|---|
-| `name` | `str` |  |
+| `name` | `str` | What the counter records for the requests that arrive while the scenario plays (`RequestCounter.by_scenario`). |
 
 - `.serve(conn: socket, request: SourceRequest, stop: Event) -> None`: Answer (or not) on `conn`. `stop` is set when the simulator stops.
 
@@ -997,16 +997,16 @@ Thread-safe record of the requests that reached the source.
 
 `SourceRequest(number: int, method: str, path: str, headers: Mapping[str, str] = <factory>, scenario: str = '', arrived: datetime = <factory>)`
 
-One request as the source saw it. Header names are lowercase; `arrived` is when it arrived, on the simulator's clock.
+One request as the source saw it.
 
 | Field | Type | Meaning |
 |---|---|---|
-| `number` | `int` |  |
-| `method` | `str` |  |
-| `path` | `str` |  |
-| `headers` | `Mapping[str, str]` |  |
-| `scenario` | `str` |  |
-| `arrived` | `datetime` |  |
+| `number` | `int` | Its place among the requests that reached the source, from 1. |
+| `method` | `str` | The HTTP method. |
+| `path` | `str` | The request target as it arrived, query included. |
+| `headers` | `Mapping[str, str]` | The request headers, names in lowercase; a header sent more than once is recorded once, its values joined by ", ". |
+| `scenario` | `str` | The name of the scenario playing when it arrived. |
+| `arrived` | `datetime` | When it arrived, on the simulator's clock. |
 
 ## `politefetch.testing.processes`
 

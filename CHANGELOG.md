@@ -66,6 +66,14 @@ All notable changes to politefetch. The format follows
   could fail with `database is locked`, because switching a new file to WAL
   takes a lock that SQLite does not wait for. The switch is now tried again
   until the busy timeout ends. A failed open had sent nothing.
+- The API reference gives the meaning of every field of the public
+  classes (`HostStatus`, `RequestRow`, `Outcome`, the store records, the
+  errors...), from an `Attributes:` section of their docstrings; a test
+  fails if one is left empty (#23).
+- The skill's example of `gate.attempt` names the client's exceptions with
+  the adapter's `failure_shape` instead of by hand, and the skill says that
+  `to_json` puts the fields of a row's outcome directly in the row, while
+  `RequestRow` keeps them in `outcome` (#23).
 
 ## 0.1.1 — 2026-10-26
 

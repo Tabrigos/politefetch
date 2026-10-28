@@ -59,10 +59,19 @@ class RowState(StrEnum):
 class Outcome:
     """How a request ended, as the caller records it.
 
-    `failure` is the shape of the failure (connect timeout, reset, refusal,
-    TLS, HTTP status...); the adapters stage fixes its vocabulary.
-    `wire_bytes` is the body as transferred (compressed, if it was) and
-    `decoded_bytes` the body after decoding; `None` when unknown.
+    Attributes:
+        ok: True for a good answer (a 2xx or a 304, and data stale or stuck,
+            which came from a source that answered well).
+        status: The HTTP status, when an answer came.
+        failure: The shape of the failure (connect timeout, reset, refusal,
+            TLS, `http` for an error status...); `None` for a good answer.
+            The adapters record a `FailureShape` or the `shape` of a
+            `ContentError`; the gate records `unrecorded`, `cancelled` or
+            `exception:<name>` for an attempt that ended without an outcome,
+            and a row the reconciliation closed has `abandoned`.
+        wire_bytes: The body as transferred (compressed, if it was); `None`
+            when unknown.
+        decoded_bytes: The body after decoding; `None` when unknown.
     """
 
     ok: bool
@@ -83,7 +92,13 @@ class Outcome:
 class Freeze:
     """A host frozen after 403, 429 or 451.
 
-    `until` is `None` for a freeze that lasts until a person unlocks the host.
+    Attributes:
+        since: When the freeze started.
+        until: When it expires; `None` for a freeze that lasts until a
+            person unlocks the host.
+        status: The HTTP status of the answer that froze the host.
+        note: Why, in words: `HTTP 403`, or the Retry-After that asked for a
+            pause longer than any of the policy's.
     """
 
     since: datetime
@@ -107,7 +122,13 @@ class Freeze:
 class Validators:
     """What a source said about a resource's version: raw `ETag` and
     `Last-Modified` header values, sent back as `If-None-Match` and
-    `If-Modified-Since`."""
+    `If-Modified-Since`.
+
+    Attributes:
+        etag: The raw `ETag` header value, if the source sent one.
+        last_modified: The raw `Last-Modified` header value, if the source
+            sent one.
+    """
 
     etag: str | None = None
     last_modified: str | None = None
@@ -116,7 +137,16 @@ class Validators:
 @dataclass(frozen=True, slots=True)
 class UrlRecord:
     """What the store remembers about one URL: its validators and the wire
-    size of its last full (200) answer, used to reserve bytes."""
+    size of its last full (200) answer, used to reserve bytes.
+
+    Attributes:
+        url: The URL.
+        validators: The validators of its last 200, refreshed by a 304 that
+            carries some.
+        size: The wire size of its last full (200) answer, reserved against
+            the byte budget by the next request; `None` when unknown.
+        updated_at: When the record was last written.
+    """
 
     url: str
     validators: Validators
@@ -126,9 +156,17 @@ class UrlRecord:
 
 @dataclass(frozen=True, slots=True)
 class DataTimeRecord:
-    """The data-time history of one URL: the latest data time seen, how
-    many consecutive reads have not gone past it (the read that brought it
-    included), and `since`, when that first read happened."""
+    """The data-time history of one URL.
+
+    Attributes:
+        url: The URL.
+        latest: The latest data time seen.
+        reads: How many consecutive reads have not gone past `latest`, the
+            read that brought it included.
+        updated_at: When the last of those reads happened.
+        since: When the first of those reads happened, the one that brought
+            `latest`.
+    """
 
     url: str
     latest: datetime
@@ -140,7 +178,14 @@ class DataTimeRecord:
 @dataclass(frozen=True, slots=True)
 class HostUpdate:
     """What the caller wants written after a request: the next promise, and a
-    freeze if the answer calls for one."""
+    freeze if the answer calls for one.
+
+    Attributes:
+        not_before: The next promise: no request to the host before then.
+        reason: What the promise is for: `min_interval` after a good answer,
+            `backoff` after a failure.
+        freeze: The freeze the answer calls for, if any.
+    """
 
     not_before: datetime
     reason: RefusalReason
@@ -158,11 +203,24 @@ class HostUpdate:
 class HostState:
     """Everything the store knows about one host, as of one moment.
 
-    `requests_today` counts the requests opened on `day`, the UTC day of the
-    moment the state was read for, and so do `wire_bytes_today` (real bytes,
-    or the reservation of requests that never reported theirs) and
-    `decoded_bytes_today`. `failures` counts consecutive failures, and
-    `throttled` the 429 answers, since the last good answer.
+    Attributes:
+        host: The host name.
+        day: The UTC day of the moment the state was read for.
+        requests_today: The requests opened on `day`.
+        not_before: The promise: no request to the host before then; `None`
+            before the first request.
+        not_before_reason: What the promise is for: `backoff` for the
+            cautious promise written before a request, else the reason
+            written when a request closed (`min_interval` or `backoff`).
+        failures: Consecutive failures since the last good answer.
+        freeze: The host's freeze, if any; it may have expired.
+        in_flight: Requests to the host still open.
+        throttled: The 429 answers since the last good answer.
+        wire_bytes_today: Bytes on the wire for the requests opened on `day`:
+            real bytes, or the reservation of requests that never reported
+            theirs.
+        decoded_bytes_today: Bytes after decoding, for the requests opened
+            on `day`.
     """
 
     host: str
@@ -180,7 +238,16 @@ class HostState:
 
 @dataclass(frozen=True, slots=True)
 class Unfreeze:
-    """The trace left when a person lifts a freeze."""
+    """The trace left when a person lifts a freeze.
+
+    Attributes:
+        id: The number of the trace in the store.
+        host: The host unfrozen.
+        at: When the freeze was lifted.
+        by: Who lifted it.
+        note: Why, in the words of who lifted it.
+        freeze: The freeze that was lifted.
+    """
 
     id: int
     host: str
@@ -192,7 +259,21 @@ class Unfreeze:
 
 @dataclass(frozen=True, slots=True)
 class RequestRow:
-    """One request in the log."""
+    """One request in the log.
+
+    Attributes:
+        id: The number of the row in the store.
+        host: The host of the request.
+        url: The URL of the request.
+        opened_at: When the row opened, before the request was sent.
+        state: Where the row is: in flight, closed, or closed by the
+            reconciliation.
+        closed_at: When the row closed; `None` while in flight.
+        outcome: How the request ended; `None` while in flight. The JSON of
+            `politefetch.status.to_json` puts its fields directly in the row.
+        reserved_bytes: The bytes reserved against the byte budget when the
+            row opened: the wire size of the URL's last full answer.
+    """
 
     id: int
     host: str
