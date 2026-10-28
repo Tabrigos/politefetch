@@ -129,6 +129,7 @@ datetime is a bug of the extractor and raises `ValueError`.
 |---|---|
 | One machine, one or more processes | `SqliteStore("ingest.db")`: the default; share the same file |
 | Several machines | `PostgresStore(conninfo, schema="politefetch")` (extra `postgres`) |
+| Upgrading politefetch over an existing store | SQLite migrates when it opens. Postgres refuses a schema with migrations pending: stop the processes that use it, open it once with `PostgresStore(..., migrate=True)`. A store newer than the code is refused; do not go back to an older version on a migrated store |
 | Tests only | `MemoryStore()`: forgets everything when the process ends |
 | No extra dependency | `politefetch.adapters.urllib.UrllibFetcher` |
 | httpx, sync or async | `HttpxFetcher`, `AsyncHttpxFetcher` in `politefetch.adapters.httpx` |
