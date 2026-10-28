@@ -13,6 +13,13 @@ All notable changes to politefetch. The format follows
   near misses. On 0.1.1 with Sonnet 5.5 (Claude Code 2.1.312, three runs
   each, 2026-10-27): 10 of 10 positives and 10 of 10 near misses passed.
 
+### Fixed
+
+- Several processes opening a new SQLite store at the same time: all but one
+  could fail with `database is locked`, because switching a new file to WAL
+  takes a lock that SQLite does not wait for. The switch is now tried again
+  until the busy timeout ends. A failed open had sent nothing.
+
 ## 0.1.1 — 2026-10-26
 
 ### Fixed
