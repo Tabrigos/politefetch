@@ -9,6 +9,7 @@ next promise after it) as pure functions of the host state, which the store
 calls inside the transaction so they always see the current state.
 """
 
+import logging
 from collections.abc import Callable
 from dataclasses import dataclass, field, replace
 from datetime import UTC, date, datetime, timedelta
@@ -36,8 +37,11 @@ __all__ = [
     "apply_late_close",
     "check_admission",
     "is_late",
+    "log_abandoned",
     "next_utc_midnight",
 ]
+
+_log = logging.getLogger("politefetch.store")
 
 ABANDONED = "abandoned"
 """Failure shape recorded on rows closed by reconciliation."""
@@ -308,6 +312,10 @@ class Store(Protocol):
         """Return one row; raise `KeyError` if it does not exist."""
         ...
 
+    def hosts(self) -> list[str]:
+        """Return the hosts the store has state for, sorted by name."""
+        ...
+
     def rows(
         self,
         *,
@@ -420,6 +428,19 @@ def apply_close(state: HostState, outcome: Outcome, update: HostUpdate) -> HostS
         throttled=state.throttled + (1 if outcome.status == 429 else 0),
         freeze=update.freeze if update.freeze is not None else state.freeze,
         in_flight=max(state.in_flight - 1, 0),
+    )
+
+
+def log_abandoned(row: RequestRow) -> None:
+    """Say that a row was closed as abandoned: its process died, or did not
+    close it, and the host paused for it."""
+    _log.warning(
+        "%s: row %d (%s), in flight since %s, closed as abandoned and counted"
+        " as a failure",
+        row.host,
+        row.id,
+        row.url,
+        row.opened_at.isoformat(),
     )
 
 

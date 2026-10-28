@@ -37,6 +37,7 @@ from politefetch.store.base import (
     check_threshold,
     check_unfreezer,
     is_late,
+    log_abandoned,
 )
 
 __all__ = ["MemoryData", "MemoryStore"]
@@ -240,6 +241,7 @@ class MemoryStore:
             state = self._state(row.host, now)
             self.data.hosts[row.host] = replace(state, failures=state.failures + 1)
             reconciled.append(closed)
+            log_abandoned(closed)
         return reconciled
 
     def unfreeze(
@@ -266,6 +268,10 @@ class MemoryStore:
     def unfreezes(self, *, host: str | None = None) -> list[Unfreeze]:
         with self.data.lock:
             return [u for u in self.data.unfreezes if host is None or u.host == host]
+
+    def hosts(self) -> list[str]:
+        with self.data.lock:
+            return sorted(self.data.hosts)
 
     # --- lifecycle ----------------------------------------------------------
 

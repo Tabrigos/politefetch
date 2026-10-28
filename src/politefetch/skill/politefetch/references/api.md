@@ -43,7 +43,7 @@ The single point every request to a protected host goes through.
 - `.reconcile(now: datetime | None = None) -> list[RequestRow]`: Close as failed the rows in flight for longer than `reconcile_after`.
 - `.may_fetch(url: str) -> Verdict`: Tell whether a request to `url` may start now, and if not why and until when. Advisory: `attempt` decides again, atomically. Sends nothing and writes nothing: rows abandoned past `reconcile_after` count as the next request to the host will count them.
 - `.status(host_or_url: str, *, recent: int = 10) -> HostStatus`: The readable state of a host: the decision `may_fetch` would take, today's counts and bytes, and its latest `recent` log rows.
-- `.statuses(hosts: Iterable[str] | None = None, *, recent: int = 10) -> list[HostStatus]`: `status` of each of `hosts` (hosts or URLs), in their order; by default of every host with a policy of its own, sorted by name.
+- `.statuses(hosts: Iterable[str] | None = None, *, recent: int = 10) -> list[HostStatus]`: `status` of each of `hosts` (hosts or URLs), in their order; by default of every host with a policy of its own and, when the gate has a `default` policy, of every host the store knows, sorted by name.
 - `.attempt(url: str) -> Attempt`: A context manager (sync or async) around one request to `url`.
 - `.note_data_time(url: str, data_time: datetime) -> DataTimeRecord`: Record the data time a read of `url` returned, for stuck-source detection (`politefetch.checks.check_advancing`).
 - `.unfreeze(host_or_url: str, *, by: str, note: str = '') -> Unfreeze | None`: Lift a host's freeze by hand, leaving a trace of who did it.
@@ -666,6 +666,7 @@ Protocol. Persistent state behind the gate.
 - `.unfreeze(host: str, *, now: datetime, by: str, note: str = '') -> Unfreeze | None`: Lift the freeze of `host`, active or expired, and leave a trace.
 - `.unfreezes(*, host: str | None = None) -> list[Unfreeze]`: Return the unfreeze traces, oldest first.
 - `.row(row_id: int) -> RequestRow`: Return one row; raise `KeyError` if it does not exist.
+- `.hosts() -> list[str]`: Return the hosts the store has state for, sorted by name.
 - `.rows(*, host: str | None = None, state: RowState | None = None, latest: int | None = None) -> list[RequestRow]`: Return the rows matching the filters, oldest first; with `latest`, only the newest `latest` of them (still oldest first).
 - `.close() -> None`: Release the store's resources. The persistent state stays.
 
@@ -724,6 +725,10 @@ Return why a request to the host must be refused now, or `None`.
 
 True for a row the reconciliation closed as abandoned, whose request has not reported back yet: its outcome can still arrive, late.
 
+### `log_abandoned(row: RequestRow) -> None`
+
+Say that a row was closed as abandoned: its process died, or did not close it, and the host paused for it.
+
 ### `next_utc_midnight(now: datetime) -> datetime`
 
 ## `politefetch.store.memory`
@@ -767,6 +772,7 @@ A `Store` kept in memory.
 - `.reconcile(*, now: datetime, older_than: timedelta) -> list[RequestRow]`
 - `.unfreeze(host: str, *, now: datetime, by: str, note: str = '') -> Unfreeze | None`
 - `.unfreezes(*, host: str | None = None) -> list[Unfreeze]`
+- `.hosts() -> list[str]`
 - `.close() -> None`
 
 ## `politefetch.store.sqlite`
@@ -791,6 +797,7 @@ A `Store` in a SQLite file, shareable between processes.
 - `.reconcile(*, now: datetime, older_than: timedelta) -> list[RequestRow]`
 - `.unfreeze(host: str, *, now: datetime, by: str, note: str = '') -> Unfreeze | None`
 - `.unfreezes(*, host: str | None = None) -> list[Unfreeze]`
+- `.hosts() -> list[str]`
 - `.close() -> None`
 
 ## `politefetch.store.postgres` (extra `postgres`)
@@ -810,6 +817,7 @@ A `Store` in a Postgres schema, shareable between processes.
 - `.url_record(url: str) -> UrlRecord | None`
 - `.data_time_record(url: str) -> DataTimeRecord | None`
 - `.unfreezes(*, host: str | None = None) -> list[Unfreeze]`
+- `.hosts() -> list[str]`
 - `.open_request(host: str, url: str, *, now: datetime, daily_cap: int, cautious: Callable[[HostState], datetime], byte_budget: int | None = None, abandon_before: datetime | None = None) -> RequestRow`
 - `.close_request(row_id: int, *, now: datetime, outcome: Outcome, update: Callable[[HostState], HostUpdate], validators: Validators | None = None) -> RequestRow`
 - `.reconcile(*, now: datetime, older_than: timedelta) -> list[RequestRow]`

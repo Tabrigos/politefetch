@@ -19,6 +19,11 @@ All notable changes to politefetch. The format follows
   `PostgresStore(..., migrate=True)`. A store newer than the code is refused.
   A store written by 0.1 opens with every promise, count and freeze, as two
   fixtures written by 0.1.1 show.
+- A `politefetch` logger (#30): WARNING when a host freezes and when a row is
+  closed as abandoned, ERROR when the store could not save an outcome, the
+  one lost during a cancellation included. Business outcomes log nothing.
+- `Store.hosts()`, and `gate.statuses()` with a `default` policy covers every
+  host the store knows, not only those with a policy of their own (#30).
 
 ### Changed
 
