@@ -182,8 +182,8 @@ byte_budget=None)`
 - `Gate(store, policies, *, clock=None, default=None, reconcile_after="1h")`:
   a host without a policy raises `NoPolicy` (a `ValueError` too) unless
   `default` is given; rows
-  left open longer than `reconcile_after` (a crashed process) are closed as
-  failed before the next decision.
+  left open longer than `reconcile_after` (a crashed process) count as
+  failed, and the next request to their host closes them.
 
 ## Reading the outcome
 
@@ -268,9 +268,13 @@ def dashboard(gate: Gate) -> str:
 
 `gate.status(host_or_url, recent=10)` returns a `HostStatus`: `may_fetch`,
 `reason`, `next_allowed` (`None` while frozen), `frozen`, `failures`,
-`throttled`, `in_flight`, `requests_today`, `daily_cap`, `wire_bytes_today`,
-`decoded_bytes_today`, `byte_budget`, and `recent` log rows, newest first.
-Given a URL it also counts the bytes that URL would reserve. It sends nothing.
+`throttled`, `in_flight`, `abandoned` (rows past `reconcile_after`, already
+counted in `failures` and left out of `in_flight`), `requests_today`,
+`daily_cap`, `wire_bytes_today`, `decoded_bytes_today`, `byte_budget`, and
+`recent` log rows, newest first. Given a URL it also counts the bytes that URL
+would reserve. It sends nothing and writes nothing, like `may_fetch`: a
+dashboard can call it beside the process that fetches, or with read-only
+access.
 `gate.statuses()` covers the hosts with a policy of their own. In the JSON of
 `to_json` the counts of the day sit under the key `"today"` (`"requests"`,
 `"daily_cap"`, `"wire_bytes"`, `"decoded_bytes"`, `"byte_budget"`, `"day"`).

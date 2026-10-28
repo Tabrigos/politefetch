@@ -46,7 +46,10 @@ promised must outlive the process**.
 7. **An open request is not invisible.** Every request has an `in-flight`
    state that is closed in a `finally`; those that no `finally` can close
    (killed process, cancellation) are closed by a **reconciliation** with a
-   wide threshold, and they count as failed. No statistic excludes them.
+   wide threshold, and they count as failed. No statistic excludes them. The
+   reconciliation runs in the transaction that opens the next request to the
+   host; reading the state (`status`, `may_fetch`) writes nothing and counts
+   those rows the same way.
 
 ## Content checks
 

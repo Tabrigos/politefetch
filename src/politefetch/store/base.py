@@ -228,8 +228,14 @@ class Store(Protocol):
         daily_cap: int,
         cautious: Callable[[HostState], datetime],
         byte_budget: int | None = None,
+        abandon_before: datetime | None = None,
     ) -> RequestRow:
-        """Admit a request, or raise `Refused` having written nothing.
+        """Admit a request, or raise `Refused` having written nothing else.
+
+        With `abandon_before`, the host's rows in flight since that time or
+        earlier are first closed as abandoned, as `reconcile` does, in the
+        same transaction; that close is kept even when the request is then
+        refused, since those rows may be what refuses it.
 
         On admission, in one transaction: the cautious promise returned by
         `cautious(state)` is written (it must be later than `now`), today's

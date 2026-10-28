@@ -441,36 +441,53 @@ class SqliteStore:
         daily_cap: int,
         cautious: Callable[[HostState], datetime],
         byte_budget: int | None = None,
+        abandon_before: datetime | None = None,
     ) -> RequestRow:
         now = as_utc(now, "now")
         with self._transaction(immediate=True) as conn:
+            if abandon_before is not None:
+                cutoff = as_utc(abandon_before, "abandon_before")
+                self._abandon(conn, now, cutoff, host)
             state = self._state(conn, host, now)
             record = self._url_record(conn, url)
             reserve = record.size if record is not None and record.size else 0
             refusal = check_admission(state, now, daily_cap, byte_budget, reserve)
-            if refusal is not None:
-                raise refusal
-            promise = check_cautious(now, cautious(state))
-            cursor = conn.execute(
-                "INSERT INTO requests (host, url, opened_at, state, reserved_bytes)"
-                " VALUES (?, ?, ?, ?, ?)",
-                (host, url, _to_text(now), RowState.IN_FLIGHT.value, reserve),
-            )
-            conn.execute(
-                "INSERT INTO daily_counts (host, day, requests, wire_bytes)"
-                " VALUES (?, ?, 1, ?)"
-                " ON CONFLICT (host, day) DO UPDATE SET requests = requests + 1,"
-                " wire_bytes = wire_bytes + excluded.wire_bytes",
-                (host, now.date().isoformat(), reserve),
-            )
-            self._write_host(
-                conn,
-                replace(
-                    state, not_before=promise, not_before_reason=RefusalReason.BACKOFF
-                ),
-            )
-            row_id = cursor.lastrowid
-            assert row_id is not None
+            if refusal is None:
+                return self._admit(conn, host, url, now, state, reserve, cautious)
+        # Raised after the commit: the abandoned rows stay closed.
+        raise refusal
+
+    def _admit(
+        self,
+        conn: sqlite3.Connection,
+        host: str,
+        url: str,
+        now: datetime,
+        state: HostState,
+        reserve: int,
+        cautious: Callable[[HostState], datetime],
+    ) -> RequestRow:
+        """Open the row of an admitted request, inside the caller's
+        transaction."""
+        promise = check_cautious(now, cautious(state))
+        cursor = conn.execute(
+            "INSERT INTO requests (host, url, opened_at, state, reserved_bytes)"
+            " VALUES (?, ?, ?, ?, ?)",
+            (host, url, _to_text(now), RowState.IN_FLIGHT.value, reserve),
+        )
+        conn.execute(
+            "INSERT INTO daily_counts (host, day, requests, wire_bytes)"
+            " VALUES (?, ?, 1, ?)"
+            " ON CONFLICT (host, day) DO UPDATE SET requests = requests + 1,"
+            " wire_bytes = wire_bytes + excluded.wire_bytes",
+            (host, now.date().isoformat(), reserve),
+        )
+        self._write_host(
+            conn,
+            replace(state, not_before=promise, not_before_reason=RefusalReason.BACKOFF),
+        )
+        row_id = cursor.lastrowid
+        assert row_id is not None
         return RequestRow(
             id=row_id,
             host=host,
@@ -613,34 +630,47 @@ class SqliteStore:
     def reconcile(self, *, now: datetime, older_than: timedelta) -> list[RequestRow]:
         now = as_utc(now, "now")
         check_threshold(older_than)
-        cutoff = now - older_than
         with self._transaction(immediate=True) as conn:
-            records = conn.execute(
-                f"SELECT {_ROW_COLUMNS} FROM requests"
-                " WHERE state = ? AND opened_at <= ? ORDER BY id",
-                (RowState.IN_FLIGHT.value, _to_text(cutoff)),
-            ).fetchall()
-            reconciled: list[RequestRow] = []
-            for record in records:
-                row = _row(record)
-                conn.execute(
-                    "UPDATE requests SET state = ?, closed_at = ?, ok = 0,"
-                    " status = NULL, failure = ? WHERE id = ?",
-                    (RowState.RECONCILED.value, _to_text(now), ABANDONED, row.id),
+            return self._abandon(conn, now, now - older_than)
+
+    @staticmethod
+    def _abandon(
+        conn: sqlite3.Connection,
+        now: datetime,
+        cutoff: datetime,
+        host: str | None = None,
+    ) -> list[RequestRow]:
+        """Close as abandoned the rows in flight since `cutoff` or earlier, of
+        `host` or of every host, inside the caller's transaction."""
+        query = (
+            f"SELECT {_ROW_COLUMNS} FROM requests WHERE state = ? AND opened_at <= ?"
+        )
+        parameters: tuple[str, ...] = (RowState.IN_FLIGHT.value, _to_text(cutoff))
+        if host is not None:
+            query += " AND host = ?"
+            parameters += (host,)
+        records = conn.execute(query + " ORDER BY id", parameters).fetchall()
+        reconciled: list[RequestRow] = []
+        for record in records:
+            row = _row(record)
+            conn.execute(
+                "UPDATE requests SET state = ?, closed_at = ?, ok = 0,"
+                " status = NULL, failure = ? WHERE id = ?",
+                (RowState.RECONCILED.value, _to_text(now), ABANDONED, row.id),
+            )
+            conn.execute(
+                "INSERT INTO hosts (host, failures) VALUES (?, 1)"
+                " ON CONFLICT (host) DO UPDATE SET failures = failures + 1",
+                (row.host,),
+            )
+            reconciled.append(
+                replace(
+                    row,
+                    state=RowState.RECONCILED,
+                    closed_at=now,
+                    outcome=Outcome(ok=False, failure=ABANDONED),
                 )
-                conn.execute(
-                    "INSERT INTO hosts (host, failures) VALUES (?, 1)"
-                    " ON CONFLICT (host) DO UPDATE SET failures = failures + 1",
-                    (row.host,),
-                )
-                reconciled.append(
-                    replace(
-                        row,
-                        state=RowState.RECONCILED,
-                        closed_at=now,
-                        outcome=Outcome(ok=False, failure=ABANDONED),
-                    )
-                )
+            )
         return reconciled
 
     def unfreeze(

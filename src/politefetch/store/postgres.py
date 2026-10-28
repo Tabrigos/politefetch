@@ -583,36 +583,53 @@ class PostgresStore:
         daily_cap: int,
         cautious: Callable[[HostState], datetime],
         byte_budget: int | None = None,
+        abandon_before: datetime | None = None,
     ) -> RequestRow:
         now = as_utc(now, "now")
         with self._write() as conn:
+            if abandon_before is not None:
+                cutoff = as_utc(abandon_before, "abandon_before")
+                self._abandon(conn, now, cutoff, host)
             state = self._state(conn, host, now)
             record = self._url_record(conn, url)
             reserve = record.size if record is not None and record.size else 0
             refusal = check_admission(state, now, daily_cap, byte_budget, reserve)
-            if refusal is not None:
-                raise refusal
-            promise = check_cautious(now, cautious(state))
-            inserted = conn.execute(
-                "INSERT INTO requests (host, url, opened_at, state, reserved_bytes)"
-                " VALUES (%s, %s, %s, %s, %s) RETURNING id",
-                (host, url, now, RowState.IN_FLIGHT.value, reserve),
-            ).fetchone()
-            assert inserted is not None
-            conn.execute(
-                "INSERT INTO daily_counts (host, day, requests, wire_bytes)"
-                " VALUES (%s, %s, 1, %s)"
-                " ON CONFLICT (host, day) DO UPDATE SET"
-                " requests = daily_counts.requests + 1,"
-                " wire_bytes = daily_counts.wire_bytes + excluded.wire_bytes",
-                (host, now.date(), reserve),
-            )
-            self._write_host(
-                conn,
-                replace(
-                    state, not_before=promise, not_before_reason=RefusalReason.BACKOFF
-                ),
-            )
+            if refusal is None:
+                return self._admit(conn, host, url, now, state, reserve, cautious)
+        # Raised after the commit: the abandoned rows stay closed.
+        raise refusal
+
+    def _admit(
+        self,
+        conn: _Conn,
+        host: str,
+        url: str,
+        now: datetime,
+        state: HostState,
+        reserve: int,
+        cautious: Callable[[HostState], datetime],
+    ) -> RequestRow:
+        """Open the row of an admitted request, inside the caller's
+        transaction."""
+        promise = check_cautious(now, cautious(state))
+        inserted = conn.execute(
+            "INSERT INTO requests (host, url, opened_at, state, reserved_bytes)"
+            " VALUES (%s, %s, %s, %s, %s) RETURNING id",
+            (host, url, now, RowState.IN_FLIGHT.value, reserve),
+        ).fetchone()
+        assert inserted is not None
+        conn.execute(
+            "INSERT INTO daily_counts (host, day, requests, wire_bytes)"
+            " VALUES (%s, %s, 1, %s)"
+            " ON CONFLICT (host, day) DO UPDATE SET"
+            " requests = daily_counts.requests + 1,"
+            " wire_bytes = daily_counts.wire_bytes + excluded.wire_bytes",
+            (host, now.date(), reserve),
+        )
+        self._write_host(
+            conn,
+            replace(state, not_before=promise, not_before_reason=RefusalReason.BACKOFF),
+        )
         return RequestRow(
             id=int(inserted[0]),
             host=host,
@@ -688,32 +705,47 @@ class PostgresStore:
     def reconcile(self, *, now: datetime, older_than: timedelta) -> list[RequestRow]:
         now = as_utc(now, "now")
         check_threshold(older_than)
-        cutoff = now - older_than
-        abandoned = Outcome(ok=False, failure=ABANDONED)
         with self._write() as conn:
+            return self._abandon(conn, now, now - older_than)
+
+    @staticmethod
+    def _abandon(
+        conn: _Conn, now: datetime, cutoff: datetime, host: str | None = None
+    ) -> list[RequestRow]:
+        """Close as abandoned the rows in flight since `cutoff` or earlier, of
+        `host` or of every host, inside the caller's transaction."""
+        abandoned = Outcome(ok=False, failure=ABANDONED)
+        if host is None:
             found = conn.execute(
                 f"SELECT {_ROW_COLUMNS} FROM requests"
                 " WHERE state = %s AND opened_at <= %s ORDER BY id".encode(),
                 (RowState.IN_FLIGHT.value, cutoff),
             ).fetchall()
-            reconciled: list[RequestRow] = []
-            for record in found:
-                row = _row(record)
-                conn.execute(
-                    "UPDATE requests SET state = %s, closed_at = %s, ok = false,"
-                    " status = NULL, failure = %s WHERE id = %s",
-                    (RowState.RECONCILED.value, now, ABANDONED, row.id),
+        else:
+            found = conn.execute(
+                f"SELECT {_ROW_COLUMNS} FROM requests"
+                " WHERE state = %s AND opened_at <= %s AND host = %s"
+                " ORDER BY id".encode(),
+                (RowState.IN_FLIGHT.value, cutoff, host),
+            ).fetchall()
+        reconciled: list[RequestRow] = []
+        for record in found:
+            row = _row(record)
+            conn.execute(
+                "UPDATE requests SET state = %s, closed_at = %s, ok = false,"
+                " status = NULL, failure = %s WHERE id = %s",
+                (RowState.RECONCILED.value, now, ABANDONED, row.id),
+            )
+            conn.execute(
+                "INSERT INTO hosts (host, failures) VALUES (%s, 1)"
+                " ON CONFLICT (host) DO UPDATE SET failures = hosts.failures + 1",
+                (row.host,),
+            )
+            reconciled.append(
+                replace(
+                    row, state=RowState.RECONCILED, closed_at=now, outcome=abandoned
                 )
-                conn.execute(
-                    "INSERT INTO hosts (host, failures) VALUES (%s, 1)"
-                    " ON CONFLICT (host) DO UPDATE SET failures = hosts.failures + 1",
-                    (row.host,),
-                )
-                reconciled.append(
-                    replace(
-                        row, state=RowState.RECONCILED, closed_at=now, outcome=abandoned
-                    )
-                )
+            )
         return reconciled
 
     def note_data_time(

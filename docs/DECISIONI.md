@@ -1367,3 +1367,29 @@ alla vecchia e la vecchia prende la riga "Superata da".
   `store-0.1.1-integration.db`, ripulita da una prima integrazione, provano
   che un file della 0.1 si apre con ogni riga. Le migrazioni della 0.2 si
   aggiungono a `_MIGRATIONS` nel modulo di ciascuno store.
+## D-053 — Leggere lo stato non scrive; la riconciliazione sta nell'apertura
+
+- **Data e tappa**: 2026-10-27, issue #29 (revisione dell'architettura, R5)
+- **Contesto**: ogni decisione, anche `status` e `may_fetch`, riconciliava
+  tutti gli host in una transazione di scrittura (`BEGIN IMMEDIATE`, un
+  advisory lock per lo schema in Postgres). Un pannello in un altro processo
+  riceveva `database is locked` mentre chi scaricava scriveva (riprodotto), e
+  un monitor senza diritto di scrittura non poteva esistere. Un tentativo
+  costava due transazioni di scrittura: riconciliazione e apertura.
+- **Decisione**:
+  - `open_request` prende `abandon_before`: le righe in volo dell'host aperte
+    prima si chiudono come abbandonate nella stessa transazione che apre la
+    richiesta. La chiusura resta anche se l'apertura viene rifiutata, perché
+    quelle righe possono essere proprio ciò che la rifiuta (`in_flight`): il
+    rifiuto si solleva dopo il commit;
+  - `status`, `statuses` e `may_fetch` leggono lo stato e contano le righe
+    oltre la soglia come le conterà la chiusura (un fallimento ciascuna, fuori
+    da `in_flight`), senza scrivere; `HostStatus.abandoned` le mostra;
+  - `Gate.reconcile()` resta, per chi vuole chiudere tutto a mano.
+- **Alternative scartate**: riconciliare in lettura solo quando c'è qualcosa
+  da chiudere (un monitor senza permessi fallirebbe proprio dopo un crash);
+  mostrare le righe come già riconciliate in `recent` (una chiusura che nel
+  database non c'è).
+- **Conseguenze**: le righe abbandonate di un host che nessuno interroga più
+  restano in volo nel database finché qualcuno non gli chiede una richiesta o
+  chiama `Gate.reconcile()`; lo stato letto le conta già.

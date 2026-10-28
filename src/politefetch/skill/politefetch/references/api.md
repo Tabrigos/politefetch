@@ -41,7 +41,7 @@ The single point every request to a protected host goes through.
 
 - `.policy_for(host: str) -> HostPolicy`
 - `.reconcile(now: datetime | None = None) -> list[RequestRow]`: Close as failed the rows in flight for longer than `reconcile_after`.
-- `.may_fetch(url: str) -> Verdict`: Tell whether a request to `url` may start now, and if not why and until when. Advisory: `attempt` decides again, atomically. Sends nothing and opens no row; it does reconcile abandoned rows.
+- `.may_fetch(url: str) -> Verdict`: Tell whether a request to `url` may start now, and if not why and until when. Advisory: `attempt` decides again, atomically. Sends nothing and writes nothing: rows abandoned past `reconcile_after` count as the next request to the host will count them.
 - `.status(host_or_url: str, *, recent: int = 10) -> HostStatus`: The readable state of a host: the decision `may_fetch` would take, today's counts and bytes, and its latest `recent` log rows.
 - `.statuses(hosts: Iterable[str] | None = None, *, recent: int = 10) -> list[HostStatus]`: `status` of each of `hosts` (hosts or URLs), in their order; by default of every host with a policy of its own, sorted by name.
 - `.attempt(url: str) -> Attempt`: A context manager (sync or async) around one request to `url`.
@@ -105,7 +105,7 @@ Readable state per host: next allowed request, reason for any block, today's cou
 
 ### `HostStatus`
 
-`HostStatus(host: str, at: datetime, may_fetch: bool, reason: RefusalReason | None, next_allowed: datetime | None, frozen: Freeze | None, failures: int, throttled: int, in_flight: int, day: date, requests_today: int, daily_cap: int, wire_bytes_today: int, decoded_bytes_today: int, byte_budget: int | None, recent: tuple[RequestRow, ...])`
+`HostStatus(host: str, at: datetime, may_fetch: bool, reason: RefusalReason | None, next_allowed: datetime | None, frozen: Freeze | None, failures: int, throttled: int, in_flight: int, day: date, requests_today: int, daily_cap: int, wire_bytes_today: int, decoded_bytes_today: int, byte_budget: int | None, recent: tuple[RequestRow, ...], abandoned: int = 0)`
 
 One host as of `at`.
 
@@ -127,6 +127,7 @@ One host as of `at`.
 | `decoded_bytes_today` | `int` |  |
 | `byte_budget` | `int \| None` |  |
 | `recent` | `tuple[RequestRow, ...]` |  |
+| `abandoned` | `int` |  |
 
 - `.to_dict() -> dict[str, object]`: The status as JSON-ready values: times as ISO 8601 strings with their UTC offset, reasons and row states as their stored names.
 - `.to_json(*, indent: int | None = None) -> str`: `to_dict` serialised.
@@ -656,7 +657,7 @@ Protocol. Persistent state behind the gate.
 
 - `.host_state(host: str, now: datetime) -> HostState`: Return the state of `host`, with today's count for `now`'s UTC day.
 - `.requests_on(host: str, day: date) -> int`: Return how many requests to `host` were opened on the UTC `day`.
-- `.open_request(host: str, url: str, *, now: datetime, daily_cap: int, cautious: Callable[[HostState], datetime], byte_budget: int | None = None) -> RequestRow`: Admit a request, or raise `Refused` having written nothing.
+- `.open_request(host: str, url: str, *, now: datetime, daily_cap: int, cautious: Callable[[HostState], datetime], byte_budget: int | None = None, abandon_before: datetime | None = None) -> RequestRow`: Admit a request, or raise `Refused` having written nothing else.
 - `.close_request(row_id: int, *, now: datetime, outcome: Outcome, update: Callable[[HostState], HostUpdate], validators: Validators | None = None) -> RequestRow`: Close an in-flight row with its outcome and update the host.
 - `.url_record(url: str) -> UrlRecord | None`: Return what the store remembers about `url`, if anything.
 - `.note_data_time(url: str, data_time: datetime, *, now: datetime) -> DataTimeRecord`: Record the data time a read of `url` returned; see `apply_data_time`. Atomic.
@@ -758,7 +759,7 @@ A `Store` kept in memory.
 - `.requests_on(host: str, day: date) -> int`
 - `.row(row_id: int) -> RequestRow`
 - `.rows(*, host: str | None = None, state: RowState | None = None, latest: int | None = None) -> list[RequestRow]`
-- `.open_request(host: str, url: str, *, now: datetime, daily_cap: int, cautious: Callable[[HostState], datetime], byte_budget: int | None = None) -> RequestRow`
+- `.open_request(host: str, url: str, *, now: datetime, daily_cap: int, cautious: Callable[[HostState], datetime], byte_budget: int | None = None, abandon_before: datetime | None = None) -> RequestRow`
 - `.close_request(row_id: int, *, now: datetime, outcome: Outcome, update: Callable[[HostState], HostUpdate], validators: Validators | None = None) -> RequestRow`
 - `.url_record(url: str) -> UrlRecord | None`
 - `.note_data_time(url: str, data_time: datetime, *, now: datetime) -> DataTimeRecord`
@@ -782,7 +783,7 @@ A `Store` in a SQLite file, shareable between processes.
 - `.requests_on(host: str, day: date) -> int`
 - `.row(row_id: int) -> RequestRow`
 - `.rows(*, host: str | None = None, state: RowState | None = None, latest: int | None = None) -> list[RequestRow]`
-- `.open_request(host: str, url: str, *, now: datetime, daily_cap: int, cautious: Callable[[HostState], datetime], byte_budget: int | None = None) -> RequestRow`
+- `.open_request(host: str, url: str, *, now: datetime, daily_cap: int, cautious: Callable[[HostState], datetime], byte_budget: int | None = None, abandon_before: datetime | None = None) -> RequestRow`
 - `.close_request(row_id: int, *, now: datetime, outcome: Outcome, update: Callable[[HostState], HostUpdate], validators: Validators | None = None) -> RequestRow`
 - `.url_record(url: str) -> UrlRecord | None`
 - `.note_data_time(url: str, data_time: datetime, *, now: datetime) -> DataTimeRecord`
@@ -809,7 +810,7 @@ A `Store` in a Postgres schema, shareable between processes.
 - `.url_record(url: str) -> UrlRecord | None`
 - `.data_time_record(url: str) -> DataTimeRecord | None`
 - `.unfreezes(*, host: str | None = None) -> list[Unfreeze]`
-- `.open_request(host: str, url: str, *, now: datetime, daily_cap: int, cautious: Callable[[HostState], datetime], byte_budget: int | None = None) -> RequestRow`
+- `.open_request(host: str, url: str, *, now: datetime, daily_cap: int, cautious: Callable[[HostState], datetime], byte_budget: int | None = None, abandon_before: datetime | None = None) -> RequestRow`
 - `.close_request(row_id: int, *, now: datetime, outcome: Outcome, update: Callable[[HostState], HostUpdate], validators: Validators | None = None) -> RequestRow`
 - `.reconcile(*, now: datetime, older_than: timedelta) -> list[RequestRow]`
 - `.note_data_time(url: str, data_time: datetime, *, now: datetime) -> DataTimeRecord`
