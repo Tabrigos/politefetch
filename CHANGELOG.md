@@ -57,6 +57,19 @@ All notable changes to politefetch. The format follows
   raises, the answer is rejected as `"unusable"` and the exception goes on),
   and `conditional=False`.
 
+- **Processes sharing a store apply the lowest cap** (#31). The store
+  remembers for a day the daily cap and the byte budget each host was
+  asked for, a refused request's too, and every process applies the lowest
+  when it is lower than its own: a rollout that lowers a cap holds at once,
+  one that raises it holds a day after the last process with the old cap
+  stopped. A process whose cap is above the one in force logs a WARNING once,
+  and is refused only as the lower cap refuses. `HostStatus.daily_cap` and
+  `byte_budget`, and `attempt.bytes_left`, give the caps in force;
+  `HostState` has `lowest_daily_cap` and `lowest_byte_budget`. The store
+  schema goes to version 2 (a `host_caps` table): SQLite migrates when it
+  opens; **an existing Postgres schema must be opened once with
+  `PostgresStore(..., migrate=True)`**, with the processes that use it
+  stopped.
 - `status`, `statuses` and `may_fetch` write nothing (#29): a dashboard no
   longer competes for the write lock with the process that fetches, and can
   run with read-only access. A row in flight past `reconcile_after` shows in

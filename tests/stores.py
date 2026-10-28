@@ -74,6 +74,13 @@ class Harness:
         self.store = self._open(previous)
         return self.store
 
+    def another(self) -> Store:
+        """A second store over the same state, as another process opens it;
+        the caller closes it."""
+        if isinstance(self.store, MemoryStore):
+            return MemoryStore(self.store.data)
+        return self._open(None)
+
     def close(self) -> None:
         self.store.close()
         if self.kind == "postgres":

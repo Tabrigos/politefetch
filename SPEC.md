@@ -99,7 +99,9 @@ promised must outlive the process**.
 - **Store**: an interface with three implementations: memory (tests), SQLite
   (default, the standard library's `sqlite3`), Postgres (`postgres` extra).
   The critical operations are atomic: two processes sharing the store do not
-  exceed the cap together. The SQLite and Postgres stores record a schema
+  exceed the cap together, nor the lower one when their caps differ (the
+  store remembers for a day the caps a host was asked for, and the lowest
+  applies). The SQLite and Postgres stores record a schema
   version; a later version is a migration that only adds, applied in one
   transaction (SQLite when it opens, an existing Postgres schema only when
   opened with `migrate=True`), and a database newer than the code is

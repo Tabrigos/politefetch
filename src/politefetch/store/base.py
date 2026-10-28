@@ -22,6 +22,7 @@ from politefetch.errors import RefusalReason, Refused
 
 __all__ = [
     "ABANDONED",
+    "CAP_MEMORY",
     "REJECTIONS",
     "DataTimeRecord",
     "Freeze",
@@ -36,6 +37,7 @@ __all__ = [
     "Validators",
     "apply_close",
     "apply_late_close",
+    "caps_in_force",
     "check_admission",
     "is_late",
     "log_abandoned",
@@ -58,6 +60,11 @@ REJECTED = "rejected:"
 """Prefix of the failure shape a rejection is stored with
 (`"rejected:not_ready"`): apart from the failure shapes, such as the
 `"not_ready"` of a transfer cut short, which is a failure."""
+
+
+CAP_MEMORY = timedelta(days=1)
+"""How long the store remembers the caps a host was opened with: every
+process applies the lowest one seen in this time (#31)."""
 
 
 def rejected(outcome: "Outcome") -> bool:
@@ -244,6 +251,12 @@ class HostState:
             theirs.
         decoded_bytes_today: Bytes after decoding, for the requests opened
             on `day`.
+        lowest_daily_cap: The lowest daily cap a process sharing the store
+            asked to open the host with in the last day (`CAP_MEMORY`);
+            `None` if none did. Every process applies it when it is lower
+            than its own.
+        lowest_byte_budget: The lowest byte budget asked for the same way;
+            `None` if none was (a process without a budget sets none).
     """
 
     host: str
@@ -257,6 +270,8 @@ class HostState:
     throttled: int = 0
     wire_bytes_today: int = 0
     decoded_bytes_today: int = 0
+    lowest_daily_cap: int | None = None
+    lowest_byte_budget: int | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -344,6 +359,11 @@ class Store(Protocol):
         earlier are first closed as abandoned, as `reconcile` does, in the
         same transaction; that close is kept even when the request is then
         refused, since those rows may be what refuses it.
+
+        `daily_cap` and `byte_budget` are remembered for `CAP_MEMORY`, a
+        refused request's too, and the lowest ones remembered for the host
+        apply in their place when lower (`caps_in_force`): processes sharing
+        the store with different caps do not exceed the lower one together.
 
         On admission, in one transaction: the cautious promise returned by
         `cautious(state)` is written (it must be later than `now`), today's
@@ -470,6 +490,7 @@ def check_admission(
         raise ValueError(f"daily_cap must not be negative, got {daily_cap}")
     if byte_budget is not None and byte_budget < 0:
         raise ValueError(f"byte_budget must not be negative, got {byte_budget}")
+    daily_cap, byte_budget = caps_in_force(state, daily_cap, byte_budget)
     blocks: list[tuple[RefusalReason, datetime | None]] = []
     if state.freeze is not None and state.freeze.active(now):
         blocks.append((RefusalReason.FROZEN, state.freeze.until))
@@ -494,6 +515,32 @@ def check_admission(
         key=lambda b: (b[1] is None, b[1] or now, -blocks.index(b)),
     )
     return Refused(state.host, reason, until)
+
+
+def caps_in_force(
+    state: HostState, daily_cap: int, byte_budget: int | None
+) -> tuple[int, int | None]:
+    """The daily cap and byte budget that hold for the host: a process's own,
+    or the lower ones another process sharing the store asked for in the
+    last day."""
+    if state.lowest_daily_cap is not None:
+        daily_cap = min(daily_cap, state.lowest_daily_cap)
+    if state.lowest_byte_budget is not None:
+        byte_budget = (
+            state.lowest_byte_budget
+            if byte_budget is None
+            else min(byte_budget, state.lowest_byte_budget)
+        )
+    return daily_cap, byte_budget
+
+
+def asked_caps(daily_cap: int, byte_budget: int | None) -> list[tuple[str, int]]:
+    """The caps an open asks for, as the store remembers them: a process
+    without a budget asks for none."""
+    asked = [("daily_cap", daily_cap)]
+    if byte_budget is not None:
+        asked.append(("byte_budget", byte_budget))
+    return asked
 
 
 def check_cautious(now: datetime, cautious: datetime) -> datetime:

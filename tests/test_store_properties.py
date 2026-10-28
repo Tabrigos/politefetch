@@ -10,11 +10,13 @@ every step it checks the invariants of SPEC.md that belong to the store:
 - a promise is never shortened except by a good answer, and never by one
   that arrives after the reconciliation;
 - after a reconciliation no row older than the threshold is left open;
-- a refused or failed operation writes nothing;
+- a refused or failed operation writes nothing (a refused open, nothing but
+  the caps it asked for);
 - a restart changes nothing.
 """
 
 import contextlib
+from dataclasses import replace
 from datetime import UTC, date, datetime, timedelta
 
 from hypothesis import settings
@@ -77,13 +79,15 @@ class StoreMachine(RuleBasedStateMachine):
     def store(self) -> Store:
         return self.harness.store
 
-    def everything(self) -> object:
+    def everything(self, *, caps: bool = True) -> object:
         urls = [f"https://{h}{p}" for h in HOSTS for p in PATHS]
-        return (
-            [self.store.host_state(h, self.now) for h in HOSTS],
-            self.store.rows(),
-            [self.store.url_record(u) for u in urls],
-        )
+        states = [self.store.host_state(h, self.now) for h in HOSTS]
+        if not caps:
+            states = [
+                replace(s, lowest_daily_cap=None, lowest_byte_budget=None)
+                for s in states
+            ]
+        return (states, self.store.rows(), [self.store.url_record(u) for u in urls])
 
     def check_promise_not_shortened(self, host: str) -> None:
         before = self.promise[host]
@@ -97,7 +101,7 @@ class StoreMachine(RuleBasedStateMachine):
 
     @rule(target=open_rows, host=hosts, path=st.sampled_from(PATHS), pause=pauses)
     def open(self, host: str, path: str, pause: timedelta) -> object:
-        before = self.everything()
+        before = self.everything(caps=False)
         now = self.now
         url = f"https://{host}{path}"
         used = self.store.host_state(host, now).wire_bytes_today
@@ -113,7 +117,10 @@ class StoreMachine(RuleBasedStateMachine):
                 cautious=lambda _s: now + pause,
             )
         except Refused:
-            assert self.everything() == before
+            # Nothing written but the caps it asked for (#31).
+            assert self.everything(caps=False) == before
+            state = self.store.host_state(host, now)
+            assert (state.lowest_daily_cap, state.lowest_byte_budget) == (CAP, BUDGET)
             return multiple()
         # Admitted: the budget had room for what this request reserves.
         assert row.reserved_bytes == expected_reserve
@@ -126,7 +133,7 @@ class StoreMachine(RuleBasedStateMachine):
 
     @rule(host=hosts)
     def open_with_a_broken_policy(self, host: str) -> None:
-        before = self.everything()
+        before = self.everything(caps=False)  # refused, it notes its cap
 
         def broken(_state: HostState) -> datetime:
             raise RuntimeError("crash inside the transaction")
@@ -135,7 +142,7 @@ class StoreMachine(RuleBasedStateMachine):
             self.store.open_request(
                 host, "https://x/", now=self.now, daily_cap=CAP, cautious=broken
             )
-        assert self.everything() == before
+        assert self.everything(caps=False) == before
 
     @rule(
         row=consumes(open_rows),

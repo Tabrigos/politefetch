@@ -51,6 +51,23 @@ def test_processes_together_never_exceed_the_cap(spec: children.StoreSpec) -> No
         assert all(r.state is RowState.CLOSED for r in rows)
 
 
+def test_processes_with_different_caps_apply_the_lowest(
+    spec: children.StoreSpec,
+) -> None:
+    low, high = 10, 30
+    start_ns = children.clock_ns()
+    # The lower cap is seen first, as after a rollout that lowered it.
+    assert children.hammer(spec, HOST, low, 1, start_ns) == 1
+    workers = [
+        spawn(children.hammer, spec, HOST, cap, 300, start_ns)
+        for cap in (high, low, high, low)
+    ]
+    admitted = [w.join(timeout=300) for w in workers]
+    assert sum(admitted) == low - 1
+    with children.open_store(spec) as store:
+        assert store.requests_on(HOST, children.DAY_START.date()) == low
+
+
 def test_a_process_dying_mid_request_leaves_a_row_to_reconcile(
     spec: children.StoreSpec,
 ) -> None:

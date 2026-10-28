@@ -76,14 +76,16 @@ class HostStatus:
         day: The UTC day of `at`, the day of the `*_today` counts.
         requests_today: Requests opened on `day`, counted against
             `daily_cap`.
-        daily_cap: The requests per UTC day the host's policy allows.
+        daily_cap: The requests per UTC day in force: the host's policy's, or
+            a lower one another process sharing the store asked for in the
+            last day.
         wire_bytes_today: Bytes on the wire for the requests opened on
             `day` (real bytes, or the reservation of requests that never
             reported theirs), counted against `byte_budget`.
         decoded_bytes_today: Bytes after decoding, for the requests opened
             on `day`.
-        byte_budget: The wire bytes per UTC day the host's policy allows;
-            `None` for no limit.
+        byte_budget: The wire bytes per UTC day in force, chosen as
+            `daily_cap` is; `None` for no limit.
         recent: The latest log rows of the host, newest first.
         abandoned: Rows in flight for longer than `reconcile_after`: already
             left out of `in_flight` and counted in `failures`, as the next
