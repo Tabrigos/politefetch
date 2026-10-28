@@ -28,6 +28,10 @@ All notable changes to politefetch. The format follows
   matching, whose JSON stops midway, as served by a source rewriting its
   file. The skill tells it from `Truncated` and says which error the caller
   sees for each (#20).
+- `SourceRequest.arrived`: the time each request reached the simulator, read
+  from its `clock` (`SourceSimulator(clock=...)`, or set on a running
+  simulator; the system clock by default). The skill shows how to count the
+  requests per simulated hour with a `FakeClock` (#21).
 
 ### Changed
 
