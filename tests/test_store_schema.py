@@ -22,6 +22,7 @@ from psycopg import sql
 from politefetch import FakeClock, Gate, HostPolicy
 from politefetch.errors import RefusalReason
 from politefetch.store import RowState, SqliteStore
+from politefetch.store.postgres import _MIGRATIONS as PG_MIGRATIONS
 from politefetch.store.postgres import PostgresStore
 
 from .stores import POSTGRES_DSN, drop_schema, fresh_schema, needs_postgres
@@ -366,12 +367,15 @@ def test_postgres_migrates_only_when_asked(
     schema: str, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     written_by_0_1(schema)
-    monkeypatch.setattr("politefetch.store.postgres._MIGRATIONS", COLUMN_THEN_INDEX)
+    # After the real ones, which the store's queries need.
+    monkeypatch.setattr(
+        "politefetch.store.postgres._MIGRATIONS", PG_MIGRATIONS + COLUMN_THEN_INDEX
+    )
     with pytest.raises(ValueError, match="migrate=True"):
         PostgresStore(POSTGRES_DSN, schema=schema)
     assert "extra" not in pg_columns(schema, "hosts")
     PostgresStore(POSTGRES_DSN, schema=schema, migrate=True).close()
-    assert pg_version(schema) == 3
+    assert pg_version(schema) == LATEST + 2
     assert "extra" in pg_columns(schema, "hosts")
     with PostgresStore(POSTGRES_DSN, schema=schema) as store:  # now current
         freeze = store.host_state("frozen.example", LATER).freeze
