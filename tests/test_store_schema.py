@@ -330,15 +330,16 @@ def pg_columns(schema: str, table: str) -> set[str]:
 
 
 def written_by_0_1(schema: str) -> None:
-    """A schema as 0.1 leaves it: the tables and some state, no version."""
-    with pytest.MonkeyPatch.context() as version_1:
-        version_1.setattr("politefetch.store.postgres._MIGRATIONS", ())
-        with PostgresStore(POSTGRES_DSN, schema=schema) as store:
-            policy = HostPolicy(daily_cap=100, min_interval="10m")
-            gate = Gate(store, {"frozen.example": policy}, clock=FakeClock(T0))
-            with gate.attempt("https://frozen.example/feed") as attempt:
-                attempt.response(429)
+    """A schema as 0.1 leaves it: the tables and some state, no version.
+    The state is written by this version, then the tables 0.1 did not have
+    are dropped."""
+    with PostgresStore(POSTGRES_DSN, schema=schema) as store:
+        policy = HostPolicy(daily_cap=100, min_interval="10m")
+        gate = Gate(store, {"frozen.example": policy}, clock=FakeClock(T0))
+        with gate.attempt("https://frozen.example/feed") as attempt:
+            attempt.response(429)
     pg(schema, "DROP TABLE schema_version")
+    pg(schema, "DROP TABLE host_caps")  # version 2
 
 
 @needs_postgres
