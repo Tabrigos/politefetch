@@ -34,6 +34,12 @@ All notable changes to politefetch. The format follows
   of `in_flight`; the next request to its host closes it, in the transaction
   that opens that request, so an attempt takes one transaction instead of
   two. `Store.open_request` takes `abandon_before` for that.
+- The default `reconcile_after` follows the fetchers built on the gate (#32):
+  twice their longest request (deadline plus one connect and one read
+  timeout, 11 minutes 20 seconds with the defaults), or an hour while there
+  are none. A process killed mid-request blocked its host for an hour; a
+  value given by hand still wins. `Gate.bound_requests` is how the fetchers
+  tell the gate.
 
 ### Fixed
 

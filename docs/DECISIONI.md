@@ -1393,3 +1393,29 @@ alla vecchia e la vecchia prende la riga "Superata da".
 - **Conseguenze**: le righe abbandonate di un host che nessuno interroga più
   restano in volo nel database finché qualcuno non gli chiede una richiesta o
   chiama `Gate.reconcile()`; lo stato letto le conta già.
+## D-054 — `reconcile_after` di default segue i fetcher
+
+- **Data e tappa**: 2026-10-28, issue #32 (revisione dell'architettura, R9)
+- **Contesto**: il default era un'ora fissa, mentre una richiesta di un
+  fetcher finisce entro la sua scadenza più i due timeout (5 minuti e 40
+  secondi con i default). Un processo ucciso a metà richiesta bloccava il suo
+  host per un'ora: due giri persi per una fonte letta ogni 30 minuti, come ha
+  misurato una prima integrazione.
+- **Decisione**:
+  - senza un valore dato a mano, `reconcile_after` è il doppio della
+    richiesta più lunga dei fetcher costruiti sul Gate, che la dichiarano con
+    `Gate.bound_requests`; senza fetcher resta un'ora;
+  - il doppio è il margine: una richiesta non può durare più della sua
+    scadenza, e la chiusura tardiva rende comunque l'host solo più prudente;
+  - un valore dato a mano vince, e il fetcher continua a rifiutare una
+    scadenza che non ci sta.
+- **Alternative scartate**: un default fisso più corto (15 minuti), che
+  sarebbe meno prudente per chi usa `gate.attempt` con un client proprio, le
+  cui richieste il Gate non può limitare; ricavarlo dalla scadenza di default
+  dei fetcher anche senza fetcher (stesso difetto).
+- **Conseguenze**: un processo che usa sia i fetcher sia `gate.attempt` con
+  un client proprio deve dare `reconcile_after` a mano, più lungo della sua
+  richiesta più lenta: lo dicono la docstring del Gate e la skill. Due
+  processi sullo stesso store con default diversi (uno con fetcher, un
+  pannello senza) contano le righe abbandonate a soglie diverse: ciascuno
+  resta prudente per sé.

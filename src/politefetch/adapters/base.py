@@ -272,6 +272,7 @@ def _deadline(
     if value <= timedelta(0):
         raise ValueError(f"deadline must be positive, got {value}")
     longest = value + timedelta(seconds=timeout[0] + timeout[1])
+    gate.bound_requests(longest)
     if longest >= gate.reconcile_after:
         raise ValueError(
             f"deadline {value} plus one connect and one read timeout ({longest}) "
