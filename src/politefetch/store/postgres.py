@@ -48,6 +48,7 @@ from politefetch.policy import parse_duration
 from politefetch.store._schema import BASE_VERSION, VERSION_TABLE, pending
 from politefetch.store.base import (
     ABANDONED,
+    CAP_MEMORY,
     DataTimeRecord,
     Freeze,
     HostState,
@@ -62,6 +63,7 @@ from politefetch.store.base import (
     apply_data_time,
     apply_late_close,
     apply_validators,
+    asked_caps,
     byte_changes,
     check_admission,
     check_cautious,
@@ -160,7 +162,20 @@ _TABLES = (
 
 # The statements of each schema version after the first: `_MIGRATIONS[0]`
 # leads to version 2. Only additions (D-052).
-_MIGRATIONS: tuple[tuple[str, ...], ...] = ()
+_MIGRATIONS: tuple[tuple[str, ...], ...] = (
+    # 2: when each host was last asked for with each cap (#31, D-058).
+    (
+        """
+        CREATE TABLE host_caps (
+            host text NOT NULL,
+            cap text NOT NULL,
+            value bigint NOT NULL,
+            seen_at timestamptz NOT NULL,
+            PRIMARY KEY (host, cap, value)
+        )
+        """,
+    ),
+)
 
 _ROW_COLUMNS = (
     "id, host, url, opened_at, state, closed_at, ok, status, failure,"
@@ -392,6 +407,14 @@ class PostgresStore:
             (host, RowState.IN_FLIGHT.value),
         ).fetchone()
         assert in_flight_row is not None
+        lowest = {
+            cap: int(value)
+            for cap, value in conn.execute(
+                "SELECT cap, MIN(value) FROM host_caps"
+                " WHERE host = %s AND seen_at > %s GROUP BY cap",
+                (host, now - CAP_MEMORY),
+            ).fetchall()
+        }
         state = HostState(
             host=host,
             day=day,
@@ -399,6 +422,8 @@ class PostgresStore:
             in_flight=int(in_flight_row[0]),
             wire_bytes_today=wire,
             decoded_bytes_today=decoded,
+            lowest_daily_cap=lowest.get("daily_cap"),
+            lowest_byte_budget=lowest.get("byte_budget"),
         )
         if found is None:
             return state
@@ -411,6 +436,26 @@ class PostgresStore:
             throttled=int(throttled),
             freeze=_freeze(*found[4:]),
         )
+
+    @staticmethod
+    def _note_caps(
+        conn: _Conn, host: str, now: datetime, daily_cap: int, byte_budget: int | None
+    ) -> None:
+        """Remember that `host` was asked for with these caps at `now`, and
+        forget those not asked for in `CAP_MEMORY`. A clock gone back keeps
+        the later sighting."""
+        conn.execute(
+            "DELETE FROM host_caps WHERE host = %s AND seen_at <= %s",
+            (host, now - CAP_MEMORY),
+        )
+        for cap, value in asked_caps(daily_cap, byte_budget):
+            conn.execute(
+                "INSERT INTO host_caps (host, cap, value, seen_at)"
+                " VALUES (%s, %s, %s, %s)"
+                " ON CONFLICT (host, cap, value) DO UPDATE"
+                " SET seen_at = GREATEST(host_caps.seen_at, excluded.seen_at)",
+                (host, cap, value, now),
+            )
 
     @staticmethod
     def _write_host(
@@ -598,6 +643,7 @@ class PostgresStore:
             if abandon_before is not None:
                 cutoff = as_utc(abandon_before, "abandon_before")
                 abandoned = self._abandon(conn, now, cutoff, host)
+            self._note_caps(conn, host, now, daily_cap, byte_budget)
             state = self._state(conn, host, now)
             record = self._url_record(conn, url)
             reserve = record.size if record is not None and record.size else 0

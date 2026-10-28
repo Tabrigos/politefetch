@@ -126,10 +126,10 @@ One host as of `at`.
 | `in_flight` | `int` | Requests to the host still open, the abandoned ones left out. |
 | `day` | `date` | The UTC day of `at`, the day of the `*_today` counts. |
 | `requests_today` | `int` | Requests opened on `day`, counted against `daily_cap`. |
-| `daily_cap` | `int` | The requests per UTC day the host's policy allows. |
+| `daily_cap` | `int` | The requests per UTC day in force: the host's policy's, or a lower one another process sharing the store asked for in the last day. |
 | `wire_bytes_today` | `int` | Bytes on the wire for the requests opened on `day` (real bytes, or the reservation of requests that never reported theirs), counted against `byte_budget`. |
 | `decoded_bytes_today` | `int` | Bytes after decoding, for the requests opened on `day`. |
-| `byte_budget` | `int \| None` | The wire bytes per UTC day the host's policy allows; `None` for no limit. |
+| `byte_budget` | `int \| None` | The wire bytes per UTC day in force, chosen as `daily_cap` is; `None` for no limit. |
 | `recent` | `tuple[RequestRow, ...]` | The latest log rows of the host, newest first. |
 | `abandoned` | `int` | Rows in flight for longer than `reconcile_after`: already left out of `in_flight` and counted in `failures`, as the next request to the host will count them when it closes them. |
 
@@ -555,6 +555,10 @@ The store interface, its records, and the rules every store applies.
 
 `'abandoned'`
 
+### `CAP_MEMORY`
+
+`timedelta(days=1)`
+
 ### `REJECTIONS`
 
 `('not_ready', 'not_sent', 'unusable')`
@@ -590,7 +594,7 @@ A host frozen after 403, 429 or 451.
 
 ### `HostState`
 
-`HostState(host: str, day: date, requests_today: int = 0, not_before: datetime | None = None, not_before_reason: RefusalReason | None = None, failures: int = 0, freeze: Freeze | None = None, in_flight: int = 0, throttled: int = 0, wire_bytes_today: int = 0, decoded_bytes_today: int = 0)`
+`HostState(host: str, day: date, requests_today: int = 0, not_before: datetime | None = None, not_before_reason: RefusalReason | None = None, failures: int = 0, freeze: Freeze | None = None, in_flight: int = 0, throttled: int = 0, wire_bytes_today: int = 0, decoded_bytes_today: int = 0, lowest_daily_cap: int | None = None, lowest_byte_budget: int | None = None)`
 
 Everything the store knows about one host, as of one moment.
 
@@ -607,6 +611,8 @@ Everything the store knows about one host, as of one moment.
 | `throttled` | `int` | The 429 answers since the last good answer. |
 | `wire_bytes_today` | `int` | Bytes on the wire for the requests opened on `day`: real bytes, or the reservation of requests that never reported theirs. |
 | `decoded_bytes_today` | `int` | Bytes after decoding, for the requests opened on `day`. |
+| `lowest_daily_cap` | `int \| None` | The lowest daily cap a process sharing the store asked to open the host with in the last day (`CAP_MEMORY`); `None` if none did. Every process applies it when it is lower than its own. |
+| `lowest_byte_budget` | `int \| None` | The lowest byte budget asked for the same way; `None` if none was (a process without a budget sets none). |
 
 ### `HostUpdate`
 
@@ -725,6 +731,10 @@ Return the host state after closing one of its requests.
 
 Return the host state after the outcome of a row already reconciled.
 
+### `caps_in_force(state: HostState, daily_cap: int, byte_budget: int | None) -> tuple[int, int | None]`
+
+The daily cap and byte budget that hold for the host: a process's own, or the lower ones another process sharing the store asked for in the last day.
+
 ### `check_admission(state: HostState, now: datetime, daily_cap: int, byte_budget: int | None = None, reserve: int = 0) -> Refused | None`
 
 Return why a request to the host must be refused now, or `None`.
@@ -749,7 +759,7 @@ In-memory store, for tests and single-process tools.
 
 ### `MemoryData`
 
-`MemoryData(hosts: dict[str, HostState] = <factory>, counts: dict[tuple[str, date], int] = <factory>, wire: dict[tuple[str, date], int] = <factory>, decoded: dict[tuple[str, date], int] = <factory>, urls: dict[str, UrlRecord] = <factory>, data_times: dict[str, DataTimeRecord] = <factory>, rows: dict[int, RequestRow] = <factory>, next_id: int = 1, unfreezes: list[Unfreeze] = <factory>, lock: RLock = <factory>)`
+`MemoryData(hosts: dict[str, HostState] = <factory>, counts: dict[tuple[str, date], int] = <factory>, wire: dict[tuple[str, date], int] = <factory>, decoded: dict[tuple[str, date], int] = <factory>, urls: dict[str, UrlRecord] = <factory>, data_times: dict[str, DataTimeRecord] = <factory>, rows: dict[int, RequestRow] = <factory>, next_id: int = 1, unfreezes: list[Unfreeze] = <factory>, caps: dict[tuple[str, str, int], datetime] = <factory>, lock: RLock = <factory>)`
 
 The persistent part of a `MemoryStore`.
 
@@ -764,6 +774,7 @@ The persistent part of a `MemoryStore`.
 | `rows` | `dict[int, RequestRow]` | The request log, by row number. |
 | `next_id` | `int` | The number of the next row. |
 | `unfreezes` | `list[Unfreeze]` | The traces of lifted freezes, oldest first. |
+| `caps` | `dict[tuple[str, str, int], datetime]` | When each host was last asked for with each cap, by host, cap (`daily_cap`, `byte_budget`) and value; kept for `CAP_MEMORY`. |
 | `lock` | `RLock` | Makes each operation atomic between threads. |
 
 ### `MemoryStore`

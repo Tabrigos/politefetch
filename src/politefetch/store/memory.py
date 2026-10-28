@@ -17,6 +17,7 @@ from politefetch.clock import as_utc
 from politefetch.errors import RefusalReason
 from politefetch.store.base import (
     ABANDONED,
+    CAP_MEMORY,
     DataTimeRecord,
     HostState,
     HostUpdate,
@@ -30,6 +31,7 @@ from politefetch.store.base import (
     apply_data_time,
     apply_late_close,
     apply_validators,
+    asked_caps,
     byte_changes,
     check_admission,
     check_cautious,
@@ -57,6 +59,8 @@ class MemoryData:
         rows: The request log, by row number.
         next_id: The number of the next row.
         unfreezes: The traces of lifted freezes, oldest first.
+        caps: When each host was last asked for with each cap, by host, cap
+            (`daily_cap`, `byte_budget`) and value; kept for `CAP_MEMORY`.
         lock: Makes each operation atomic between threads.
     """
 
@@ -69,6 +73,7 @@ class MemoryData:
     rows: dict[int, RequestRow] = field(default_factory=dict)
     next_id: int = 1
     unfreezes: list[Unfreeze] = field(default_factory=list)
+    caps: dict[tuple[str, str, int], datetime] = field(default_factory=dict)
     lock: threading.RLock = field(default_factory=threading.RLock)
 
 
@@ -80,7 +85,12 @@ class MemoryStore:
 
     # --- reads --------------------------------------------------------------
 
-    def _state(self, host: str, now: datetime) -> HostState:
+    def _state(
+        self,
+        host: str,
+        now: datetime,
+        caps: dict[tuple[str, str, int], datetime] | None = None,
+    ) -> HostState:
         day = now.date()
         stored = self.data.hosts.get(host)
         base = stored if stored is not None else HostState(host=host, day=day)
@@ -89,6 +99,12 @@ class MemoryStore:
             for r in self.data.rows.values()
             if r.host == host and r.state is RowState.IN_FLIGHT
         )
+        lowest: dict[str, int] = {}
+        cutoff = now - CAP_MEMORY
+        remembered = self.data.caps if caps is None else caps
+        for (name_host, name, value), at in remembered.items():
+            if name_host == host and at > cutoff:
+                lowest[name] = min(value, lowest.get(name, value))
         return replace(
             base,
             day=day,
@@ -96,7 +112,24 @@ class MemoryStore:
             in_flight=in_flight,
             wire_bytes_today=self.data.wire.get((host, day), 0),
             decoded_bytes_today=self.data.decoded.get((host, day), 0),
+            lowest_daily_cap=lowest.get("daily_cap"),
+            lowest_byte_budget=lowest.get("byte_budget"),
         )
+
+    def _noted(
+        self, host: str, now: datetime, daily_cap: int, byte_budget: int | None
+    ) -> dict[tuple[str, str, int], datetime]:
+        """The caps after `host` is asked for with these at `now`, those
+        forgotten left out; not stored yet. A clock gone back keeps the
+        later sighting."""
+        cutoff = now - CAP_MEMORY
+        caps = {
+            k: at for k, at in self.data.caps.items() if k[0] != host or at > cutoff
+        }
+        for name, value in asked_caps(daily_cap, byte_budget):
+            key = (host, name, value)
+            caps[key] = max(caps.get(key, now), now)
+        return caps
 
     def host_state(self, host: str, now: datetime) -> HostState:
         now = as_utc(now, "now")
@@ -145,14 +178,17 @@ class MemoryStore:
         with self.data.lock:
             if abandon_before is not None:
                 self._abandon(now, as_utc(abandon_before, "abandon_before"), host)
-            state = self._state(host, now)
+            caps = self._noted(host, now, daily_cap, byte_budget)
+            state = self._state(host, now, caps)
             record = self.data.urls.get(url)
             reserve = record.size if record is not None and record.size else 0
             refusal = check_admission(state, now, daily_cap, byte_budget, reserve)
             if refusal is not None:
+                self.data.caps = caps  # a refused open still lowers the caps
                 raise refusal
             promise = check_cautious(now, cautious(state))
             # Nothing has been written yet: everything below cannot fail.
+            self.data.caps = caps
             row = RequestRow(
                 id=self.data.next_id,
                 host=host,

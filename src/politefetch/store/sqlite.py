@@ -34,6 +34,7 @@ from politefetch.errors import RefusalReason
 from politefetch.store._schema import BASE_VERSION, VERSION_TABLE, pending
 from politefetch.store.base import (
     ABANDONED,
+    CAP_MEMORY,
     DataTimeRecord,
     Freeze,
     HostState,
@@ -48,6 +49,7 @@ from politefetch.store.base import (
     apply_data_time,
     apply_late_close,
     apply_validators,
+    asked_caps,
     byte_changes,
     check_admission,
     check_cautious,
@@ -159,7 +161,20 @@ _ADDED_COLUMNS = (
 
 # The statements of each schema version after the first: `_MIGRATIONS[0]`
 # leads to version 2. Only additions (D-052).
-_MIGRATIONS: tuple[tuple[str, ...], ...] = ()
+_MIGRATIONS: tuple[tuple[str, ...], ...] = (
+    # 2: when each host was last asked for with each cap (#31, D-058).
+    (
+        """
+        CREATE TABLE host_caps (
+            host TEXT NOT NULL,
+            cap TEXT NOT NULL,
+            value INTEGER NOT NULL,
+            seen_at TEXT NOT NULL,
+            PRIMARY KEY (host, cap, value)
+        )
+        """,
+    ),
+)
 
 _ROW_COLUMNS = (
     "id, host, url, opened_at, state, closed_at, ok, status, failure,"
@@ -316,6 +331,13 @@ class SqliteStore:
             "SELECT COUNT(*) FROM requests WHERE host = ? AND state = ?",
             (host, RowState.IN_FLIGHT.value),
         ).fetchone()
+        lowest = dict(
+            conn.execute(
+                "SELECT cap, MIN(value) FROM host_caps"
+                " WHERE host = ? AND seen_at > ? GROUP BY cap",
+                (host, _to_text(now - CAP_MEMORY)),
+            ).fetchall()
+        )
         state = HostState(
             host=host,
             day=day,
@@ -323,24 +345,43 @@ class SqliteStore:
             in_flight=in_flight,
             wire_bytes_today=wire,
             decoded_bytes_today=decoded,
+            lowest_daily_cap=lowest.get("daily_cap"),
+            lowest_byte_budget=lowest.get("byte_budget"),
         )
         if record is None:
             return state
         not_before, reason, failures, throttled = record[:4]
-        freeze = _freeze(*record[4:])
-        return HostState(
-            host=host,
-            day=day,
-            requests_today=count,
+        return replace(
+            state,
             not_before=_maybe_time(not_before),
             not_before_reason=None if reason is None else RefusalReason(reason),
             failures=failures,
-            freeze=freeze,
-            in_flight=in_flight,
+            freeze=_freeze(*record[4:]),
             throttled=throttled,
-            wire_bytes_today=wire,
-            decoded_bytes_today=decoded,
         )
+
+    @staticmethod
+    def _note_caps(
+        conn: sqlite3.Connection,
+        host: str,
+        now: datetime,
+        daily_cap: int,
+        byte_budget: int | None,
+    ) -> None:
+        """Remember that `host` was asked for with these caps at `now`, and
+        forget those not asked for in `CAP_MEMORY`. A clock gone back keeps
+        the later sighting."""
+        conn.execute(
+            "DELETE FROM host_caps WHERE host = ? AND seen_at <= ?",
+            (host, _to_text(now - CAP_MEMORY)),
+        )
+        for cap, value in asked_caps(daily_cap, byte_budget):
+            conn.execute(
+                "INSERT INTO host_caps (host, cap, value, seen_at) VALUES (?, ?, ?, ?)"
+                " ON CONFLICT (host, cap, value) DO UPDATE"
+                " SET seen_at = MAX(seen_at, excluded.seen_at)",
+                (host, cap, value, _to_text(now)),
+            )
 
     @staticmethod
     def _write_host(conn: sqlite3.Connection, state: HostState) -> None:
@@ -451,6 +492,7 @@ class SqliteStore:
             if abandon_before is not None:
                 cutoff = as_utc(abandon_before, "abandon_before")
                 abandoned = self._abandon(conn, now, cutoff, host)
+            self._note_caps(conn, host, now, daily_cap, byte_budget)
             state = self._state(conn, host, now)
             record = self._url_record(conn, url)
             reserve = record.size if record is not None and record.size else 0

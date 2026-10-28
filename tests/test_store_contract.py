@@ -4,6 +4,7 @@ A stage that adds a method to the store adds its tests here (D-002).
 """
 
 from collections.abc import Callable, Iterator
+from dataclasses import replace
 from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 
@@ -91,7 +92,9 @@ def close_at(
     )
 
 
-def snapshot(store: Store, now: datetime, host: str = HOST) -> object:
+def snapshot(
+    store: Store, now: datetime, host: str = HOST
+) -> tuple[HostState, list[RequestRow]]:
     return (store.host_state(host, now), store.rows())
 
 
@@ -1010,7 +1013,11 @@ def test_byte_budget_refuses_once_used_up(store: Store) -> None:
         )
     assert refused.value.reason is RefusalReason.BYTE_BUDGET
     assert refused.value.retry_after == datetime(2026, 10, 17, tzinfo=UTC)
-    assert snapshot(store, T + timedelta(hours=1)) == before
+    # Nothing written but the budget it asked for, which the first request
+    # did not have (#31).
+    state, rows = snapshot(store, T + timedelta(hours=1))
+    assert state.lowest_byte_budget == 1000
+    assert (replace(state, lowest_byte_budget=None), rows) == before
 
 
 def test_byte_budget_refuses_a_reservation_that_does_not_fit(store: Store) -> None:

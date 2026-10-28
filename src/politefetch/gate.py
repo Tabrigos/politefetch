@@ -41,7 +41,7 @@ from typing import Self
 from urllib.parse import urlsplit
 
 from politefetch.clock import Clock, SystemClock
-from politefetch.errors import NoPolicy, OutcomeNotSaved, Refused
+from politefetch.errors import NoPolicy, OutcomeNotSaved, RefusalReason, Refused
 from politefetch.policy import HostPolicy, parse_duration, parse_retry_after
 from politefetch.status import HostStatus
 from politefetch.store.base import (
@@ -56,6 +56,7 @@ from politefetch.store.base import (
     Store,
     Unfreeze,
     Validators,
+    caps_in_force,
     check_admission,
 )
 
@@ -167,6 +168,7 @@ class Gate:
         if self._reconcile_after is not None and self._reconcile_after <= timedelta(0):
             raise ValueError("reconcile_after must be positive")
         self._longest_request: timedelta | None = None
+        self._warned: set[tuple[str, str, int | None, int]] = set()
 
     @property
     def reconcile_after(self) -> timedelta:
@@ -217,6 +219,9 @@ class Gate:
             raise ValueError(f"recent must not be negative, got {recent}")
         host, now, state, abandoned, refusal = self._decide(host_or_url)
         policy = self.policy_for(host)
+        daily_cap, byte_budget = caps_in_force(
+            state, policy.daily_cap, policy.byte_budget
+        )
         rows = self.store.rows(host=host, latest=recent) if recent else []
         freeze = state.freeze
         return HostStatus(
@@ -232,10 +237,10 @@ class Gate:
             abandoned=abandoned,
             day=state.day,
             requests_today=state.requests_today,
-            daily_cap=policy.daily_cap,
+            daily_cap=daily_cap,
             wire_bytes_today=state.wire_bytes_today,
             decoded_bytes_today=state.decoded_bytes_today,
-            byte_budget=policy.byte_budget,
+            byte_budget=byte_budget,
             recent=tuple(reversed(rows)),
         )
 
@@ -284,6 +289,31 @@ class Gate:
             state, now, policy.daily_cap, policy.byte_budget, reserve
         )
         return host, now, state, abandoned, refusal
+
+    def _warn_lower_caps(self, policy: HostPolicy, state: HostState) -> None:
+        """Say, once for each pair, that this gate's cap for the host is above
+        the one in force: another process sharing the store asked for a
+        lower one, and the lower one applies (#31)."""
+        caps = caps_in_force(state, policy.daily_cap, policy.byte_budget)
+        own = (policy.daily_cap, policy.byte_budget)
+        for name, mine, held in zip(
+            ("daily_cap", "byte_budget"), own, caps, strict=True
+        ):
+            if held is None or mine == held:
+                continue
+            key = (state.host, name, mine, held)
+            if key in self._warned:
+                continue
+            self._warned.add(key)
+            _log.warning(
+                "%s: this process asks for %s %s, above the %d another process"
+                " sharing the store asked for in the last day; the lower one"
+                " applies until a day after it was last asked for",
+                state.host,
+                name,
+                "None (no limit)" if mine is None else mine,
+                held,
+            )
 
     def attempt(self, url: str) -> "Attempt":
         """A context manager (sync or async) around one request to `url`."""
@@ -486,21 +516,28 @@ class Attempt:
             raise RuntimeError("an attempt can only be used once")
         gate, policy = self._gate, self._policy
         now = gate.clock.now()
-        self._row = gate.store.open_request(
-            self.host,
-            self.url,
-            now=now,
-            daily_cap=policy.daily_cap,
-            byte_budget=policy.byte_budget,
-            cautious=lambda state: policy.cautious_until(state, now),
-            abandon_before=now - gate.reconcile_after,
-        )
-        if policy.byte_budget is not None:
+        try:
+            self._row = gate.store.open_request(
+                self.host,
+                self.url,
+                now=now,
+                daily_cap=policy.daily_cap,
+                byte_budget=policy.byte_budget,
+                cautious=lambda state: policy.cautious_until(state, now),
+                abandon_before=now - gate.reconcile_after,
+            )
+        except Refused as refusal:
+            if refusal.reason in (RefusalReason.DAILY_CAP, RefusalReason.BYTE_BUDGET):
+                gate._warn_lower_caps(policy, gate.store.host_state(self.host, now))
+            raise
+        state = gate.store.host_state(self.host, now)
+        gate._warn_lower_caps(policy, state)
+        _, budget = caps_in_force(state, policy.daily_cap, policy.byte_budget)
+        if budget is not None:
             # Today's bytes include this request's reservation: it is part of
             # what the request may read, not something already read.
-            used = gate.store.host_state(self.host, now).wire_bytes_today
-            spent = used - self._row.reserved_bytes
-            self.bytes_left = max(0, policy.byte_budget - spent)
+            spent = state.wire_bytes_today - self._row.reserved_bytes
+            self.bytes_left = max(0, budget - spent)
         record = gate.store.url_record(self.url)
         if record is not None:
             if record.validators.etag is not None:

@@ -1522,3 +1522,45 @@ alla vecchia e la vecchia prende la riga "Superata da".
   dicono il CHANGELOG ("Changed"), la skill e il README. Le issue #13 e #22
   sono coperte da questa parte; il contatore per URL della #13 e la parte 2
   (il limitatore, i fallimenti per URL) restano nella #28.
+
+## D-058 — I processi che condividono uno store applicano il tetto più basso
+
+- **Data e tappa**: 2026-10-28, issue #31 (revisione dell'architettura, R6)
+- **Contesto**: il tetto giornaliero e il budget di byte arrivano dalla
+  politica che ogni processo ha in memoria. Due processi sullo stesso store
+  con tetti diversi per un host tenevano ciascuno il proprio: durante un
+  rilascio che abbassa un tetto, i processi ancora vecchi superavano quello
+  nuovo. `SPEC.md` promette che i processi che condividono lo store non
+  superano il tetto insieme.
+- **Decisione**:
+  - lo store ricorda, in una tabella `host_caps` (versione 2 dello schema),
+    quando ogni host è stato chiesto con ogni tetto: `daily_cap` e
+    `byte_budget`, un valore per riga. Un processo senza budget non ne
+    registra nessuno, quindi non alza quello degli altri;
+  - ogni apertura registra i suoi, **anche quella rifiutata**, e applica il
+    più basso visto nell'ultimo giorno (`CAP_MEMORY`, 24 ore dall'ultima
+    volta che è stato chiesto). È l'interpretazione più cauta: un processo
+    con il tetto basso, rifiutato perché il conteggio l'ha già superato,
+    ferma comunque gli altri. Il contratto "un'apertura rifiutata non scrive
+    niente" diventa "niente tranne i tetti chiesti";
+  - un orologio tornato indietro tiene l'avvistamento più tardo;
+  - la regola sta in `caps_in_force`, dentro `check_admission`: la applicano
+    tutti e tre gli store e la decisione di sola lettura di `status` e
+    `may_fetch`;
+  - il processo con il tetto più alto non viene rifiutato per questo:
+    applica quello più basso, e il gate lo dice una volta per coppia di
+    valori con un WARNING del logger `politefetch`, anche quando il rifiuto
+    è per il tetto. `HostStatus.daily_cap`, `byte_budget` e
+    `attempt.bytes_left` riportano i tetti in vigore.
+- **Alternative scartate**: un solo "tetto più basso" con la sua data sulla
+  riga dell'host (con tre tetti diversi, quando il più basso scade vale
+  quello del processo che apre per primo, anche se un altro più basso è
+  ancora in giro); il giorno UTC come finestra invece di 24 ore (un tetto
+  abbassato alle 23:59 sparirebbe un minuto dopo); rifiutare il processo
+  con il tetto più alto (fermerebbe un rilascio a metà invece di rallentarlo).
+- **Conseguenze**: alzare un tetto vale un giorno dopo l'ultima richiesta
+  fatta con quello vecchio; una prova con `daily_cap=0` su uno store
+  condiviso ferma l'host per tutti per un giorno, e lo dicono la skill e il
+  CHANGELOG. Uno schema Postgres esistente va aperto una volta con
+  `migrate=True`. Ogni apertura dal gate legge lo stato una volta in più,
+  per l'avviso e per `bytes_left`: prima lo faceva solo con un budget.

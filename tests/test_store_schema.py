@@ -22,6 +22,7 @@ from psycopg import sql
 from politefetch import FakeClock, Gate, HostPolicy
 from politefetch.errors import RefusalReason
 from politefetch.store import RowState, SqliteStore
+from politefetch.store.postgres import _MIGRATIONS as PG_MIGRATIONS
 from politefetch.store.postgres import PostgresStore
 
 from .stores import POSTGRES_DSN, drop_schema, fresh_schema, needs_postgres
@@ -29,6 +30,7 @@ from .stores import POSTGRES_DSN, drop_schema, fresh_schema, needs_postgres
 FIXTURES = Path(__file__).parent / "fixtures"
 T0 = datetime(2026, 10, 20, 12, tzinfo=UTC)  # when the 0.1.1 fixture begins
 LATER = datetime(2026, 10, 20, 16, 30, tzinfo=UTC)  # after it was written
+LATEST = 2  # the schema version of this politefetch
 
 # Two migrations where the second needs the first: run out of order, or twice,
 # they fail.
@@ -97,7 +99,7 @@ def columns(path: Path, table: str) -> set[str]:
 def test_a_new_store_records_its_version(tmp_path: Path) -> None:
     path = tmp_path / "new.db"
     SqliteStore(path).close()
-    assert version(path) == 1
+    assert version(path) == LATEST
 
 
 @pytest.mark.parametrize("name", ["store-0.1.1.db", "store-0.1.1-integration.db"])
@@ -107,10 +109,11 @@ def test_a_store_written_by_0_1_opens_with_every_row(tmp_path: Path, name: str) 
     before = contents(path)
     assert sum(len(rows) for rows in before.values()) > 10  # the fixture has state
     SqliteStore(path).close()
-    assert version(path) == 1
-    assert contents(path) == before
+    assert version(path) == LATEST
+    migrated = {**before, "host_caps": []}  # version 2 adds an empty table
+    assert contents(path) == migrated
     SqliteStore(path).close()  # opening again changes nothing
-    assert contents(path) == before
+    assert contents(path) == migrated
 
 
 def test_a_store_written_by_0_1_keeps_its_promises_counts_and_freezes(
@@ -225,8 +228,9 @@ def test_two_stores_opening_at_once_migrate_once(
 ) -> None:
     for round_ in range(10):
         path = copy("store-0.1.1.db", tmp_path / str(round_))
-        # Opened once first, so the file is in WAL mode: the race on switching
-        # to it is another matter.
+        # Opened once first, at version 1, so the file is in WAL mode: the
+        # race on switching to it is another matter.
+        monkeypatch.setattr("politefetch.store.sqlite._MIGRATIONS", ())
         SqliteStore(path).close()
         monkeypatch.setattr("politefetch.store.sqlite._MIGRATIONS", COLUMN_THEN_INDEX)
         start = threading.Barrier(6)
@@ -327,30 +331,35 @@ def pg_columns(schema: str, table: str) -> set[str]:
 
 
 def written_by_0_1(schema: str) -> None:
-    """A schema as 0.1 leaves it: the tables and some state, no version."""
+    """A schema as 0.1 leaves it: the tables and some state, no version.
+    The state is written by this version, then the tables 0.1 did not have
+    are dropped."""
     with PostgresStore(POSTGRES_DSN, schema=schema) as store:
         policy = HostPolicy(daily_cap=100, min_interval="10m")
         gate = Gate(store, {"frozen.example": policy}, clock=FakeClock(T0))
         with gate.attempt("https://frozen.example/feed") as attempt:
             attempt.response(429)
     pg(schema, "DROP TABLE schema_version")
+    pg(schema, "DROP TABLE host_caps")  # version 2
 
 
 @needs_postgres
 def test_a_new_postgres_schema_records_its_version(schema: str) -> None:
     PostgresStore(POSTGRES_DSN, schema=schema).close()
-    assert pg_version(schema) == 1
+    assert pg_version(schema) == LATEST
 
 
 @needs_postgres
 def test_a_postgres_schema_written_by_0_1_opens_with_its_state(schema: str) -> None:
     written_by_0_1(schema)
     assert pg_version(schema) is None
-    with PostgresStore(POSTGRES_DSN, schema=schema) as store:
+    with pytest.raises(ValueError, match="migrate=True"):
+        PostgresStore(POSTGRES_DSN, schema=schema)
+    with PostgresStore(POSTGRES_DSN, schema=schema, migrate=True) as store:
         freeze = store.host_state("frozen.example", LATER).freeze
         assert freeze is not None
         assert freeze.status == 429
-    assert pg_version(schema) == 1
+    assert pg_version(schema) == LATEST
 
 
 @needs_postgres
@@ -358,12 +367,15 @@ def test_postgres_migrates_only_when_asked(
     schema: str, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     written_by_0_1(schema)
-    monkeypatch.setattr("politefetch.store.postgres._MIGRATIONS", COLUMN_THEN_INDEX)
+    # After the real ones, which the store's queries need.
+    monkeypatch.setattr(
+        "politefetch.store.postgres._MIGRATIONS", PG_MIGRATIONS + COLUMN_THEN_INDEX
+    )
     with pytest.raises(ValueError, match="migrate=True"):
         PostgresStore(POSTGRES_DSN, schema=schema)
     assert "extra" not in pg_columns(schema, "hosts")
     PostgresStore(POSTGRES_DSN, schema=schema, migrate=True).close()
-    assert pg_version(schema) == 3
+    assert pg_version(schema) == LATEST + 2
     assert "extra" in pg_columns(schema, "hosts")
     with PostgresStore(POSTGRES_DSN, schema=schema) as store:  # now current
         freeze = store.host_state("frozen.example", LATER).freeze
