@@ -313,6 +313,8 @@ class _Options:
     stuck_after: int | timedelta | None
     allow_empty: bool
     max_bytes: int | None
+    parse: Callable[[Any], Any] | None = None
+    conditional: bool = True
 
     @classmethod
     def build(
@@ -324,6 +326,8 @@ class _Options:
         stuck_after: int | timedelta | str | None,
         allow_empty: bool,
         max_bytes: int | str | None,
+        parse: Callable[[Any], Any] | None = None,
+        conditional: bool = True,
     ) -> "_Options":
         if (max_age is not None or stuck_after is not None) and data_time is None:
             raise ValueError("max_age and stuck_after need a data_time extractor")
@@ -341,17 +345,24 @@ class _Options:
         age = None if max_age is None else parse_duration(max_age)
         ahead = parse_duration(max_ahead)
         size = None if max_bytes is None else parse_size(max_bytes)
-        return cls(expect, data_time, age, ahead, stuck, allow_empty, size)
+        return cls(
+            expect, data_time, age, ahead, stuck, allow_empty, size, parse, conditional
+        )
 
 
 def _request_headers(
-    attempt: Attempt, user_agent: str, headers: Mapping[str, str] | None
+    attempt: Attempt,
+    user_agent: str,
+    headers: Mapping[str, str] | None,
+    conditional: bool = True,
 ) -> dict[str, str]:
-    """Ours, then the caller's, then the conditional ones: a name given
-    again, in any case, replaces the earlier one."""
+    """Ours, then the caller's, then the conditional ones (unless
+    `conditional` is false): a name given again, in any case, replaces the
+    earlier one."""
     ours = {"User-Agent": user_agent, "Accept-Encoding": ACCEPT_ENCODING}
     merged: dict[str, tuple[str, str]] = {}
-    for given in (ours, headers or {}, attempt.conditional_headers):
+    remembered = attempt.conditional_headers if conditional else {}
+    for given in (ours, headers or {}, remembered):
         for name, value in given.items():
             merged[name.lower()] = (name, value)
     return dict(merged.values())
@@ -516,6 +527,11 @@ def _finish(
         )
         return error
 
+    def answered(decoded: int | None) -> None:
+        attempt.response(
+            status, headers=headers, wire_bytes=wire, decoded_bytes=decoded
+        )
+
     if status == 304:
         size = _decoded_size(raw, headers, options) or 0
         latest = None
@@ -526,6 +542,7 @@ def _finish(
                 latest = record.latest
                 judged = _judge_time(gate, url, latest, options)
         attempt.response(304, headers=headers, wire_bytes=wire, decoded_bytes=size)
+        attempt.accept()
         result = FetchResult(url, 304, headers, b"", None, True, latest, wire, size)
         return _deliver(result, judged)
     if not 200 <= status < 300:
@@ -555,6 +572,8 @@ def _finish(
         raise reject(too_large, None)
     decoded: int | None = None
     try:
+        # A transfer cut short (shorter than announced, gzip cut) is a
+        # failure: a firewall cuts connections the same way (D-057).
         if status != 204:
             check_length(
                 content_length=_content_length(headers), received=wire, url=url
@@ -563,6 +582,9 @@ def _finish(
             raw, headers.get("content-encoding"), max_bytes=options.max_bytes, url=url
         )
         decoded = len(body)
+    except ContentError as error:
+        raise reject(error, decoded) from None
+    try:
         content = check_body(
             body,
             expect=options.expect,
@@ -570,8 +592,24 @@ def _finish(
             allow_empty=options.allow_empty or status == 204,
             url=url,
         )
-        data_time = None
-        judged = None
+    except SourceNotReady:
+        # Complete, but not ready (empty, half a JSON): an answer.
+        answered(decoded)
+        attempt.reject("not_ready")
+        raise
+    except ContentError as error:
+        raise reject(error, decoded) from None
+    value = content
+    if options.parse is not None:
+        try:
+            value = options.parse(content)
+        except Exception:
+            answered(decoded)
+            attempt.reject("unusable")
+            raise
+    data_time = None
+    judged = None
+    try:
         if options.data_time is not None:
             data_time = read_data_time(content, options.data_time, url=url)
             now = gate.clock.now()
@@ -579,9 +617,10 @@ def _finish(
             judged = _judge_time(gate, url, data_time, options)
     except ContentError as error:
         raise reject(error, decoded) from None
-    attempt.response(status, headers=headers, wire_bytes=wire, decoded_bytes=decoded)
+    answered(decoded)
+    attempt.accept()
     result = FetchResult(
-        url, status, headers, body, content, False, data_time, wire, len(body)
+        url, status, headers, body, value, False, data_time, wire, len(body)
     )
     return _deliver(result, judged)
 
@@ -655,6 +694,8 @@ class Fetcher:
         headers: Mapping[str, str] | None = None,
         allow_empty: bool = False,
         max_bytes: int | str | None = None,
+        parse: Callable[[Any], Any] | None = None,
+        conditional: bool = True,
     ) -> FetchResult:
         """Fetch `url` once, if the gate allows it, and check what comes back.
 
@@ -666,15 +707,36 @@ class Fetcher:
         answers and carry the result. `max_bytes` bounds the body, as
         transferred and as decoded; reading also stops at what is left of the
         host's byte budget. `headers` are sent too, and replace ours of the
-        same name. Raises `Refused`, `FetchFailed` (whose message says if the
-        answer froze the host, and how to lift it) or a `ContentError`.
+        same name.
+
+        `parse` turns the checked content into what you keep, inside the
+        attempt: if it raises, the answer is rejected as `"unusable"` (no
+        validators are saved, the next request asks for the whole body) and
+        its exception goes on; if it returns, `content` is what it returned
+        and the answer is accepted. `conditional=False` leaves out the
+        conditional headers, for a copy you no longer have. A body that is
+        complete but not ready (empty, half a JSON) is `SourceNotReady`,
+        recorded as an answer; a transfer cut short is recorded as a failure.
+
+        Raises `Refused`, `FetchFailed` (whose message says if the answer
+        froze the host, and how to lift it) or a `ContentError`.
         """
         options = _Options.build(
-            expect, data_time, max_age, max_ahead, stuck_after, allow_empty, max_bytes
+            expect,
+            data_time,
+            max_age,
+            max_ahead,
+            stuck_after,
+            allow_empty,
+            max_bytes,
+            parse,
+            conditional,
         )
         try:
             with self.gate.attempt(url) as attempt:
-                sent = _request_headers(attempt, self.user_agent, headers)
+                sent = _request_headers(
+                    attempt, self.user_agent, headers, options.conditional
+                )
                 limit = _limit(attempt, options.max_bytes)
                 reading = _Reading(self.timer, self.deadline, limit)
                 try:
@@ -736,13 +798,25 @@ class AsyncFetcher:
         headers: Mapping[str, str] | None = None,
         allow_empty: bool = False,
         max_bytes: int | str | None = None,
+        parse: Callable[[Any], Any] | None = None,
+        conditional: bool = True,
     ) -> FetchResult:
         options = _Options.build(
-            expect, data_time, max_age, max_ahead, stuck_after, allow_empty, max_bytes
+            expect,
+            data_time,
+            max_age,
+            max_ahead,
+            stuck_after,
+            allow_empty,
+            max_bytes,
+            parse,
+            conditional,
         )
         try:
             async with self.gate.attempt(url) as attempt:
-                sent = _request_headers(attempt, self.user_agent, headers)
+                sent = _request_headers(
+                    attempt, self.user_agent, headers, options.conditional
+                )
                 limit = _limit(attempt, options.max_bytes)
                 reading = _Reading(self.timer, self.deadline, limit)
                 try:

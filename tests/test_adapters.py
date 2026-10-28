@@ -247,7 +247,12 @@ def test_a_complete_answer_with_half_a_json(
         get(source.url())
     outcome = last_row(gate).outcome
     assert outcome is not None
-    assert (outcome.ok, outcome.status, outcome.failure) == (False, 200, "not_ready")
+    # The source answered: a rejected answer, not a failure (#28).
+    assert (outcome.ok, outcome.status, outcome.failure) == (
+        False,
+        200,
+        "rejected:not_ready",
+    )
 
 
 def test_html_instead_of_json(get: Get, gate: Gate, source: SourceSimulator) -> None:

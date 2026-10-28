@@ -806,6 +806,7 @@ def test_validators_come_back_as_conditional_headers(
     with gate.attempt(URL) as attempt:
         assert attempt.conditional_headers == {}
         attempt.response(200, headers={"etag": '"v1"', "Last-Modified": LAST_MODIFIED})
+        attempt.accept()
     clock.advance(timedelta(minutes=1))
     with gate.attempt(URL) as attempt:
         assert attempt.conditional_headers == {
