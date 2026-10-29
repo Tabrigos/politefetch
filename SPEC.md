@@ -31,7 +31,9 @@ promised must outlive the process**.
 3. **The pause after an error grows** (exponential with a cap, configurable);
    `Retry-After` is a minimum. **403, 429 and 451 freeze the host** until a
    person unblocks it (or until a configured expiry): they are not retried on
-   their own.
+   their own. A 404 or a 410 pauses only its URL, with the same growing
+   pause, and the host keeps its spacing: one missing URL does not stop the
+   others. Transport errors, 5xx, 429 and the other 4xx pause the host.
 4. **A daily cap per host**, in the persistent state, consumed *before* the
    request by a single point that everything passes through. It is not reset
    on restart. It is the safety net that does not depend on any other logic.

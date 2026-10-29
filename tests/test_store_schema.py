@@ -30,7 +30,7 @@ from .stores import POSTGRES_DSN, drop_schema, fresh_schema, needs_postgres
 FIXTURES = Path(__file__).parent / "fixtures"
 T0 = datetime(2026, 10, 20, 12, tzinfo=UTC)  # when the 0.1.1 fixture begins
 LATER = datetime(2026, 10, 20, 16, 30, tzinfo=UTC)  # after it was written
-LATEST = 3  # the schema version of this politefetch
+LATEST = 4  # the schema version of this politefetch
 
 # Two migrations where the second needs the first: run out of order, or twice,
 # they fail.
@@ -115,6 +115,8 @@ def test_a_store_written_by_0_1_opens_with_every_row(tmp_path: Path, name: str) 
         "host_caps": [],  # version 2 adds an empty table
         # version 3 gives every request its URL as key
         "requests": sorted(((*r, r[2]) for r in before["requests"]), key=repr),
+        # version 4: no URL has failed yet
+        "urls": sorted(((*r, 0, None) for r in before["urls"]), key=repr),
     }
     assert contents(path) == migrated
     SqliteStore(path).close()  # opening again changes nothing
@@ -350,6 +352,8 @@ def written_by_0_1(schema: str) -> None:
     pg(schema, "DROP TABLE host_caps")  # version 2
     pg(schema, "DROP INDEX requests_by_start")  # version 3, with the next
     pg(schema, "ALTER TABLE requests DROP COLUMN key")
+    pg(schema, "ALTER TABLE urls DROP COLUMN failures")  # version 4
+    pg(schema, "ALTER TABLE urls DROP COLUMN not_before")
 
 
 @needs_postgres

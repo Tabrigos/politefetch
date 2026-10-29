@@ -220,6 +220,7 @@ Why the gate refused a request.
 - `DAILY_CAP` = `'daily_cap'`: Today's request cap for the host is used up.
 - `BYTE_BUDGET` = `'byte_budget'`: Today's byte budget for the host is used up.
 - `RATE_LIMIT` = `'rate_limit'`: A limit of the policy ("30/h", for the host or for a key) already has as many requests in its window as it allows.
+- `URL_BACKOFF` = `'url_backoff'`: The pause after a 404 or a 410 of this URL has not elapsed; the host may still be asked for its other URLs.
 
 ### `Refused`
 
@@ -602,7 +603,7 @@ A host frozen after 403, 429 or 451.
 
 ### `HostState`
 
-`HostState(host: str, day: date, requests_today: int = 0, not_before: datetime | None = None, not_before_reason: RefusalReason | None = None, failures: int = 0, freeze: Freeze | None = None, in_flight: int = 0, throttled: int = 0, wire_bytes_today: int = 0, decoded_bytes_today: int = 0, lowest_daily_cap: int | None = None, lowest_byte_budget: int | None = None, lowest_limits: tuple[Limit, ...] = ())`
+`HostState(host: str, day: date, requests_today: int = 0, not_before: datetime | None = None, not_before_reason: RefusalReason | None = None, failures: int = 0, freeze: Freeze | None = None, in_flight: int = 0, throttled: int = 0, wire_bytes_today: int = 0, decoded_bytes_today: int = 0, lowest_daily_cap: int | None = None, lowest_byte_budget: int | None = None, lowest_limits: tuple[Limit, ...] = (), url_failures: int = 0)`
 
 Everything the store knows about one host, as of one moment.
 
@@ -622,10 +623,11 @@ Everything the store knows about one host, as of one moment.
 | `lowest_daily_cap` | `int \| None` | The lowest daily cap a process sharing the store asked to open the host with in the last day (`CAP_MEMORY`); `None` if none did. Every process applies it when it is lower than its own. |
 | `lowest_byte_budget` | `int \| None` | The lowest byte budget asked for the same way; `None` if none was (a process without a budget sets none). |
 | `lowest_limits` | `tuple[Limit, ...]` | The lowest count asked for each kind and period of `Limit` the same way, sorted by kind (the host's first) and period. |
+| `url_failures` | `int` | Only in the state `close_request` gives `update`: the consecutive 404 and 410 answers of the row's URL, for its pause; 0 everywhere else. |
 
 ### `HostUpdate`
 
-`HostUpdate(not_before: datetime, reason: RefusalReason, freeze: Freeze | None = None)`
+`HostUpdate(not_before: datetime, reason: RefusalReason, freeze: Freeze | None = None, url_not_before: datetime | None = None)`
 
 What the caller wants written after a request: the next promise, and a freeze if the answer calls for one.
 
@@ -634,6 +636,7 @@ What the caller wants written after a request: the next promise, and a freeze if
 | `not_before` | `datetime` | The next promise: no request to the host before then. |
 | `reason` | `RefusalReason` | What the promise is for: `min_interval` after a good answer, `backoff` after a failure. |
 | `freeze` | `Freeze \| None` | The freeze the answer calls for, if any. |
+| `url_not_before` | `datetime \| None` | After a 404 or a 410, no request to the URL before then; `None` otherwise. |
 
 ### `Limit`
 
@@ -726,9 +729,9 @@ The trace left when a person lifts a freeze.
 
 ### `UrlRecord`
 
-`UrlRecord(url: str, validators: Validators, size: int | None, updated_at: datetime)`
+`UrlRecord(url: str, validators: Validators, size: int | None, updated_at: datetime, failures: int = 0, not_before: datetime | None = None)`
 
-What the store remembers about one URL: its validators and the wire size of its last full (200) answer, used to reserve bytes.
+What the store remembers about one URL: its validators, the wire size of its last full (200) answer, used to reserve bytes, and its pause after a 404 or a 410.
 
 | Field | Type | Meaning |
 |---|---|---|
@@ -736,6 +739,8 @@ What the store remembers about one URL: its validators and the wire size of its 
 | `validators` | `Validators` | The validators of its last 200, refreshed by a 304 that carries some. |
 | `size` | `int \| None` | The wire size of its last full (200) answer, reserved against the byte budget by the next request; `None` when unknown. |
 | `updated_at` | `datetime` | When the record was last written. |
+| `failures` | `int` | The consecutive 404 and 410 answers of the URL since its last good answer. |
+| `not_before` | `datetime \| None` | No request to the URL before then, after a 404 or a 410; `None` without one. |
 
 ### `Validators`
 
@@ -760,7 +765,7 @@ Return the host state after the outcome of a row already reconciled.
 
 The daily cap and byte budget that hold for the host: a process's own, or the lower ones another process sharing the store asked for in the last day.
 
-### `check_admission(state: HostState, now: datetime, daily_cap: int, byte_budget: int | None = None, reserve: int = 0, windows: Sequence[tuple[Limit, datetime | None]] = ()) -> Refused | None`
+### `check_admission(state: HostState, now: datetime, daily_cap: int, byte_budget: int | None = None, reserve: int = 0, windows: Sequence[tuple[Limit, datetime | None]] = (), url_not_before: datetime | None = None) -> Refused | None`
 
 Return why a request to the host must be refused now, or `None`.
 
@@ -781,6 +786,10 @@ Say that a row was closed as abandoned: its process died, or did not close it, a
 ### `rejected(outcome: Outcome) -> bool`
 
 True for an outcome the caller rejected: an answer, not a failure.
+
+### `url_failure(outcome: Outcome) -> bool`
+
+True for a 404 or a 410: the URL pauses, the host keeps its spacing and its failures.
 
 ## `politefetch.store.memory`
 

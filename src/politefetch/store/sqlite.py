@@ -49,7 +49,7 @@ from politefetch.store.base import (
     apply_close,
     apply_data_time,
     apply_late_close,
-    apply_validators,
+    apply_url,
     asked_caps,
     byte_changes,
     check_admission,
@@ -184,6 +184,11 @@ _MIGRATIONS: tuple[tuple[str, ...], ...] = (
         "UPDATE requests SET key = url",
         "CREATE INDEX requests_by_start ON requests (host, opened_at)",
         "CREATE INDEX requests_by_key ON requests (host, key, opened_at)",
+    ),
+    # 4: the pause of a URL after a 404 or a 410 (#28, D-060).
+    (
+        "ALTER TABLE urls ADD COLUMN failures INTEGER NOT NULL DEFAULT 0",
+        "ALTER TABLE urls ADD COLUMN not_before TEXT",
     ),
 )
 
@@ -549,6 +554,7 @@ class SqliteStore:
                 byte_budget,
                 reserve,
                 list(zip(in_force, starts, strict=True)),
+                record.not_before if record is not None else None,
             )
             if refusal is None:
                 opened = self._admit(
@@ -624,10 +630,11 @@ class SqliteStore:
                 new_state = apply_late_close(state, outcome, update(state))
                 record = None
             else:
-                new_state = apply_close(state, outcome, update(state))
-                record = apply_validators(
-                    self._url_record(conn, row.url), row.url, outcome, validators, now
-                )
+                previous = self._url_record(conn, row.url)
+                failed = previous.failures if previous is not None else 0
+                decided = update(replace(state, url_failures=failed))
+                new_state = apply_close(state, outcome, decided)
+                record = apply_url(previous, row.url, outcome, validators, decided, now)
             closed_state = row.state if late else RowState.CLOSED
             self._write_host(conn, new_state)
             conn.execute(
@@ -652,17 +659,22 @@ class SqliteStore:
             )
             if record is not None:
                 conn.execute(
-                    "INSERT INTO urls (url, etag, last_modified, size, updated_at)"
-                    " VALUES (?, ?, ?, ?, ?)"
+                    "INSERT INTO urls (url, etag, last_modified, size, updated_at,"
+                    " failures, not_before) VALUES (?, ?, ?, ?, ?, ?, ?)"
                     " ON CONFLICT (url) DO UPDATE SET etag = excluded.etag,"
                     " last_modified = excluded.last_modified, size = excluded.size,"
-                    " updated_at = excluded.updated_at",
+                    " updated_at = excluded.updated_at,"
+                    " failures = excluded.failures, not_before = excluded.not_before",
                     (
                         record.url,
                         record.validators.etag,
                         record.validators.last_modified,
                         record.size,
                         _to_text(record.updated_at),
+                        record.failures,
+                        None
+                        if record.not_before is None
+                        else _to_text(record.not_before),
                     ),
                 )
         return replace(row, state=closed_state, closed_at=now, outcome=outcome)
@@ -670,17 +682,20 @@ class SqliteStore:
     @staticmethod
     def _url_record(conn: sqlite3.Connection, url: str) -> UrlRecord | None:
         found = conn.execute(
-            "SELECT etag, last_modified, size, updated_at FROM urls WHERE url = ?",
+            "SELECT etag, last_modified, size, updated_at, failures, not_before"
+            " FROM urls WHERE url = ?",
             (url,),
         ).fetchone()
         if found is None:
             return None
-        etag, last_modified, size, updated_at = found
+        etag, last_modified, size, updated_at, failures, not_before = found
         return UrlRecord(
             url=url,
             validators=Validators(etag=etag, last_modified=last_modified),
             size=size,
             updated_at=_from_text(updated_at),
+            failures=failures,
+            not_before=_maybe_time(not_before),
         )
 
     def url_record(self, url: str) -> UrlRecord | None:

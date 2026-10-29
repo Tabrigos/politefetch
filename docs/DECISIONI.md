@@ -1606,3 +1606,37 @@ alla vecchia e la vecchia prende la riga "Superata da".
   limiti: lo dovrà rispettare la #17. Uno schema Postgres esistente va
   aperto di nuovo una volta con `migrate=True`. Uno store scritto a mano
   implementa `limit_starts` e prende `limits` e `key` in `open_request`.
+
+## D-060 — 404 e 410 fermano l'URL, non l'host
+
+- **Data e tappa**: 2026-10-29, issue #28, parte 2
+- **Contesto**: un 404 su un URL contava come un fallimento dell'host: la
+  pausa che cresce fermava tutti gli altri URL della stessa fonte, che
+  rispondeva bene. Una fonte con un catalogo sparito restava ferma per ore.
+- **Decisione** (scelta del maintainer del 27/10: c-A):
+  - un 404 o un 410 (`URL_STATUSES`) è una risposta per l'host: vale
+    `min_interval` e Retry-After, i suoi fallimenti restano come erano;
+  - l'URL ha fallimenti e una pausa sua (`UrlRecord.failures` e
+    `not_before`), con lo stesso backoff della politica: dopo l'n-esimo
+    404/410 consecutivo, `max(min_interval, backoff(n))`. Il rifiuto è
+    `URL_BACKOFF`, controllato nella stessa transazione dell'apertura;
+  - una risposta buona sull'URL (accettata o senza verdetto, come per
+    l'host) azzera pausa e fallimenti; una rifiutata e un fallimento
+    dell'host li lasciano come sono;
+  - errori di trasporto, 5xx, 429 e gli altri 4xx restano fallimenti
+    dell'host; 403 e 451 lo congelano come prima;
+  - un 404 arrivato dopo la riconciliazione non tocca l'URL, come i
+    validatori: la riconciliazione l'ha già contato come fallimento
+    dell'host, che è il caso più prudente;
+  - la promessa cauta scritta prima della richiesta resta per host: se il
+    processo muore non si sa se sarebbe stato un 404;
+  - versione 4 dello schema: due colonne su `urls`. Un URL noto solo per il
+    suo 404 ha una riga senza validatori.
+- **Alternative scartate**: un fallimento per URL per ogni stato 4xx (un
+  400 o un 401 dicono più spesso che è sbagliata la richiesta del
+  chiamante, e fermare l'host è il caso prudente); una pausa più lunga per
+  il 410 (un valore in più da configurare, per un caso raro).
+- **Conseguenze**: `close_request` passa a `update` lo stato con
+  `url_failures`, e `HostUpdate` ha `url_not_before`: uno store scritto a
+  mano li deve seguire. La tabella `urls` cresce anche per gli URL che
+  rispondono 404: la potatura della #17 li deve comprendere.

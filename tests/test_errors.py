@@ -122,6 +122,7 @@ def test_refusal_reasons_are_stable_strings() -> None:
         "daily_cap",
         "byte_budget",
         "rate_limit",
+        "url_backoff",
     }
 
 

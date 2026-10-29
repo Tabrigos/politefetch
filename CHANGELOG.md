@@ -58,6 +58,16 @@ All notable changes to politefetch. The format follows
 
 ### Changed
 
+- **A 404 or a 410 pauses only its URL** (#28, part 2). The host takes it as
+  an answer: `min_interval` and Retry-After hold, and its failures stay as
+  they were. The URL gets a pause of its own, the policy's backoff after its
+  consecutive 404/410, and is refused with `RefusalReason.URL_BACKOFF` until
+  then; a good answer on the URL clears it. Transport errors, 5xx, 429 and
+  the other 4xx pause the host as before. `UrlRecord` has `failures` and
+  `not_before`, `HostUpdate` has `url_not_before`, and the state that
+  `close_request` gives `update` has the URL's `url_failures`. The schema
+  goes to version 4 (two columns on `urls`); **an existing Postgres schema
+  must be opened once with `migrate=True`**.
 - **The caller's verdict is recorded apart from the source's answer**
   (#28, part 1; covers #22). `attempt.accept()` says you took the body of a
   good answer: only then are its validators saved and the failures reset.

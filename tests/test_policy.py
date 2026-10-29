@@ -1,5 +1,6 @@
 """Host policies: pure functions from host state and outcome to promises."""
 
+from dataclasses import replace
 from datetime import UTC, date, datetime, timedelta
 
 import pytest
@@ -347,12 +348,25 @@ def test_option_freezes_a_429_without_retry_after() -> None:
     assert update.freeze is not None
 
 
-@pytest.mark.parametrize("status", [400, 404, 500, 502, 503])
+@pytest.mark.parametrize("status", [400, 500, 502, 503])
 def test_other_errors_back_off_without_freezing(status: int) -> None:
     policy = HostPolicy(daily_cap=10, min_interval="1m")
     update = policy.after(state(), T, http(status), None)
     assert update.freeze is None
     assert update.reason is RefusalReason.BACKOFF
+    assert update.url_not_before is None
+
+
+@pytest.mark.parametrize("status", [404, 410])
+def test_a_missing_url_pauses_the_url_and_spaces_the_host(status: int) -> None:
+    policy = HostPolicy(daily_cap=10, min_interval="1m", backoff_base="5m")
+    update = policy.after(replace(state(), url_failures=2), T, http(status), None)
+    assert (update.not_before, update.reason) == (
+        T + timedelta(minutes=1),
+        RefusalReason.MIN_INTERVAL,
+    )
+    assert update.url_not_before == T + timedelta(minutes=20)  # third failure
+    assert update.freeze is None
 
 
 # --- byte budget (T4) --------------------------------------------------------------

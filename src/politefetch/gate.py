@@ -295,10 +295,11 @@ class Gate:
                 in_flight=max(0, state.in_flight - abandoned),
                 failures=state.failures + abandoned,
             )
-        reserve = 0
+        reserve, paused = 0, None
         if is_url:
             record = self.store.url_record(host_or_url)
             reserve = record.size if record is not None and record.size else 0
+            paused = record.not_before if record is not None else None
         limits = limits_in_force(state, policy.limits + policy.key_limits)
         starts = self.store.limit_starts(host, limits, key=key)
         refusal = check_admission(
@@ -308,6 +309,7 @@ class Gate:
             policy.byte_budget,
             reserve,
             list(zip(limits, starts, strict=True)),
+            paused,
         )
         return host, now, state, abandoned, refusal
 

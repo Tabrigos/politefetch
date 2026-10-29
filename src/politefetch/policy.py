@@ -21,6 +21,7 @@ from politefetch.store.base import (
     Limit,
     Outcome,
     rejected,
+    url_failure,
 )
 
 __all__ = [
@@ -317,16 +318,26 @@ class HostPolicy:
         Retry-After longer than any pause of the policy (`min_interval` and
         `backoff_max`) is honoured as a freeze until that time, after any
         answer: the status shows it, and `unfreeze` can lift it.
+
+        A 404 or a 410 is an answer for the host and a failure of its URL:
+        the URL pauses as the host would after its `state.url_failures + 1`-th
+        failure (`url_not_before`), the host only for `min_interval`.
         """
         longest = now + max(self.min_interval, self.backoff_max)
         asked_long = retry_at is not None and retry_at > longest
         promised = None if asked_long else retry_at
-        if outcome.ok or rejected(outcome):
+        missing = url_failure(outcome)
+        if outcome.ok or rejected(outcome) or missing:
             until = now + self.min_interval
             if promised is not None:
                 until = max(until, promised)
             long_freeze = self._long_freeze(now, outcome.status, retry_at, asked_long)
-            return HostUpdate(until, RefusalReason.MIN_INTERVAL, long_freeze)
+            url_until = None
+            if missing:  # the URL pauses as the host would after a failure
+                url_until = now + max(
+                    self.min_interval, self.backoff(state.url_failures + 1)
+                )
+            return HostUpdate(until, RefusalReason.MIN_INTERVAL, long_freeze, url_until)
         until = now + max(self.min_interval, self.backoff(state.failures + 1))
         if self._freezes(state, outcome.status, retry_at):
             # A 403/429/451 freeze is lifted by a person, and the pause the

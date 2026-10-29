@@ -45,6 +45,7 @@ __all__ = [
     "log_abandoned",
     "next_utc_midnight",
     "rejected",
+    "url_failure",
 ]
 
 _log = logging.getLogger("politefetch.store")
@@ -138,6 +139,17 @@ def rejected(outcome: "Outcome") -> bool:
     )
 
 
+URL_STATUSES = frozenset({404, 410})
+"""Statuses that fail one URL, not the host: the source answered, and that
+URL is missing (D-060)."""
+
+
+def url_failure(outcome: "Outcome") -> bool:
+    """True for a 404 or a 410: the URL pauses, the host keeps its spacing
+    and its failures."""
+    return not outcome.ok and outcome.status in URL_STATUSES
+
+
 class RowState(StrEnum):
     """Where a request row is in its life. Stored: do not rename."""
 
@@ -227,8 +239,9 @@ class Validators:
 
 @dataclass(frozen=True, slots=True)
 class UrlRecord:
-    """What the store remembers about one URL: its validators and the wire
-    size of its last full (200) answer, used to reserve bytes.
+    """What the store remembers about one URL: its validators, the wire size
+    of its last full (200) answer, used to reserve bytes, and its pause after
+    a 404 or a 410.
 
     Attributes:
         url: The URL.
@@ -237,12 +250,18 @@ class UrlRecord:
         size: The wire size of its last full (200) answer, reserved against
             the byte budget by the next request; `None` when unknown.
         updated_at: When the record was last written.
+        failures: The consecutive 404 and 410 answers of the URL since its
+            last good answer.
+        not_before: No request to the URL before then, after a 404 or a 410;
+            `None` without one.
     """
 
     url: str
     validators: Validators
     size: int | None
     updated_at: datetime
+    failures: int = 0
+    not_before: datetime | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -276,14 +295,20 @@ class HostUpdate:
         reason: What the promise is for: `min_interval` after a good answer,
             `backoff` after a failure.
         freeze: The freeze the answer calls for, if any.
+        url_not_before: After a 404 or a 410, no request to the URL before
+            then; `None` otherwise.
     """
 
     not_before: datetime
     reason: RefusalReason
     freeze: Freeze | None = None
+    url_not_before: datetime | None = None
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "not_before", as_utc(self.not_before, "not_before"))
+        if self.url_not_before is not None:
+            url_not_before = as_utc(self.url_not_before, "url_not_before")
+            object.__setattr__(self, "url_not_before", url_not_before)
         if self.reason not in (RefusalReason.MIN_INTERVAL, RefusalReason.BACKOFF):
             raise ValueError(
                 f"a promise is kept for min_interval or backoff, not {self.reason}"
@@ -321,6 +346,9 @@ class HostState:
         lowest_limits: The lowest count asked for each kind and period of
             `Limit` the same way, sorted by kind (the host's first) and
             period.
+        url_failures: Only in the state `close_request` gives `update`: the
+            consecutive 404 and 410 answers of the row's URL, for its pause;
+            0 everywhere else.
     """
 
     host: str
@@ -337,6 +365,7 @@ class HostState:
     lowest_daily_cap: int | None = None
     lowest_byte_budget: int | None = None
     lowest_limits: tuple[Limit, ...] = ()
+    url_failures: int = 0
 
 
 @dataclass(frozen=True, slots=True)
@@ -468,10 +497,12 @@ class Store(Protocol):
     ) -> RequestRow:
         """Close an in-flight row with its outcome and update the host.
 
-        `update` receives the host state before this close. A good outcome
-        may shorten the promise; a failure only lengthens it. The outcome's
-        wire bytes replace the row's reservation, on the day the row opened.
-        `validators` are those of the answer; see `apply_validators`.
+        `update` receives the host state before this close, with the URL's
+        consecutive 404/410 in `url_failures`. A good outcome may shorten
+        the promise; a failure only lengthens it. The outcome's wire bytes
+        replace the row's reservation, on the day the row opened.
+        `validators` are those of the answer; the URL record changes as
+        `apply_url` says.
 
         A row the reconciliation closed as abandoned takes its late outcome,
         stays `RECONCILED`, and changes the host only as `apply_late_close`
@@ -563,13 +594,15 @@ def check_admission(
     byte_budget: int | None = None,
     reserve: int = 0,
     windows: Sequence[tuple[Limit, datetime | None]] = (),
+    url_not_before: datetime | None = None,
 ) -> Refused | None:
     """Return why a request to the host must be refused now, or `None`.
 
     `reserve` is the number of bytes the request would reserve against
     `byte_budget`. `windows` pairs each limit in force with the start of
     the `count`-th latest request of its scope (`Store.limit_starts`): the
-    window is full until that start is `period` old. When several
+    window is full until that start is `period` old. `url_not_before` is
+    the pause of the URL after a 404 or a 410 (`UrlRecord`). When several
     constraints apply, the one that ends last is reported, so a caller that
     waits for `retry_after` does not run into the next one.
     """
@@ -587,6 +620,8 @@ def check_admission(
     if state.not_before is not None and now < state.not_before:
         reason = state.not_before_reason or RefusalReason.BACKOFF
         blocks.append((reason, state.not_before))
+    if url_not_before is not None and now < url_not_before:
+        blocks.append((RefusalReason.URL_BACKOFF, url_not_before))
     for limit, start in windows:
         if start is not None and start + limit.period > now:
             blocks.append((RefusalReason.RATE_LIMIT, start + limit.period))
@@ -688,10 +723,11 @@ def apply_close(state: HostState, outcome: Outcome, update: HostUpdate) -> HostS
 
     A good answer may freeze the host only until a time the source asked for
     (a Retry-After longer than the policy's own pauses), never for ever. A
-    rejected answer (`REJECTIONS`) takes the promise as a good one does, and
-    leaves the failure counts as they were.
+    rejected answer (`REJECTIONS`) and a 404 or a 410 (`url_failure`, which
+    pauses the URL instead) take the promise as a good one does, and leave
+    the failure counts as they were.
     """
-    if outcome.ok or rejected(outcome):
+    if outcome.ok or rejected(outcome) or url_failure(outcome):
         if update.freeze is not None and update.freeze.until is None:
             raise ValueError("a successful outcome cannot freeze the host for ever")
         return replace(
@@ -816,6 +852,34 @@ def apply_validators(
             return None
         return UrlRecord(url, merged, previous.size if previous else None, now)
     return None
+
+
+def apply_url(
+    previous: UrlRecord | None,
+    url: str,
+    outcome: Outcome,
+    validators: Validators | None,
+    update: HostUpdate,
+    now: datetime,
+) -> UrlRecord | None:
+    """Return the URL record after a close, or `None` to leave it as is.
+
+    The validators change as `apply_validators` says. A 404 or a 410 adds
+    one to the URL's failures and takes the pause `update` gives it; a good
+    answer clears both. Anything else leaves them as they were.
+    """
+    record = apply_validators(previous, url, outcome, validators, now)
+    if url_failure(outcome):
+        known = previous or UrlRecord(url, Validators(), None, now)
+        return replace(
+            known,
+            updated_at=now,
+            failures=known.failures + 1,
+            not_before=update.url_not_before,
+        )
+    if outcome.ok and previous is not None and previous.failures:
+        return replace(record or previous, updated_at=now, failures=0, not_before=None)
+    return record
 
 
 def apply_data_time(

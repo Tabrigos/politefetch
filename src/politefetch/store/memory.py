@@ -31,7 +31,7 @@ from politefetch.store.base import (
     apply_close,
     apply_data_time,
     apply_late_close,
-    apply_validators,
+    apply_url,
     asked_caps,
     byte_changes,
     check_admission,
@@ -221,8 +221,9 @@ class MemoryStore:
             reserve = record.size if record is not None and record.size else 0
             in_force = limits_in_force(state, limits)
             windows = zip(in_force, self._starts(host, in_force, scope), strict=True)
+            paused = record.not_before if record is not None else None
             refusal = check_admission(
-                state, now, daily_cap, byte_budget, reserve, list(windows)
+                state, now, daily_cap, byte_budget, reserve, list(windows), paused
             )
             if refusal is not None:
                 self.data.caps = caps  # a refused open still lowers the caps
@@ -269,10 +270,11 @@ class MemoryStore:
                 new_state = apply_late_close(state, outcome, update(state))
                 record = None
             else:
-                new_state = apply_close(state, outcome, update(state))
-                record = apply_validators(
-                    self.data.urls.get(row.url), row.url, outcome, validators, now
-                )
+                previous = self.data.urls.get(row.url)
+                failed = previous.failures if previous is not None else 0
+                decided = update(replace(state, url_failures=failed))
+                new_state = apply_close(state, outcome, decided)
+                record = apply_url(previous, row.url, outcome, validators, decided, now)
             # Nothing has been written yet: everything below cannot fail.
             closed = replace(
                 row,

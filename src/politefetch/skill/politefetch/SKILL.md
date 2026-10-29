@@ -184,6 +184,10 @@ byte_budget=None, limits=(), key_limits=())`
   which honours the first 429 that carries Retry-After and freezes on the
   second. `freeze_for` makes freezes expire; by default only a person lifts
   them.
+- A 404 or a 410 pauses only that URL, with the backoff of the policy
+  growing with its consecutive 404/410 (`"url_backoff"`); the host keeps
+  `min_interval` and its failures, and a good answer on the URL clears its
+  pause. Transport errors, 5xx, 429 and the other 4xx pause the host.
 - `byte_budget`: bytes on the wire per UTC day; a request reserves the size
   of the URL's last full answer and is corrected when it closes.
 - `Gate(store, policies, *, clock=None, default=None, reconcile_after=None)`:
@@ -217,7 +221,9 @@ message text.
 `RefusalReason` values: `"in_flight"` (another request to the host is
 open), `"min_interval"`, `"backoff"` (pause after a failure), `"frozen"`,
 `"daily_cap"`, `"byte_budget"`, `"rate_limit"` (a window of `limits` or
-`key_limits` is full). When several apply, the one that ends last
+`key_limits` is full), `"url_backoff"` (the pause of this URL after a 404 or
+a 410; its host's other URLs may still go). When several apply, the one that
+ends last
 is reported, so waiting for `retry_after` does not run into the next.
 
 `FetchFailed.shape` values: `"connect_timeout"`, `"read_timeout"`,
