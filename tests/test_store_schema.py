@@ -30,7 +30,7 @@ from .stores import POSTGRES_DSN, drop_schema, fresh_schema, needs_postgres
 FIXTURES = Path(__file__).parent / "fixtures"
 T0 = datetime(2026, 10, 20, 12, tzinfo=UTC)  # when the 0.1.1 fixture begins
 LATER = datetime(2026, 10, 20, 16, 30, tzinfo=UTC)  # after it was written
-LATEST = 2  # the schema version of this politefetch
+LATEST = 3  # the schema version of this politefetch
 
 # Two migrations where the second needs the first: run out of order, or twice,
 # they fail.
@@ -110,7 +110,12 @@ def test_a_store_written_by_0_1_opens_with_every_row(tmp_path: Path, name: str) 
     assert sum(len(rows) for rows in before.values()) > 10  # the fixture has state
     SqliteStore(path).close()
     assert version(path) == LATEST
-    migrated = {**before, "host_caps": []}  # version 2 adds an empty table
+    migrated = {
+        **before,
+        "host_caps": [],  # version 2 adds an empty table
+        # version 3 gives every request its URL as key
+        "requests": sorted(((*r, r[2]) for r in before["requests"]), key=repr),
+    }
     assert contents(path) == migrated
     SqliteStore(path).close()  # opening again changes nothing
     assert contents(path) == migrated
@@ -151,6 +156,8 @@ def test_a_store_written_by_0_1_keeps_its_promises_counts_and_freezes(
         states = sorted(row.state.value for row in store.rows())
         assert states.count(RowState.IN_FLIGHT.value) == 1
         assert states.count(RowState.RECONCILED.value) == 1
+        # Rows written before keys existed count under their URL (version 3).
+        assert all(row.key == row.url for row in store.rows())
 
         gate = Gate(
             store,
@@ -341,6 +348,8 @@ def written_by_0_1(schema: str) -> None:
             attempt.response(429)
     pg(schema, "DROP TABLE schema_version")
     pg(schema, "DROP TABLE host_caps")  # version 2
+    pg(schema, "DROP INDEX requests_by_start")  # version 3, with the next
+    pg(schema, "ALTER TABLE requests DROP COLUMN key")
 
 
 @needs_postgres

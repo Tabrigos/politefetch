@@ -121,6 +121,7 @@ def test_refusal_reasons_are_stable_strings() -> None:
         "frozen",
         "daily_cap",
         "byte_budget",
+        "rate_limit",
     }
 
 

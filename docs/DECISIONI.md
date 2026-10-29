@@ -1564,3 +1564,45 @@ alla vecchia e la vecchia prende la riga "Superata da".
   CHANGELOG. Uno schema Postgres esistente va aperto una volta con
   `migrate=True`. Ogni apertura dal gate legge lo stato una volta in più,
   per l'avviso e per `bytes_left`: prima lo faceva solo con un budget.
+
+## D-059 — Limiti a finestra per host e per chiave, contati sul registro
+
+- **Data e tappa**: 2026-10-29, issue #28, parte 2 (copre #12 e #16)
+- **Contesto**: un host aveva un solo valore di ogni tipo. `min_interval`
+  doveva essere insieme la cortesia verso la fonte (1 s) e la cadenza del
+  dato (da 1 minuto a 3 ore), una quota oraria non aveva forma, e una fonte
+  con più cataloghi sullo stesso host non poteva dare a ognuno la sua
+  cadenza.
+- **Decisione** (scelte del maintainer del 28/10: b-A, 1A, 2A):
+  - un limite `"N/P"` lascia partire al massimo N richieste in ogni
+    intervallo lungo P. Si conta dall'inizio delle richieste, sulle righe del
+    registro: ogni riga aperta conta, qualunque esito abbia (anche
+    abbandonata o `not_sent`). Non c'è uno stato nuovo da tenere allineato;
+  - `HostPolicy(limits=...)` per l'host, `key_limits=...` per ogni chiave;
+    la chiave si dà con `key=` a `gate.attempt`, `may_fetch`, `status` e ai
+    fetcher, e senza chiave è l'URL (2A: la lettura più prudente). La riga
+    del registro tiene la chiave;
+  - il rifiuto è `RATE_LIMIT`, fino a quando la richiesta più vecchia della
+    finestra ne esce: lo store legge l'inizio della N-esima richiesta più
+    recente dell'ambito, ordinata per ora d'inizio, così un orologio
+    tornato indietro conta ancora quelle partite "dopo";
+  - `min_interval` resta per host e si conta dalla fine (b-A, D-020); lo
+    slot in volo resta per host;
+  - il periodo va da più di zero a un giorno: oltre c'è il tetto
+    giornaliero, e la memoria dei tetti (D-058) dura un giorno;
+  - i processi che condividono lo store applicano, per ogni tipo e periodo,
+    il conteggio più basso chiesto nell'ultimo giorno, nella stessa tabella
+    `host_caps` di D-058; un processo senza limiti non ne toglie a nessuno;
+  - versione 3 dello schema: la colonna `key` sulle richieste, riempita con
+    l'URL per le righe scritte prima, e due indici per l'ora d'inizio.
+- **Alternative scartate**: GCRA, un solo istante per ambito, come
+  proponeva l'issue (1B): `"30/h"` con una raffica di 30 lascia passare fino
+  a 59 richieste in un'ora scorrevole, e senza raffica si torna alla #16;
+  un errore d'uso quando la policy ha `key_limits` e manca `key=` (2B);
+  contare i limiti in una tabella a sé (uno stato in più da tenere allineato
+  con il registro).
+- **Conseguenze**: ogni apertura fa una query per limite in vigore, su un
+  indice. Il registro non si può sfoltire sotto il periodo più lungo dei
+  limiti: lo dovrà rispettare la #17. Uno schema Postgres esistente va
+  aperto di nuovo una volta con `migrate=True`. Uno store scritto a mano
+  implementa `limit_starts` e prende `limits` e `key` in `open_request`.

@@ -260,6 +260,7 @@ def test_json_shape(gate: Gate, clock: FakeClock) -> None:
             "decoded_bytes": 480,
             "byte_budget": 1_000_000,
         },
+        "limits": [],
         "recent": [
             {
                 "id": gate.store.rows()[0].id,
@@ -273,6 +274,7 @@ def test_json_shape(gate: Gate, clock: FakeClock) -> None:
                 "wire_bytes": 120,
                 "decoded_bytes": 480,
                 "reserved_bytes": 0,
+                "key": URL,
             }
         ],
     }

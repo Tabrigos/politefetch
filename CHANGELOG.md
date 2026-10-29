@@ -39,6 +39,22 @@ All notable changes to politefetch. The format follows
   any other stops the session with a usage error, and a public address
   stays blocked. `NetworkBarrier(private_networks=...)` and
   `is_allowed_address` take the same list.
+- **Limits over a window, for the host and for a key** (#28, part 2; covers
+  #12 and #16). `HostPolicy(limits=["30/h"])` lets at most 30 requests to
+  the host start in any span of an hour, so a burst of 30 is allowed and a
+  31st waits until the first is an hour old; `key_limits=["1/30m"]` does the
+  same for each key, given with `key=` to `gate.attempt`, `may_fetch`,
+  `status` and the fetchers, or the URL when none is given. They are counted
+  on the request log from the start of each request, whatever its outcome,
+  and refuse with `RefusalReason.RATE_LIMIT` until the oldest request leaves
+  the window. `min_interval` keeps its meaning, per host and from the end of
+  the previous request. Processes sharing a store apply the lowest count
+  asked for each period in the last day, as with the caps; `HostStatus`
+  shows the limits in force, and the rows their `key`. The schema goes to
+  version 3 (a `key` column on the requests, the URL for the rows written
+  before); **an existing Postgres schema must be opened once with
+  `migrate=True`** again. A store of your own implements `limit_starts` and
+  takes `limits` and `key` in `open_request`.
 
 ### Changed
 

@@ -15,7 +15,7 @@ from dataclasses import dataclass
 from datetime import date, datetime
 
 from politefetch.errors import RefusalReason
-from politefetch.store.base import Freeze, RequestRow
+from politefetch.store.base import Freeze, Limit, RequestRow
 
 __all__ = ["HostStatus", "to_json"]
 
@@ -51,6 +51,16 @@ def _row(row: RequestRow) -> Json:
         "wire_bytes": None if outcome is None else outcome.wire_bytes,
         "decoded_bytes": None if outcome is None else outcome.decoded_bytes,
         "reserved_bytes": row.reserved_bytes,
+        "key": row.key,
+    }
+
+
+def _limit(limit: Limit) -> Json:
+    count, period = str(limit).split("/")
+    return {
+        "count": int(count),
+        "period": period,
+        "per": "key" if limit.per_key else "host",
     }
 
 
@@ -90,6 +100,9 @@ class HostStatus:
         abandoned: Rows in flight for longer than `reconcile_after`: already
             left out of `in_flight` and counted in `failures`, as the next
             request to the host will count them when it closes them.
+        limits: The limits in force, chosen as `daily_cap` is for each kind
+            and period: the host's first, then the per-key ones, each sorted
+            by period.
     """
 
     host: str
@@ -109,6 +122,7 @@ class HostStatus:
     byte_budget: int | None
     recent: tuple[RequestRow, ...]
     abandoned: int = 0
+    limits: tuple[Limit, ...] = ()
 
     def to_dict(self) -> Json:
         """The status as JSON-ready values: times as ISO 8601 strings with
@@ -132,6 +146,7 @@ class HostStatus:
                 "decoded_bytes": self.decoded_bytes_today,
                 "byte_budget": self.byte_budget,
             },
+            "limits": [_limit(limit) for limit in self.limits],
             "recent": [_row(row) for row in self.recent],
         }
 

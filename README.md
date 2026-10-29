@@ -155,11 +155,13 @@ print(to_json(gate.statuses(), indent=2))
   "abandoned": 0,
   "today": {"day": "2026-10-16", "requests": 1, "daily_cap": 120,
             "wire_bytes": 2310, "decoded_bytes": 5120, "byte_budget": null},
+  "limits": [],
   "recent": [{"id": 1, "url": "https://services.swpc.noaa.gov/...",
               "opened_at": "2026-10-16T12:00:30+00:00", "state": "closed",
               "closed_at": "2026-10-16T12:00:32+00:00", "ok": true,
               "status": 200, "failure": null, "wire_bytes": 2310,
-              "decoded_bytes": 5120, "reserved_bytes": 0}]
+              "decoded_bytes": 5120, "reserved_bytes": 0,
+              "key": "https://services.swpc.noaa.gov/..."}]
 }
 ```
 

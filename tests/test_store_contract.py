@@ -115,7 +115,7 @@ def test_open_writes_the_cautious_promise_and_counts(store: Store) -> None:
         HOST, URL, now=T, daily_cap=CAP, cautious=after(timedelta(minutes=5))
     )
     assert row == RequestRow(
-        id=row.id, host=HOST, url=URL, opened_at=T, state=RowState.IN_FLIGHT
+        id=row.id, host=HOST, url=URL, opened_at=T, state=RowState.IN_FLIGHT, key=URL
     )
     state = store.host_state(HOST, T)
     assert state.not_before == T + timedelta(minutes=5)

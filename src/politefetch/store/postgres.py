@@ -32,7 +32,7 @@ shared with the other stores.
 import hashlib
 import re
 import threading
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Iterator, Sequence
 from contextlib import AbstractContextManager, ExitStack, contextmanager, suppress
 from dataclasses import replace
 from datetime import date, datetime, timedelta
@@ -53,6 +53,7 @@ from politefetch.store.base import (
     Freeze,
     HostState,
     HostUpdate,
+    Limit,
     Outcome,
     RequestRow,
     RowState,
@@ -71,7 +72,9 @@ from politefetch.store.base import (
     check_threshold,
     check_unfreezer,
     is_late,
+    limits_in_force,
     log_abandoned,
+    remembered_caps,
 )
 
 __all__ = ["PostgresStore"]
@@ -175,11 +178,19 @@ _MIGRATIONS: tuple[tuple[str, ...], ...] = (
         )
         """,
     ),
+    # 3: the key of each request, for the per-key limits (#28, D-059). The
+    # rows written before have their URL as key, as a request without one.
+    (
+        "ALTER TABLE requests ADD COLUMN key text",
+        "UPDATE requests SET key = url",
+        "CREATE INDEX requests_by_start ON requests (host, opened_at)",
+        "CREATE INDEX requests_by_key ON requests (host, key, opened_at)",
+    ),
 )
 
 _ROW_COLUMNS = (
     "id, host, url, opened_at, state, closed_at, ok, status, failure,"
-    " reserved_bytes, wire_bytes, decoded_bytes"
+    " reserved_bytes, wire_bytes, decoded_bytes, key"
 )
 
 
@@ -199,7 +210,7 @@ def _freeze(
 
 def _row(record: tuple[Any, ...]) -> RequestRow:
     row_id, host, url, opened_at, state, closed_at, ok, status, failure = record[:9]
-    reserved, wire, decoded = record[9:]
+    reserved, wire, decoded, key = record[9:]
     outcome = None
     if ok is not None:
         outcome = Outcome(
@@ -218,6 +229,7 @@ def _row(record: tuple[Any, ...]) -> RequestRow:
         closed_at=_utc(closed_at),
         outcome=outcome,
         reserved_bytes=reserved,
+        key=key,
     )
 
 
@@ -415,6 +427,7 @@ class PostgresStore:
                 (host, now - CAP_MEMORY),
             ).fetchall()
         }
+        lowest_cap, lowest_budget, lowest_limits = remembered_caps(lowest)
         state = HostState(
             host=host,
             day=day,
@@ -422,8 +435,9 @@ class PostgresStore:
             in_flight=int(in_flight_row[0]),
             wire_bytes_today=wire,
             decoded_bytes_today=decoded,
-            lowest_daily_cap=lowest.get("daily_cap"),
-            lowest_byte_budget=lowest.get("byte_budget"),
+            lowest_daily_cap=lowest_cap,
+            lowest_byte_budget=lowest_budget,
+            lowest_limits=lowest_limits,
         )
         if found is None:
             return state
@@ -439,7 +453,12 @@ class PostgresStore:
 
     @staticmethod
     def _note_caps(
-        conn: _Conn, host: str, now: datetime, daily_cap: int, byte_budget: int | None
+        conn: _Conn,
+        host: str,
+        now: datetime,
+        daily_cap: int,
+        byte_budget: int | None,
+        limits: Sequence[Limit],
     ) -> None:
         """Remember that `host` was asked for with these caps at `now`, and
         forget those not asked for in `CAP_MEMORY`. A clock gone back keeps
@@ -448,7 +467,7 @@ class PostgresStore:
             "DELETE FROM host_caps WHERE host = %s AND seen_at <= %s",
             (host, now - CAP_MEMORY),
         )
-        for cap, value in asked_caps(daily_cap, byte_budget):
+        for cap, value in asked_caps(daily_cap, byte_budget, limits):
             conn.execute(
                 "INSERT INTO host_caps (host, cap, value, seen_at)"
                 " VALUES (%s, %s, %s, %s)"
@@ -584,6 +603,32 @@ class PostgresStore:
             found.reverse()
         return [_row(r) for r in found]
 
+    def limit_starts(
+        self, host: str, limits: Sequence[Limit], *, key: str | None
+    ) -> list[datetime | None]:
+        with self._read() as conn:
+            return self._starts(conn, host, limits, key)
+
+    @staticmethod
+    def _starts(
+        conn: _Conn, host: str, limits: Sequence[Limit], key: str | None
+    ) -> list[datetime | None]:
+        starts: list[datetime | None] = []
+        for limit in limits:
+            where, params = "host = %s", [host]
+            if limit.per_key:
+                if key is None:
+                    starts.append(None)
+                    continue
+                where, params = "host = %s AND key = %s", [host, key]
+            found = conn.execute(
+                f"SELECT opened_at FROM requests WHERE {where}"
+                " ORDER BY opened_at DESC LIMIT 1 OFFSET %s".encode(),
+                [*params, limit.count - 1],
+            ).fetchone()
+            starts.append(None if found is None else as_utc(found[0]))
+        return starts
+
     def url_record(self, url: str) -> UrlRecord | None:
         with self._read() as conn:
             return self._url_record(conn, url)
@@ -635,21 +680,35 @@ class PostgresStore:
         cautious: Callable[[HostState], datetime],
         byte_budget: int | None = None,
         abandon_before: datetime | None = None,
+        limits: Sequence[Limit] = (),
+        key: str | None = None,
     ) -> RequestRow:
         now = as_utc(now, "now")
+        key = url if key is None else key
         abandoned: list[RequestRow] = []
         opened: RequestRow | None = None
         with self._write() as conn:
             if abandon_before is not None:
                 cutoff = as_utc(abandon_before, "abandon_before")
                 abandoned = self._abandon(conn, now, cutoff, host)
-            self._note_caps(conn, host, now, daily_cap, byte_budget)
+            self._note_caps(conn, host, now, daily_cap, byte_budget, limits)
             state = self._state(conn, host, now)
             record = self._url_record(conn, url)
             reserve = record.size if record is not None and record.size else 0
-            refusal = check_admission(state, now, daily_cap, byte_budget, reserve)
+            in_force = limits_in_force(state, limits)
+            starts = self._starts(conn, host, in_force, key)
+            refusal = check_admission(
+                state,
+                now,
+                daily_cap,
+                byte_budget,
+                reserve,
+                list(zip(in_force, starts, strict=True)),
+            )
             if refusal is None:
-                opened = self._admit(conn, host, url, now, state, reserve, cautious)
+                opened = self._admit(
+                    conn, host, url, key, now, state, reserve, cautious
+                )
         for row in abandoned:  # logged once committed
             log_abandoned(row)
         if opened is not None:
@@ -663,6 +722,7 @@ class PostgresStore:
         conn: _Conn,
         host: str,
         url: str,
+        key: str,
         now: datetime,
         state: HostState,
         reserve: int,
@@ -672,9 +732,9 @@ class PostgresStore:
         transaction."""
         promise = check_cautious(now, cautious(state))
         inserted = conn.execute(
-            "INSERT INTO requests (host, url, opened_at, state, reserved_bytes)"
-            " VALUES (%s, %s, %s, %s, %s) RETURNING id",
-            (host, url, now, RowState.IN_FLIGHT.value, reserve),
+            "INSERT INTO requests (host, url, opened_at, state, reserved_bytes, key)"
+            " VALUES (%s, %s, %s, %s, %s, %s) RETURNING id",
+            (host, url, now, RowState.IN_FLIGHT.value, reserve, key),
         ).fetchone()
         assert inserted is not None
         conn.execute(
@@ -696,6 +756,7 @@ class PostgresStore:
             opened_at=now,
             state=RowState.IN_FLIGHT,
             reserved_bytes=reserve,
+            key=key,
         )
 
     def close_request(

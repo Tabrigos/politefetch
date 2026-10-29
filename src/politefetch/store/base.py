@@ -10,7 +10,7 @@ calls inside the transaction so they always see the current state.
 """
 
 import logging
-from collections.abc import Callable
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from datetime import UTC, date, datetime, timedelta
 from enum import StrEnum
@@ -28,6 +28,7 @@ __all__ = [
     "Freeze",
     "HostState",
     "HostUpdate",
+    "Limit",
     "Outcome",
     "RequestRow",
     "RowState",
@@ -40,6 +41,7 @@ __all__ = [
     "caps_in_force",
     "check_admission",
     "is_late",
+    "limits_in_force",
     "log_abandoned",
     "next_utc_midnight",
     "rejected",
@@ -65,6 +67,65 @@ REJECTED = "rejected:"
 CAP_MEMORY = timedelta(days=1)
 """How long the store remembers the caps a host was opened with: every
 process applies the lowest one seen in this time (#31)."""
+
+
+_UNITS = (
+    ("d", timedelta(days=1)),
+    ("h", timedelta(hours=1)),
+    ("m", timedelta(minutes=1)),
+    ("s", timedelta(seconds=1)),
+    ("ms", timedelta(milliseconds=1)),
+)
+
+
+def _period_text(period: timedelta) -> str:
+    """The period in the largest unit that holds it whole: "1h", "90m"."""
+    for unit, size in _UNITS:
+        if period % size == timedelta(0):
+            return f"{period // size}{unit}"
+    return str(period)
+
+
+@dataclass(frozen=True, slots=True)
+class Limit:
+    """At most `count` requests started in any span of `period`, counted on
+    the request log for the host or, with `per_key`, for each key.
+
+    Attributes:
+        count: How many requests may start in one window, at least 1.
+        period: The length of the window, from more than zero to a day: past
+            a day the daily cap holds.
+        per_key: True for a limit of each key (`key=`, the URL when none is
+            given), False for one of the whole host.
+    """
+
+    count: int
+    period: timedelta
+    per_key: bool = False
+
+    def __post_init__(self) -> None:
+        if (
+            isinstance(self.count, bool)
+            or not isinstance(self.count, int)
+            or self.count < 1
+        ):
+            raise ValueError(
+                f"a limit allows at least 1 request, got {self.count!r}:"
+                " use daily_cap=0 to stop a host"
+            )
+        if not timedelta(0) < self.period <= CAP_MEMORY:
+            raise ValueError(
+                f"a limit's period is more than zero and at most a day, got"
+                f" {self.period}: past a day the daily cap holds"
+            )
+
+    def __str__(self) -> str:
+        return f"{self.count}/{_period_text(self.period)}"
+
+    @property
+    def scope(self) -> tuple[bool, timedelta]:
+        """What the limit applies to: its kind and its period."""
+        return (self.per_key, self.period)
 
 
 def rejected(outcome: "Outcome") -> bool:
@@ -257,6 +318,9 @@ class HostState:
             than its own.
         lowest_byte_budget: The lowest byte budget asked for the same way;
             `None` if none was (a process without a budget sets none).
+        lowest_limits: The lowest count asked for each kind and period of
+            `Limit` the same way, sorted by kind (the host's first) and
+            period.
     """
 
     host: str
@@ -272,6 +336,7 @@ class HostState:
     decoded_bytes_today: int = 0
     lowest_daily_cap: int | None = None
     lowest_byte_budget: int | None = None
+    lowest_limits: tuple[Limit, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -311,6 +376,8 @@ class RequestRow:
             `politefetch.status.to_json` puts its fields directly in the row.
         reserved_bytes: The bytes reserved against the byte budget when the
             row opened: the wire size of the URL's last full answer.
+        key: The key the per-key limits count the request under: the one
+            given, or the URL.
     """
 
     id: int
@@ -321,6 +388,7 @@ class RequestRow:
     closed_at: datetime | None = None
     outcome: Outcome | None = field(default=None)
     reserved_bytes: int = 0
+    key: str | None = None
 
 
 class Store(Protocol):
@@ -352,6 +420,8 @@ class Store(Protocol):
         cautious: Callable[[HostState], datetime],
         byte_budget: int | None = None,
         abandon_before: datetime | None = None,
+        limits: Sequence[Limit] = (),
+        key: str | None = None,
     ) -> RequestRow:
         """Admit a request, or raise `Refused` having written nothing else.
 
@@ -360,17 +430,31 @@ class Store(Protocol):
         same transaction; that close is kept even when the request is then
         refused, since those rows may be what refuses it.
 
-        `daily_cap` and `byte_budget` are remembered for `CAP_MEMORY`, a
-        refused request's too, and the lowest ones remembered for the host
-        apply in their place when lower (`caps_in_force`): processes sharing
-        the store with different caps do not exceed the lower one together.
+        `daily_cap`, `byte_budget` and `limits` are remembered for
+        `CAP_MEMORY`, a refused request's too, and the lowest ones
+        remembered for the host apply in their place when lower
+        (`caps_in_force`, `limits_in_force`): processes sharing the store
+        with different caps do not exceed the lower one together.
+
+        Each limit in force refuses the request while its window already
+        holds `count` requests (`limit_starts`); the per-key ones count the
+        rows with the same `key`, the URL when `key` is `None`.
 
         On admission, in one transaction: the cautious promise returned by
         `cautious(state)` is written (it must be later than `now`), today's
         count grows by one, the wire size of the URL's last full answer is
         reserved against `byte_budget` (bytes per UTC day, `None` for no
-        limit), and a row is opened in flight.
+        limit), and a row is opened in flight under its key.
         """
+        ...
+
+    def limit_starts(
+        self, host: str, limits: Sequence[Limit], *, key: str | None
+    ) -> list[datetime | None]:
+        """For each limit, when the `count`-th latest request of its scope
+        started (the host's, or the requests with `key` for a per-key
+        limit), or `None` if there are fewer. A per-key limit has `None`
+        when `key` is `None`."""
         ...
 
     def close_request(
@@ -478,13 +562,16 @@ def check_admission(
     daily_cap: int,
     byte_budget: int | None = None,
     reserve: int = 0,
+    windows: Sequence[tuple[Limit, datetime | None]] = (),
 ) -> Refused | None:
     """Return why a request to the host must be refused now, or `None`.
 
     `reserve` is the number of bytes the request would reserve against
-    `byte_budget`. When several constraints apply, the one that ends last is
-    reported, so a caller that waits for `retry_after` does not run into the
-    next one.
+    `byte_budget`. `windows` pairs each limit in force with the start of
+    the `count`-th latest request of its scope (`Store.limit_starts`): the
+    window is full until that start is `period` old. When several
+    constraints apply, the one that ends last is reported, so a caller that
+    waits for `retry_after` does not run into the next one.
     """
     if daily_cap < 0:
         raise ValueError(f"daily_cap must not be negative, got {daily_cap}")
@@ -500,6 +587,9 @@ def check_admission(
     if state.not_before is not None and now < state.not_before:
         reason = state.not_before_reason or RefusalReason.BACKOFF
         blocks.append((reason, state.not_before))
+    for limit, start in windows:
+        if start is not None and start + limit.period > now:
+            blocks.append((RefusalReason.RATE_LIMIT, start + limit.period))
     if state.requests_today >= daily_cap:
         blocks.append((RefusalReason.DAILY_CAP, next_utc_midnight(now)))
     if byte_budget is not None:
@@ -534,13 +624,54 @@ def caps_in_force(
     return daily_cap, byte_budget
 
 
-def asked_caps(daily_cap: int, byte_budget: int | None) -> list[tuple[str, int]]:
+def limits_in_force(state: HostState, limits: Sequence[Limit]) -> tuple[Limit, ...]:
+    """The limits that hold for the host: for each kind and period, the
+    lowest count among a process's own and those another process sharing
+    the store asked for in the last day; sorted as `lowest_limits`."""
+    lowest: dict[tuple[bool, timedelta], int] = {}
+    for limit in (*limits, *state.lowest_limits):
+        lowest[limit.scope] = min(limit.count, lowest.get(limit.scope, limit.count))
+    return tuple(
+        Limit(count, period, per_key)
+        for (per_key, period), count in sorted(lowest.items())
+    )
+
+
+_LIMIT = "limit:"
+"""Prefix of the name a limit is remembered under: `limit:host:<microseconds>`."""
+
+
+def _limit_name(limit: Limit) -> str:
+    kind = "key" if limit.per_key else "host"
+    return f"{_LIMIT}{kind}:{limit.period // timedelta(microseconds=1)}"
+
+
+def asked_caps(
+    daily_cap: int, byte_budget: int | None, limits: Sequence[Limit] = ()
+) -> list[tuple[str, int]]:
     """The caps an open asks for, as the store remembers them: a process
-    without a budget asks for none."""
+    without a budget asks for none, and each limit is its count under a
+    name that holds its kind and period."""
     asked = [("daily_cap", daily_cap)]
     if byte_budget is not None:
         asked.append(("byte_budget", byte_budget))
+    asked.extend((_limit_name(limit), limit.count) for limit in limits)
     return asked
+
+
+def remembered_caps(
+    lowest: Mapping[str, int],
+) -> tuple[int | None, int | None, tuple[Limit, ...]]:
+    """The lowest daily cap, byte budget and limits, from the lowest value
+    remembered under each name of `asked_caps`."""
+    limits = []
+    for name, count in lowest.items():
+        if name.startswith(_LIMIT):
+            kind, micros = name.removeprefix(_LIMIT).split(":")
+            period = timedelta(microseconds=int(micros))
+            limits.append(Limit(count, period, per_key=kind == "key"))
+    limits.sort(key=lambda limit: limit.scope)
+    return lowest.get("daily_cap"), lowest.get("byte_budget"), tuple(limits)
 
 
 def check_cautious(now: datetime, cautious: datetime) -> datetime:
