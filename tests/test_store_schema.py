@@ -30,7 +30,7 @@ from .stores import POSTGRES_DSN, drop_schema, fresh_schema, needs_postgres
 FIXTURES = Path(__file__).parent / "fixtures"
 T0 = datetime(2026, 10, 20, 12, tzinfo=UTC)  # when the 0.1.1 fixture begins
 LATER = datetime(2026, 10, 20, 16, 30, tzinfo=UTC)  # after it was written
-LATEST = 4  # the schema version of this politefetch
+LATEST = 5  # the schema version of this politefetch
 
 # Two migrations where the second needs the first: run out of order, or twice,
 # they fail.
@@ -110,13 +110,25 @@ def test_a_store_written_by_0_1_opens_with_every_row(tmp_path: Path, name: str) 
     assert sum(len(rows) for rows in before.values()) > 10  # the fixture has state
     SqliteStore(path).close()
     assert version(path) == LATEST
+    # Version 5: the last good answer is the latest closed row that was ok,
+    # of the host and of the URL (columns of 0.1: host 1, url 2, state 4,
+    # closed_at 5, ok 6).
+    good: dict[str, str] = {}
+    for r in before["requests"]:
+        if r[6] == 1 and r[4] == "closed":
+            for name in (r[1], r[2]):
+                good[name] = max(good.get(name, r[5]), r[5])
+    assert any(h[0] in good for h in before["hosts"])  # the backfill has work
     migrated = {
         **before,
         "host_caps": [],  # version 2 adds an empty table
+        "hosts": sorted(((*h, good.get(h[0])) for h in before["hosts"]), key=repr),
         # version 3 gives every request its URL as key
         "requests": sorted(((*r, r[2]) for r in before["requests"]), key=repr),
-        # version 4: no URL has failed yet
-        "urls": sorted(((*r, 0, None) for r in before["urls"]), key=repr),
+        # version 4: no URL has failed yet; version 5: nothing not ready
+        "urls": sorted(
+            ((*r, 0, None, good.get(r[0]), 0) for r in before["urls"]), key=repr
+        ),
     }
     assert contents(path) == migrated
     SqliteStore(path).close()  # opening again changes nothing
@@ -345,15 +357,22 @@ def written_by_0_1(schema: str) -> None:
     are dropped."""
     with PostgresStore(POSTGRES_DSN, schema=schema) as store:
         policy = HostPolicy(daily_cap=100, min_interval="10m")
-        gate = Gate(store, {"frozen.example": policy}, clock=FakeClock(T0))
+        policies = {"frozen.example": policy, "ok.example": policy}
+        gate = Gate(store, policies, clock=FakeClock(T0))
         with gate.attempt("https://frozen.example/feed") as attempt:
             attempt.response(429)
+        with gate.attempt("https://ok.example/data.json") as attempt:
+            attempt.response(200, headers={"ETag": '"v1"'})
+            attempt.accept()
     pg(schema, "DROP TABLE schema_version")
     pg(schema, "DROP TABLE host_caps")  # version 2
     pg(schema, "DROP INDEX requests_by_start")  # version 3, with the next
     pg(schema, "ALTER TABLE requests DROP COLUMN key")
     pg(schema, "ALTER TABLE urls DROP COLUMN failures")  # version 4
     pg(schema, "ALTER TABLE urls DROP COLUMN not_before")
+    pg(schema, "ALTER TABLE hosts DROP COLUMN last_good")  # version 5
+    pg(schema, "ALTER TABLE urls DROP COLUMN last_good")
+    pg(schema, "ALTER TABLE urls DROP COLUMN not_ready")
 
 
 @needs_postgres
@@ -372,6 +391,12 @@ def test_a_postgres_schema_written_by_0_1_opens_with_its_state(schema: str) -> N
         freeze = store.host_state("frozen.example", LATER).freeze
         assert freeze is not None
         assert freeze.status == 429
+        # Version 5 finds the last good answer in the log.
+        assert store.host_state("ok.example", LATER).last_good == T0
+        assert store.host_state("frozen.example", LATER).last_good is None
+        record = store.url_record("https://ok.example/data.json")
+        assert record is not None
+        assert (record.last_good, record.not_ready) == (T0, 0)
     assert pg_version(schema) == LATEST
 
 

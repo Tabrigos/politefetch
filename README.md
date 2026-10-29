@@ -128,7 +128,9 @@ application, as psycopg asks of libraries.
 ## Status per host
 
 `gate.status(host_or_url)` says what the gate would decide now and why, with
-today's counts and bytes and the latest log rows; `gate.statuses()` does it
+today's counts and bytes, the last good answer and the latest log rows; given
+a URL, `url` adds that URL's last good answer, its not-ready answers since
+then and its pause after a 404; `gate.statuses()` does it
 for every host with a policy. Both send nothing and serialise to JSON for a
 dashboard:
 
@@ -153,6 +155,8 @@ print(to_json(gate.statuses(), indent=2))
   "throttled": 0,
   "in_flight": 0,
   "abandoned": 0,
+  "last_good": "2026-10-16T12:00:32+00:00",
+  "url": null,
   "today": {"day": "2026-10-16", "requests": 1, "daily_cap": 120,
             "wire_bytes": 2310, "decoded_bytes": 5120, "byte_budget": null},
   "limits": [],

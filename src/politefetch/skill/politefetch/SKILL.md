@@ -219,7 +219,7 @@ message text.
 | `FetchFailed` | Sent, no usable answer, or still arriving at the `deadline`; `shape`, `status`, and `note` when the answer froze the host (with how to lift it). The gate already recorded it and grew the pause | Do not retry now: the next call will be refused until the pause ends |
 | `OutcomeNotSaved` | Sent, but the store could not save how it ended; `shape`, `status`. The host stays blocked until the reconciliation | Check the store (a lock held too long); a person may need to apply a lost 403/429 by hand |
 | `NoPolicy` | The host has no policy and the gate no default; nothing was sent. `host` | Add a `HostPolicy` for it |
-| `SourceNotReady` | Empty body, or JSON cut short in a complete answer (the source is rewriting its file): recorded as a rejected answer (`"rejected:not_ready"`), `min_interval` holds and the failures stay. A transfer cut short (shorter than its `Content-Length`, gzip cut, connection broken mid-body) is recorded as a failure: the pause of the host grows | Wait for the next scheduled run; alert when it keeps coming back in `recent` |
+| `SourceNotReady` | Empty body, or JSON cut short in a complete answer (the source is rewriting its file): recorded as a rejected answer (`"rejected:not_ready"`), `min_interval` holds and the failures stay. A transfer cut short (shorter than its `Content-Length`, gzip cut, connection broken mid-body) is recorded as a failure: the pause of the host grows | Wait for the next scheduled run; alert when `gate.status(url).url.not_ready` keeps growing |
 | `UnexpectedContent` | HTML where data was expected (JSON that parses is data even when served as `text/html`), a redirect, or a body that does not decode | Report it; do not follow the redirect yourself |
 | `BodyTooLarge` | The body is longer than `max_bytes` or the byte budget left; reading stopped there | Raise `max_bytes` or `byte_budget` if the size is expected |
 | `StaleData` | Data older than `max_age`; `data_time`, `max_age`, `age`, and `result` with what came back. Recorded as an answer: the source is not slowed down | Use `result` with a warning, or the previous data, or wait |
@@ -317,9 +317,15 @@ def dashboard(gate: Gate) -> str:
 `throttled`, `in_flight`, `abandoned` (rows past `reconcile_after`, already
 counted in `failures` and left out of `in_flight`), `requests_today`,
 `daily_cap`, `wire_bytes_today`, `decoded_bytes_today`, `byte_budget`,
-`limits` (those in force), and `recent` log rows, newest first. Given a URL
-it also counts the bytes that URL would reserve and the windows of its key
-(`key=`, the URL by default). It sends nothing and writes nothing, like `may_fetch`: a
+`limits` (those in force), `last_good` (when the last answer you accepted
+closed; it outlives the log rows), and `recent` log rows, newest first. Given
+a URL it also counts the bytes that URL would reserve and the windows of its
+key (`key=`, the URL by default), and `url` is a `UrlStatus`: `last_good`,
+`not_ready` (answers rejected as not ready since then), `failures` and
+`paused_until` (after a 404 or a 410). Alert on `url.not_ready` reaching a
+few, or on `last_good` older than a few periods of the source: either one
+says it answers but gives nothing usable. It sends nothing and writes
+nothing, like `may_fetch`: a
 dashboard can call it beside the process that fetches, or with read-only
 access.
 `gate.statuses()` covers the hosts with a policy of their own and, with a

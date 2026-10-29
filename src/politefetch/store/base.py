@@ -240,8 +240,8 @@ class Validators:
 @dataclass(frozen=True, slots=True)
 class UrlRecord:
     """What the store remembers about one URL: its validators, the wire size
-    of its last full (200) answer, used to reserve bytes, and its pause after
-    a 404 or a 410.
+    of its last full (200) answer, used to reserve bytes, its pause after a
+    404 or a 410, and its last good answer.
 
     Attributes:
         url: The URL.
@@ -254,6 +254,9 @@ class UrlRecord:
             last good answer.
         not_before: No request to the URL before then, after a 404 or a 410;
             `None` without one.
+        last_good: When the last answer the caller accepted closed; `None`
+            before the first.
+        not_ready: The answers rejected as `"not_ready"` since `last_good`.
     """
 
     url: str
@@ -262,6 +265,8 @@ class UrlRecord:
     updated_at: datetime
     failures: int = 0
     not_before: datetime | None = None
+    last_good: datetime | None = None
+    not_ready: int = 0
 
 
 @dataclass(frozen=True, slots=True)
@@ -297,18 +302,24 @@ class HostUpdate:
         freeze: The freeze the answer calls for, if any.
         url_not_before: After a 404 or a 410, no request to the URL before
             then; `None` otherwise.
+        accepted_at: The caller accepted the good answer: the time to write
+            as the host's and the URL's last good answer; `None` otherwise.
     """
 
     not_before: datetime
     reason: RefusalReason
     freeze: Freeze | None = None
     url_not_before: datetime | None = None
+    accepted_at: datetime | None = None
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "not_before", as_utc(self.not_before, "not_before"))
         if self.url_not_before is not None:
             url_not_before = as_utc(self.url_not_before, "url_not_before")
             object.__setattr__(self, "url_not_before", url_not_before)
+        if self.accepted_at is not None:
+            accepted_at = as_utc(self.accepted_at, "accepted_at")
+            object.__setattr__(self, "accepted_at", accepted_at)
         if self.reason not in (RefusalReason.MIN_INTERVAL, RefusalReason.BACKOFF):
             raise ValueError(
                 f"a promise is kept for min_interval or backoff, not {self.reason}"
@@ -349,6 +360,8 @@ class HostState:
         url_failures: Only in the state `close_request` gives `update`: the
             consecutive 404 and 410 answers of the row's URL, for its pause;
             0 everywhere else.
+        last_good: When the last answer the caller accepted, of any URL of
+            the host, closed; `None` before the first.
     """
 
     host: str
@@ -366,6 +379,7 @@ class HostState:
     lowest_byte_budget: int | None = None
     lowest_limits: tuple[Limit, ...] = ()
     url_failures: int = 0
+    last_good: datetime | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -502,7 +516,8 @@ class Store(Protocol):
         the promise; a failure only lengthens it. The outcome's wire bytes
         replace the row's reservation, on the day the row opened.
         `validators` are those of the answer; the URL record changes as
-        `apply_url` says.
+        `apply_url` says, and the host's last good answer as `apply_close`
+        says (from the `accepted_at` of the update).
 
         A row the reconciliation closed as abandoned takes its late outcome,
         stays `RECONCILED`, and changes the host only as `apply_late_close`
@@ -725,11 +740,13 @@ def apply_close(state: HostState, outcome: Outcome, update: HostUpdate) -> HostS
     (a Retry-After longer than the policy's own pauses), never for ever. A
     rejected answer (`REJECTIONS`) and a 404 or a 410 (`url_failure`, which
     pauses the URL instead) take the promise as a good one does, and leave
-    the failure counts as they were.
+    the failure counts as they were. A good answer the caller accepted
+    (`update.accepted_at`) is the host's last good answer.
     """
     if outcome.ok or rejected(outcome) or url_failure(outcome):
         if update.freeze is not None and update.freeze.until is None:
             raise ValueError("a successful outcome cannot freeze the host for ever")
+        good = update.accepted_at if outcome.ok else None
         return replace(
             state,
             not_before=update.not_before,
@@ -738,6 +755,7 @@ def apply_close(state: HostState, outcome: Outcome, update: HostUpdate) -> HostS
             throttled=0 if outcome.ok else state.throttled,
             freeze=_longer_freeze(state.freeze, update.freeze),
             in_flight=max(state.in_flight - 1, 0),
+            last_good=state.last_good if good is None else good,
         )
     not_before, reason = _later_promise(state, update)
     return replace(
@@ -867,8 +885,18 @@ def apply_url(
     The validators change as `apply_validators` says. A 404 or a 410 adds
     one to the URL's failures and takes the pause `update` gives it; a good
     answer clears both. Anything else leaves them as they were.
+
+    A good answer the caller accepted (`update.accepted_at`) is the URL's
+    last good answer and starts its not-ready count again; an answer
+    rejected as `"not_ready"` adds one to the count. Nothing else changes
+    them.
     """
     record = apply_validators(previous, url, outcome, validators, now)
+    if record is not None and previous is not None:
+        # A new record of the validators keeps the URL's history.
+        record = replace(
+            record, last_good=previous.last_good, not_ready=previous.not_ready
+        )
     if url_failure(outcome):
         known = previous or UrlRecord(url, Validators(), None, now)
         return replace(
@@ -878,7 +906,15 @@ def apply_url(
             not_before=update.url_not_before,
         )
     if outcome.ok and previous is not None and previous.failures:
-        return replace(record or previous, updated_at=now, failures=0, not_before=None)
+        record = replace(
+            record or previous, updated_at=now, failures=0, not_before=None
+        )
+    if outcome.ok and update.accepted_at is not None:
+        known = record or previous or UrlRecord(url, Validators(), None, now)
+        return replace(known, updated_at=now, last_good=update.accepted_at, not_ready=0)
+    if outcome.failure == REJECTED + "not_ready":
+        known = record or previous or UrlRecord(url, Validators(), None, now)
+        return replace(known, updated_at=now, not_ready=known.not_ready + 1)
     return record
 
 

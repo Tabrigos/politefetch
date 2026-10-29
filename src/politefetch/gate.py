@@ -43,7 +43,7 @@ from urllib.parse import urlsplit
 from politefetch.clock import Clock, SleepingClock, SystemClock
 from politefetch.errors import NoPolicy, OutcomeNotSaved, RefusalReason, Refused
 from politefetch.policy import HostPolicy, parse_duration, parse_retry_after
-from politefetch.status import HostStatus
+from politefetch.status import HostStatus, UrlStatus
 from politefetch.store.base import (
     REJECTED,
     REJECTIONS,
@@ -219,13 +219,15 @@ class Gate:
         self, host_or_url: str, *, recent: int = 10, key: str | None = None
     ) -> HostStatus:
         """The readable state of a host: the decision `may_fetch` would take,
-        today's counts and bytes, the limits in force, and its latest
-        `recent` log rows.
+        today's counts and bytes, the limits in force, its last good answer,
+        and its latest `recent` log rows.
 
         Given a URL, the decision counts the bytes that URL would reserve
         against the byte budget and the windows of its key (`key`, the URL by
-        default), as `may_fetch` does; given a host, it counts no bytes and
-        the per-key windows only for a `key` given. Like `may_fetch`, it
+        default), as `may_fetch` does, and `url` tells that URL's last good
+        answer, not-ready count and pause; given a host, it counts no bytes,
+        the per-key windows only for a `key` given, and `url` is `None`. Like
+        `may_fetch`, it
         sends nothing and writes nothing, so it can run beside the process
         that fetches, or without the right to write.
         """
@@ -239,6 +241,21 @@ class Gate:
         limits = limits_in_force(state, policy.limits + policy.key_limits)
         rows = self.store.rows(host=host, latest=recent) if recent else []
         freeze = state.freeze
+        url = None
+        if "://" in host_or_url:
+            record = self.store.url_record(host_or_url)
+            url = UrlStatus(host_or_url, last_good=None, not_ready=0)
+            if record is not None:
+                paused = record.not_before
+                url = UrlStatus(
+                    host_or_url,
+                    last_good=record.last_good,
+                    not_ready=record.not_ready,
+                    failures=record.failures,
+                    paused_until=paused
+                    if paused is not None and now < paused
+                    else None,
+                )
         return HostStatus(
             host=host,
             at=now,
@@ -258,6 +275,8 @@ class Gate:
             byte_budget=byte_budget,
             recent=tuple(reversed(rows)),
             limits=limits,
+            last_good=state.last_good,
+            url=url,
         )
 
     def statuses(
@@ -640,6 +659,7 @@ class Attempt:
             outcome = Outcome(ok=False, failure=shape)
             self._outcome = outcome
         retry_at, policy = self._retry_at, self._policy
+        accepted = self._verdict == "accepted"
         # The store is our own database, not the source: trying it again
         # sends nothing. Each try waits as long as the store's own timeout.
         failed: Exception | None = None
@@ -649,6 +669,8 @@ class Attempt:
 
             def update(state: HostState, now: datetime = now) -> HostUpdate:
                 decided = policy.after(state, now, outcome, retry_at)
+                if accepted:
+                    decided = replace(decided, accepted_at=now)
                 was = state.freeze is not None and state.freeze.active(now)
                 frozen[:] = [decided.freeze is not None and not was]
                 return decided

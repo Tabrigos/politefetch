@@ -65,6 +65,20 @@ All notable changes to politefetch. The format follows
   waiting), and a clock of your own without them still serves for
   everything but `wait_up_to`, which then raises `TypeError`
   (`SleepingClock`).
+- The last good answer of each host and URL, and the not-ready count of each
+  URL (#24, #13). When a row closes with an answer the caller accepted, its
+  time is written as the host's and the URL's last good answer, in the same
+  transaction; an answer rejected as `"not_ready"` adds one to the URL's
+  count, and only an accepted answer starts it again. `HostStatus.last_good`
+  gives the host's, which outlives the log rows; `gate.status(url).url` is a
+  `UrlStatus` with the URL's `last_good`, `not_ready`, `failures` and
+  `paused_until`; both are in the JSON. The skill says what to alert on. The
+  schema goes to version 5 (`last_good` on the hosts and URLs, filled
+  from the log for the rows written before, and `not_ready` on the URLs);
+  **an existing Postgres schema must be opened once with `migrate=True`**
+  again. A store of your own keeps `HostState.last_good` and the new fields
+  of `UrlRecord`, as `apply_close` and `apply_url` set them from
+  `HostUpdate.accepted_at`.
 
 ### Changed
 

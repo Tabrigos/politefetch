@@ -191,6 +191,18 @@ _MIGRATIONS: tuple[tuple[str, ...], ...] = (
         "ALTER TABLE urls ADD COLUMN failures bigint NOT NULL DEFAULT 0",
         "ALTER TABLE urls ADD COLUMN not_before timestamptz",
     ),
+    # 5: the last good answer of each host and URL, and the not-ready count
+    # of each URL (#24, #13, D-062). Before the caller's verdict every good
+    # answer was taken, so the last good row of the log is the last good one.
+    (
+        "ALTER TABLE hosts ADD COLUMN last_good timestamptz",
+        "ALTER TABLE urls ADD COLUMN last_good timestamptz",
+        "ALTER TABLE urls ADD COLUMN not_ready bigint NOT NULL DEFAULT 0",
+        "UPDATE hosts SET last_good = (SELECT MAX(closed_at) FROM requests"
+        " WHERE requests.host = hosts.host AND ok AND state = 'closed')",
+        "UPDATE urls SET last_good = (SELECT MAX(closed_at) FROM requests"
+        " WHERE requests.url = urls.url AND ok AND state = 'closed')",
+    ),
 )
 
 _ROW_COLUMNS = (
@@ -407,7 +419,7 @@ class PostgresStore:
         day = now.date()
         found = conn.execute(
             "SELECT not_before, not_before_reason, failures, throttled,"
-            " freeze_since, freeze_until, freeze_status, freeze_note"
+            " freeze_since, freeze_until, freeze_status, freeze_note, last_good"
             " FROM hosts WHERE host = %s",
             (host,),
         ).fetchone()
@@ -453,7 +465,8 @@ class PostgresStore:
             not_before_reason=None if reason is None else RefusalReason(reason),
             failures=int(failures),
             throttled=int(throttled),
-            freeze=_freeze(*found[4:]),
+            freeze=_freeze(*found[4:8]),
+            last_good=_utc(found[8]),
         )
 
     @staticmethod
@@ -488,8 +501,9 @@ class PostgresStore:
         freeze = state.freeze
         conn.execute(
             "INSERT INTO hosts (host, not_before, not_before_reason, failures,"
-            " throttled, freeze_since, freeze_until, freeze_status, freeze_note)"
-            " VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)"
+            " throttled, freeze_since, freeze_until, freeze_status, freeze_note,"
+            " last_good)"
+            " VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)"
             " ON CONFLICT (host) DO UPDATE SET"
             " not_before = excluded.not_before,"
             " not_before_reason = excluded.not_before_reason,"
@@ -498,7 +512,8 @@ class PostgresStore:
             " freeze_since = excluded.freeze_since,"
             " freeze_until = excluded.freeze_until,"
             " freeze_status = excluded.freeze_status,"
-            " freeze_note = excluded.freeze_note",
+            " freeze_note = excluded.freeze_note,"
+            " last_good = excluded.last_good",
             (
                 state.host,
                 state.not_before,
@@ -511,6 +526,7 @@ class PostgresStore:
                 None if freeze is None else freeze.until,
                 None if freeze is None else freeze.status,
                 None if freeze is None else freeze.note,
+                state.last_good,
             ),
         )
 
@@ -528,13 +544,14 @@ class PostgresStore:
         conn: psycopg.Connection[tuple[Any, ...]], url: str
     ) -> UrlRecord | None:
         found = conn.execute(
-            "SELECT etag, last_modified, size, updated_at, failures, not_before"
-            " FROM urls WHERE url = %s",
+            "SELECT etag, last_modified, size, updated_at, failures, not_before,"
+            " last_good, not_ready FROM urls WHERE url = %s",
             (url,),
         ).fetchone()
         if found is None:
             return None
-        etag, last_modified, size, updated_at, failures, not_before = found
+        etag, last_modified, size, updated_at, failures, not_before = found[:6]
+        last_good, not_ready = found[6:]
         return UrlRecord(
             url=url,
             validators=Validators(etag=etag, last_modified=last_modified),
@@ -542,6 +559,8 @@ class PostgresStore:
             updated_at=as_utc(updated_at),
             failures=int(failures),
             not_before=_utc(not_before),
+            last_good=_utc(last_good),
+            not_ready=int(not_ready),
         )
 
     @staticmethod
@@ -818,11 +837,13 @@ class PostgresStore:
             if record is not None:
                 conn.execute(
                     "INSERT INTO urls (url, etag, last_modified, size, updated_at,"
-                    " failures, not_before) VALUES (%s, %s, %s, %s, %s, %s, %s)"
+                    " failures, not_before, last_good, not_ready)"
+                    " VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)"
                     " ON CONFLICT (url) DO UPDATE SET etag = excluded.etag,"
                     " last_modified = excluded.last_modified, size = excluded.size,"
                     " updated_at = excluded.updated_at,"
-                    " failures = excluded.failures, not_before = excluded.not_before",
+                    " failures = excluded.failures, not_before = excluded.not_before,"
+                    " last_good = excluded.last_good, not_ready = excluded.not_ready",
                     (
                         record.url,
                         record.validators.etag,
@@ -831,6 +852,8 @@ class PostgresStore:
                         record.updated_at,
                         record.failures,
                         record.not_before,
+                        record.last_good,
+                        record.not_ready,
                     ),
                 )
         return replace(row, state=closed_state, closed_at=now, outcome=outcome)

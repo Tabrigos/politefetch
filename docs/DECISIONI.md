@@ -1684,3 +1684,48 @@ alla vecchia e la vecchia prende la riga "Superata da".
   non finisce mai).
 - **Conseguenze**: nessuna rottura. Un `Clock` scritto a mano che vuole
   `wait_up_to` aggiunge `sleep` e `sleep_async`.
+
+## D-062 — L'ultima risposta buona e il contatore not-ready nello store
+
+- **Data e tappa**: 2026-10-29, issue #24 e #13, riscritte sul modello della
+  #28
+- **Contesto**: una console mostra «ultima risposta buona» per fonte, ma
+  `status` aveva solo le ultime righe del registro: un host o un URL che
+  falliscono per un po' perdevano l'ora dell'ultimo successo, e le righe
+  diventeranno potabili (#17). Dalla #41 una risposta completa ma non pronta
+  (vuota, mezzo JSON) è `reject("not_ready")`, una risposta e non un
+  fallimento: la pausa non cresce, e una fonte che resta non pronta non si
+  vedeva più.
+- **Decisione** (scelte del maintainer del 29/10: 3A, 4A, 5A):
+  - è buona solo una risposta che il chiamante ha accettato con `accept()`,
+    come diceva la #28: una risposta buona senza verdetto non vale (3A).
+    Il Gate lo dice allo store con `HostUpdate.accepted_at`, l'ora della
+    chiusura; lo store la scrive come `last_good` dell'host e dell'URL nella
+    stessa transazione della chiusura;
+  - l'URL conta le risposte rifiutate come `"not_ready"` dall'ultima
+    accettata (`UrlRecord.not_ready`): solo una risposta accettata lo
+    azzera; un `unusable`, un 503, un 404 o un errore di trasporto lo
+    lasciano com'è, così una fonte che alterna non pronta e 503 arriva
+    comunque alla soglia (4A);
+  - una chiusura arrivata dopo la riconciliazione non tocca né l'una né
+    l'altro, come i validatori e i fallimenti per URL (D-060);
+  - con l'orologio rimesso indietro si scrive l'ora della chiusura, anche se
+    precede quella di prima: è l'ora dell'ultima risposta, non la più tarda;
+  - `HostStatus.last_good` per l'host; `gate.status(url).url` è un
+    `UrlStatus` (`last_good`, `not_ready`, `failures`, `paused_until`) per
+    l'URL chiesto, `None` per un host (5A);
+  - versione 5 dello schema: `last_good` su `hosts` e `urls`, `not_ready` su
+    `urls`. `last_good` si riempie dal registro con l'ultima riga chiusa
+    buona: prima del verdetto ogni risposta buona era presa.
+- **Alternative scartate**: ogni chiusura buona, anche senza verdetto (3B:
+  un corpo mai verificato varrebbe come buono); azzerare il contatore con
+  qualsiasi risposta diversa da `not_ready` (4B); `HostStatus.urls` con tutti
+  gli URL dell'host (5B: un metodo nuovo nel protocollo `Store`, e uno stato
+  grande per un host con molti URL); un parametro nuovo di `close_request`
+  invece di un campo di `HostUpdate` (un cambio in più alla firma per gli
+  store scritti a mano, che ricevono già l'update).
+- **Conseguenze**: ogni chiusura accettata scrive la riga dell'URL, anche
+  un 304 che prima non la cambiava. La #24 diceva «dipende dalla #11»: fatto.
+  Uno schema Postgres esistente va aperto di nuovo una volta con
+  `migrate=True`. La potatura della #17 deve tenere le righe di `urls` e
+  `hosts`, che ora portano la storia anche senza registro.

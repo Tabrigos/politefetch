@@ -46,7 +46,7 @@ The single point every request to a protected host goes through.
 - `.policy_for(host: str) -> HostPolicy`
 - `.reconcile(now: datetime | None = None) -> list[RequestRow]`: Close as failed the rows in flight for longer than `reconcile_after`.
 - `.may_fetch(url: str, *, key: str | None = None) -> Verdict`: Tell whether a request to `url` (under `key`, the URL by default) may start now, and if not why and until when. Advisory: `attempt` decides again, atomically. Sends nothing and writes nothing: rows abandoned past `reconcile_after` count as the next request to the host will count them.
-- `.status(host_or_url: str, *, recent: int = 10, key: str | None = None) -> HostStatus`: The readable state of a host: the decision `may_fetch` would take, today's counts and bytes, the limits in force, and its latest `recent` log rows.
+- `.status(host_or_url: str, *, recent: int = 10, key: str | None = None) -> HostStatus`: The readable state of a host: the decision `may_fetch` would take, today's counts and bytes, the limits in force, its last good answer, and its latest `recent` log rows.
 - `.statuses(hosts: Iterable[str] | None = None, *, recent: int = 10) -> list[HostStatus]`: `status` of each of `hosts` (hosts or URLs), in their order; by default of every host with a policy of its own and, when the gate has a `default` policy, of every host the store knows, sorted by name.
 - `.attempt(url: str, *, key: str | None = None, wait_up_to: timedelta | str | None = None) -> Attempt`: A context manager (sync or async) around one request to `url`. `key` names what the request reads for the policy's `key_limits`; without it the URL is the key.
 - `.note_data_time(url: str, data_time: datetime) -> DataTimeRecord`: Record the data time a read of `url` returned, for stuck-source detection (`politefetch.checks.check_advancing`).
@@ -111,11 +111,11 @@ Turn 1500, "500B", "2kB", "50MB", "1GB", "2KiB", "50MiB" or "1GiB" into bytes.
 
 ## `politefetch.status`
 
-Readable state per host: next allowed request, reason for any block, today's counts and bytes, latest log rows; serialisable to JSON.
+Readable state per host: next allowed request, reason for any block, today's counts and bytes, the last good answer, latest log rows, and the URL asked for; serialisable to JSON.
 
 ### `HostStatus`
 
-`HostStatus(host: str, at: datetime, may_fetch: bool, reason: RefusalReason | None, next_allowed: datetime | None, frozen: Freeze | None, failures: int, throttled: int, in_flight: int, day: date, requests_today: int, daily_cap: int, wire_bytes_today: int, decoded_bytes_today: int, byte_budget: int | None, recent: tuple[RequestRow, ...], abandoned: int = 0, limits: tuple[Limit, ...] = ())`
+`HostStatus(host: str, at: datetime, may_fetch: bool, reason: RefusalReason | None, next_allowed: datetime | None, frozen: Freeze | None, failures: int, throttled: int, in_flight: int, day: date, requests_today: int, daily_cap: int, wire_bytes_today: int, decoded_bytes_today: int, byte_budget: int | None, recent: tuple[RequestRow, ...], abandoned: int = 0, limits: tuple[Limit, ...] = (), last_good: datetime | None = None, url: UrlStatus | None = None)`
 
 One host as of `at`.
 
@@ -139,9 +139,27 @@ One host as of `at`.
 | `recent` | `tuple[RequestRow, ...]` | The latest log rows of the host, newest first. |
 | `abandoned` | `int` | Rows in flight for longer than `reconcile_after`: already left out of `in_flight` and counted in `failures`, as the next request to the host will count them when it closes them. |
 | `limits` | `tuple[Limit, ...]` | The limits in force, chosen as `daily_cap` is for each kind and period: the host's first, then the per-key ones, each sorted by period. |
+| `last_good` | `datetime \| None` | When the last answer the caller accepted, of any URL of the host, closed; `None` before the first. It stays when the log rows are gone. |
+| `url` | `UrlStatus \| None` | The URL the status was asked for, if it was asked for one. |
 
 - `.to_dict() -> dict[str, object]`: The status as JSON-ready values: times as ISO 8601 strings with their UTC offset, reasons and row states as their stored names.
 - `.to_json(*, indent: int | None = None) -> str`: `to_dict` serialised.
+
+### `UrlStatus`
+
+`UrlStatus(url: str, last_good: datetime | None, not_ready: int, failures: int = 0, paused_until: datetime | None = None)`
+
+One URL of a host, in the status asked for that URL.
+
+| Field | Type | Meaning |
+|---|---|---|
+| `url` | `str` | The URL. |
+| `last_good` | `datetime \| None` | When the last answer of the URL that the caller accepted closed; `None` before the first. |
+| `not_ready` | `int` | The answers rejected as `"not_ready"` (empty, half a JSON) since `last_good`: alert when it keeps growing. |
+| `failures` | `int` | The consecutive 404 and 410 answers since its last good answer. |
+| `paused_until` | `datetime \| None` | The URL's pause after a 404 or a 410, while it lasts; `None` otherwise. |
+
+- `.to_dict() -> dict[str, object]`
 
 ### `to_json(statuses: HostStatus | Sequence[HostStatus], *, indent: int | None = None) -> str`
 
@@ -614,7 +632,7 @@ A host frozen after 403, 429 or 451.
 
 ### `HostState`
 
-`HostState(host: str, day: date, requests_today: int = 0, not_before: datetime | None = None, not_before_reason: RefusalReason | None = None, failures: int = 0, freeze: Freeze | None = None, in_flight: int = 0, throttled: int = 0, wire_bytes_today: int = 0, decoded_bytes_today: int = 0, lowest_daily_cap: int | None = None, lowest_byte_budget: int | None = None, lowest_limits: tuple[Limit, ...] = (), url_failures: int = 0)`
+`HostState(host: str, day: date, requests_today: int = 0, not_before: datetime | None = None, not_before_reason: RefusalReason | None = None, failures: int = 0, freeze: Freeze | None = None, in_flight: int = 0, throttled: int = 0, wire_bytes_today: int = 0, decoded_bytes_today: int = 0, lowest_daily_cap: int | None = None, lowest_byte_budget: int | None = None, lowest_limits: tuple[Limit, ...] = (), url_failures: int = 0, last_good: datetime | None = None)`
 
 Everything the store knows about one host, as of one moment.
 
@@ -635,10 +653,11 @@ Everything the store knows about one host, as of one moment.
 | `lowest_byte_budget` | `int \| None` | The lowest byte budget asked for the same way; `None` if none was (a process without a budget sets none). |
 | `lowest_limits` | `tuple[Limit, ...]` | The lowest count asked for each kind and period of `Limit` the same way, sorted by kind (the host's first) and period. |
 | `url_failures` | `int` | Only in the state `close_request` gives `update`: the consecutive 404 and 410 answers of the row's URL, for its pause; 0 everywhere else. |
+| `last_good` | `datetime \| None` | When the last answer the caller accepted, of any URL of the host, closed; `None` before the first. |
 
 ### `HostUpdate`
 
-`HostUpdate(not_before: datetime, reason: RefusalReason, freeze: Freeze | None = None, url_not_before: datetime | None = None)`
+`HostUpdate(not_before: datetime, reason: RefusalReason, freeze: Freeze | None = None, url_not_before: datetime | None = None, accepted_at: datetime | None = None)`
 
 What the caller wants written after a request: the next promise, and a freeze if the answer calls for one.
 
@@ -648,6 +667,7 @@ What the caller wants written after a request: the next promise, and a freeze if
 | `reason` | `RefusalReason` | What the promise is for: `min_interval` after a good answer, `backoff` after a failure. |
 | `freeze` | `Freeze \| None` | The freeze the answer calls for, if any. |
 | `url_not_before` | `datetime \| None` | After a 404 or a 410, no request to the URL before then; `None` otherwise. |
+| `accepted_at` | `datetime \| None` | The caller accepted the good answer: the time to write as the host's and the URL's last good answer; `None` otherwise. |
 
 ### `Limit`
 
@@ -740,9 +760,9 @@ The trace left when a person lifts a freeze.
 
 ### `UrlRecord`
 
-`UrlRecord(url: str, validators: Validators, size: int | None, updated_at: datetime, failures: int = 0, not_before: datetime | None = None)`
+`UrlRecord(url: str, validators: Validators, size: int | None, updated_at: datetime, failures: int = 0, not_before: datetime | None = None, last_good: datetime | None = None, not_ready: int = 0)`
 
-What the store remembers about one URL: its validators, the wire size of its last full (200) answer, used to reserve bytes, and its pause after a 404 or a 410.
+What the store remembers about one URL: its validators, the wire size of its last full (200) answer, used to reserve bytes, its pause after a 404 or a 410, and its last good answer.
 
 | Field | Type | Meaning |
 |---|---|---|
@@ -752,6 +772,8 @@ What the store remembers about one URL: its validators, the wire size of its las
 | `updated_at` | `datetime` | When the record was last written. |
 | `failures` | `int` | The consecutive 404 and 410 answers of the URL since its last good answer. |
 | `not_before` | `datetime \| None` | No request to the URL before then, after a 404 or a 410; `None` without one. |
+| `last_good` | `datetime \| None` | When the last answer the caller accepted closed; `None` before the first. |
+| `not_ready` | `int` | The answers rejected as `"not_ready"` since `last_good`. |
 
 ### `Validators`
 
