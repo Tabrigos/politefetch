@@ -11,7 +11,7 @@ Modules: `politefetch` · `politefetch.gate` · `politefetch.policy` · `politef
 
 politefetch: a polite, crash-safe gate between an ingest service and the external sources it polls.
 
-Re-exports: `BodyTooLarge` (politefetch.errors), `Clock` (politefetch.clock), `ContentError` (politefetch.errors), `FakeClock` (politefetch.clock), `FetchFailed` (politefetch.errors), `Gate` (politefetch.gate), `HostPolicy` (politefetch.policy), `Limit` (politefetch.store.base), `NoPolicy` (politefetch.errors), `OutcomeNotSaved` (politefetch.errors), `PoliteFetchError` (politefetch.errors), `RefusalReason` (politefetch.errors), `Refused` (politefetch.errors), `SourceNotReady` (politefetch.errors), `StaleData` (politefetch.errors), `StuckSource` (politefetch.errors), `SystemClock` (politefetch.clock), `UnexpectedContent` (politefetch.errors).
+Re-exports: `BodyTooLarge` (politefetch.errors), `Clock` (politefetch.clock), `ContentError` (politefetch.errors), `FakeClock` (politefetch.clock), `FetchFailed` (politefetch.errors), `Gate` (politefetch.gate), `HostPolicy` (politefetch.policy), `Limit` (politefetch.store.base), `NoPolicy` (politefetch.errors), `OutcomeNotSaved` (politefetch.errors), `PoliteFetchError` (politefetch.errors), `RefusalReason` (politefetch.errors), `Refused` (politefetch.errors), `SleepingClock` (politefetch.clock), `SourceNotReady` (politefetch.errors), `StaleData` (politefetch.errors), `StuckSource` (politefetch.errors), `SystemClock` (politefetch.clock), `UnexpectedContent` (politefetch.errors).
 
 ### `__version__`
 
@@ -23,7 +23,7 @@ The gate: decides whether a request may start and keeps the request log.
 
 ### `Attempt`
 
-`Attempt(gate: Gate, url: str, host: str, policy: HostPolicy, key: str | None = None)`
+`Attempt(gate: Gate, url: str, host: str, policy: HostPolicy, key: str | None = None, wait_up_to: timedelta | None = None)`
 
 One request through the gate. Record what the source did with `response` or `failure` before the block ends, and, for a good answer, the verdict on its body: `accept` when you take it, `reject` when not. `reject("not_sent")` closes an attempt that sent nothing.
 
@@ -48,7 +48,7 @@ The single point every request to a protected host goes through.
 - `.may_fetch(url: str, *, key: str | None = None) -> Verdict`: Tell whether a request to `url` (under `key`, the URL by default) may start now, and if not why and until when. Advisory: `attempt` decides again, atomically. Sends nothing and writes nothing: rows abandoned past `reconcile_after` count as the next request to the host will count them.
 - `.status(host_or_url: str, *, recent: int = 10, key: str | None = None) -> HostStatus`: The readable state of a host: the decision `may_fetch` would take, today's counts and bytes, the limits in force, and its latest `recent` log rows.
 - `.statuses(hosts: Iterable[str] | None = None, *, recent: int = 10) -> list[HostStatus]`: `status` of each of `hosts` (hosts or URLs), in their order; by default of every host with a policy of its own and, when the gate has a `default` policy, of every host the store knows, sorted by name.
-- `.attempt(url: str, *, key: str | None = None) -> Attempt`: A context manager (sync or async) around one request to `url`. `key` names what the request reads for the policy's `key_limits`; without it the URL is the key.
+- `.attempt(url: str, *, key: str | None = None, wait_up_to: timedelta | str | None = None) -> Attempt`: A context manager (sync or async) around one request to `url`. `key` names what the request reads for the policy's `key_limits`; without it the URL is the key.
 - `.note_data_time(url: str, data_time: datetime) -> DataTimeRecord`: Record the data time a read of `url` returned, for stuck-source detection (`politefetch.checks.check_advancing`).
 - `.unfreeze(host_or_url: str, *, by: str, note: str = '') -> Unfreeze | None`: Lift a host's freeze by hand, leaving a trace of who did it.
 
@@ -327,6 +327,15 @@ A clock that only moves when told to.
 - `.now() -> datetime`
 - `.advance(delta: timedelta) -> None`: Move forward by `delta`; use `set` to make the clock jump back.
 - `.set(when: datetime) -> None`: Jump to `when`, forward or backward, as a real wall clock can.
+- `.sleep(delta: timedelta) -> None`: Move forward by `delta` at once: nothing waits.
+- `.sleep_async(delta: timedelta) -> None`: Move forward by `delta`, letting other tasks run once.
+
+### `SleepingClock`
+
+Protocol. A clock that can also wait: what `wait_up_to` needs (D-061).
+
+- `.sleep(delta: timedelta) -> None`: Wait for `delta`.
+- `.sleep_async(delta: timedelta) -> None`: Wait for `delta` without blocking the event loop.
 
 ### `SystemClock`
 
@@ -335,6 +344,8 @@ A clock that only moves when told to.
 The real wall clock.
 
 - `.now() -> datetime`
+- `.sleep(delta: timedelta) -> None`
+- `.sleep_async(delta: timedelta) -> None`
 
 ### `as_utc(value: datetime, name: str = 'time') -> datetime`
 
@@ -364,7 +375,7 @@ What every adapter shares: the fetch cycle, the result, the failure shapes.
 
 Fetch through the gate with an asynchronous transport. Same meaning as `Fetcher`; store work runs in a worker thread.
 
-- `.get(url: str, *, expect: Literal['json', 'text', 'bytes'] = 'json', data_time: Callable[[Any], datetime] | None = None, max_age: timedelta | str | None = None, max_ahead: timedelta | str = timedelta(seconds=900), stuck_after: int | timedelta | str | None = None, headers: Mapping[str, str] | None = None, allow_empty: bool = False, max_bytes: int | str | None = None, parse: Callable[[Any], Any] | None = None, conditional: bool = True, key: str | None = None) -> FetchResult`
+- `.get(url: str, *, expect: Literal['json', 'text', 'bytes'] = 'json', data_time: Callable[[Any], datetime] | None = None, max_age: timedelta | str | None = None, max_ahead: timedelta | str = timedelta(seconds=900), stuck_after: int | timedelta | str | None = None, headers: Mapping[str, str] | None = None, allow_empty: bool = False, max_bytes: int | str | None = None, parse: Callable[[Any], Any] | None = None, conditional: bool = True, key: str | None = None, wait_up_to: timedelta | str | None = None) -> FetchResult`
 - `.aclose() -> None`
 
 ### `AsyncRawResponse`
@@ -424,7 +435,7 @@ A fetch that passed every check.
 
 Fetch through the gate with a synchronous transport.
 
-- `.get(url: str, *, expect: Literal['json', 'text', 'bytes'] = 'json', data_time: Callable[[Any], datetime] | None = None, max_age: timedelta | str | None = None, max_ahead: timedelta | str = timedelta(seconds=900), stuck_after: int | timedelta | str | None = None, headers: Mapping[str, str] | None = None, allow_empty: bool = False, max_bytes: int | str | None = None, parse: Callable[[Any], Any] | None = None, conditional: bool = True, key: str | None = None) -> FetchResult`: Fetch `url` once, if the gate allows it, and check what comes back.
+- `.get(url: str, *, expect: Literal['json', 'text', 'bytes'] = 'json', data_time: Callable[[Any], datetime] | None = None, max_age: timedelta | str | None = None, max_ahead: timedelta | str = timedelta(seconds=900), stuck_after: int | timedelta | str | None = None, headers: Mapping[str, str] | None = None, allow_empty: bool = False, max_bytes: int | str | None = None, parse: Callable[[Any], Any] | None = None, conditional: bool = True, key: str | None = None, wait_up_to: timedelta | str | None = None) -> FetchResult`: Fetch `url` once, if the gate allows it, and check what comes back.
 - `.close() -> None`
 
 ### `IncompleteBody`

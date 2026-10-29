@@ -55,6 +55,16 @@ All notable changes to politefetch. The format follows
   before); **an existing Postgres schema must be opened once with
   `migrate=True`** again. A store of your own implements `limit_starts` and
   takes `limits` and `key` in `open_request`.
+- `wait_up_to=` on `gate.attempt` (sync and async) and on the fetchers' `get`
+  (#14): a refusal for `min_interval` that ends within the bound, counted
+  from the first refusal, is waited out and the gate asked again, so one
+  logical call of a few GETs seconds apart no longer needs a wait of its own.
+  Every other refusal is raised at once; nothing is open or sent while it
+  waits. It sleeps through the gate's clock: `SystemClock` and `FakeClock`
+  gain `sleep` and `sleep_async` (a `FakeClock` moves forward instead of
+  waiting), and a clock of your own without them still serves for
+  everything but `wait_up_to`, which then raises `TypeError`
+  (`SleepingClock`).
 
 ### Changed
 

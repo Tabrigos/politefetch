@@ -697,6 +697,7 @@ class Fetcher:
         parse: Callable[[Any], Any] | None = None,
         conditional: bool = True,
         key: str | None = None,
+        wait_up_to: timedelta | str | None = None,
     ) -> FetchResult:
         """Fetch `url` once, if the gate allows it, and check what comes back.
 
@@ -717,7 +718,8 @@ class Fetcher:
         and the answer is accepted. `conditional=False` leaves out the
         conditional headers, for a copy you no longer have. `key` names what
         the request reads for the policy's `key_limits` (the URL by
-        default). A body that is
+        default). `wait_up_to` waits out a refusal for `min_interval` that
+        ends within it (`Gate.attempt`). A body that is
         complete but not ready (empty, half a JSON) is `SourceNotReady`,
         recorded as an answer; a transfer cut short is recorded as a failure.
 
@@ -736,7 +738,7 @@ class Fetcher:
             conditional,
         )
         try:
-            with self.gate.attempt(url, key=key) as attempt:
+            with self.gate.attempt(url, key=key, wait_up_to=wait_up_to) as attempt:
                 sent = _request_headers(
                     attempt, self.user_agent, headers, options.conditional
                 )
@@ -804,6 +806,7 @@ class AsyncFetcher:
         parse: Callable[[Any], Any] | None = None,
         conditional: bool = True,
         key: str | None = None,
+        wait_up_to: timedelta | str | None = None,
     ) -> FetchResult:
         options = _Options.build(
             expect,
@@ -817,7 +820,9 @@ class AsyncFetcher:
             conditional,
         )
         try:
-            async with self.gate.attempt(url, key=key) as attempt:
+            async with self.gate.attempt(
+                url, key=key, wait_up_to=wait_up_to
+            ) as attempt:
                 sent = _request_headers(
                     attempt, self.user_agent, headers, options.conditional
                 )

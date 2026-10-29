@@ -40,7 +40,7 @@ from types import TracebackType
 from typing import Self
 from urllib.parse import urlsplit
 
-from politefetch.clock import Clock, SystemClock
+from politefetch.clock import Clock, SleepingClock, SystemClock
 from politefetch.errors import NoPolicy, OutcomeNotSaved, RefusalReason, Refused
 from politefetch.policy import HostPolicy, parse_duration, parse_retry_after
 from politefetch.status import HostStatus
@@ -79,6 +79,10 @@ _RECONCILE_WITHOUT_FETCHERS = timedelta(hours=1)
 
 _CAPS = (RefusalReason.DAILY_CAP, RefusalReason.BYTE_BUDGET, RefusalReason.RATE_LIMIT)
 """The refusals a lower cap or limit of another process can cause."""
+
+_WAITED = RefusalReason.MIN_INTERVAL
+"""The one refusal `wait_up_to` waits out: the host's spacing, short and
+ending on its own (D-061)."""
 
 Headers = Mapping[str, str] | Message
 """Response headers: any mapping (httpx, requests) or an `email.message.Message`
@@ -357,12 +361,32 @@ class Gate:
                 held,
             )
 
-    def attempt(self, url: str, *, key: str | None = None) -> "Attempt":
+    def attempt(
+        self,
+        url: str,
+        *,
+        key: str | None = None,
+        wait_up_to: timedelta | str | None = None,
+    ) -> "Attempt":
         """A context manager (sync or async) around one request to `url`.
         `key` names what the request reads for the policy's `key_limits`;
-        without it the URL is the key."""
+        without it the URL is the key.
+
+        With `wait_up_to`, a refusal for `min_interval` that ends within that
+        bound, counted from the first refusal, is waited out through the
+        gate's clock (a `SleepingClock`) and the gate is asked again; any
+        other refusal is raised at once, and so is a wait past the bound.
+        Nothing is open and nothing is sent while it waits.
+        """
+        wait = None if wait_up_to is None else parse_duration(wait_up_to)
+        if wait is not None and not isinstance(self.clock, SleepingClock):
+            raise TypeError(
+                "wait_up_to needs a clock that can sleep: give the gate's clock"
+                " sleep() and sleep_async() (SleepingClock), as SystemClock and"
+                " FakeClock have"
+            )
         host = host_of(url)
-        return Attempt(self, url, host, self.policy_for(host), key)
+        return Attempt(self, url, host, self.policy_for(host), key, wait)
 
     def note_data_time(self, url: str, data_time: datetime) -> DataTimeRecord:
         """Record the data time a read of `url` returned, for stuck-source
@@ -389,6 +413,7 @@ class Attempt:
         host: str,
         policy: HostPolicy,
         key: str | None = None,
+        wait_up_to: timedelta | None = None,
     ) -> None:
         self.url = url
         self.host = host
@@ -396,6 +421,9 @@ class Attempt:
         """What the per-key limits count this request under."""
         self._gate = gate
         self._policy = policy
+        self._wait_up_to = wait_up_to
+        self._wait_until: datetime | None = None
+        self._asked_at: datetime | None = None
         self._row: RequestRow | None = None
         self._outcome: Outcome | None = None
         self._retry_at: datetime | None = None
@@ -661,9 +689,38 @@ class Attempt:
             self.url, self.row.id, outcome.failure, outcome.status
         ) from failed
 
+    def _pause(self, refusal: Refused) -> timedelta | None:
+        """How long to wait before asking the gate again, or `None` to raise."""
+        until = refusal.retry_after
+        if self._wait_up_to is None or refusal.reason is not _WAITED or until is None:
+            return None
+        now = self._gate.clock.now()
+        if self._wait_until is None:
+            self._wait_until = now + self._wait_up_to
+        elif self._asked_at is not None and now <= self._asked_at:
+            # The clock did not move while it slept: asking again would spin.
+            return None
+        self._asked_at = now
+        if until <= now or until > self._wait_until:
+            return None
+        return until - now
+
+    def _sleeper(self) -> SleepingClock:
+        clock = self._gate.clock
+        assert isinstance(clock, SleepingClock)  # checked by Gate.attempt
+        return clock
+
     def __enter__(self) -> Self:
-        self._open()
-        return self
+        while True:
+            try:
+                self._open()
+            except Refused as refusal:
+                pause = self._pause(refusal)
+                if pause is None:
+                    raise
+                self._sleeper().sleep(pause)
+                continue
+            return self
 
     def __exit__(
         self,
@@ -674,19 +731,28 @@ class Attempt:
         self._close(exc)
 
     async def __aenter__(self) -> Self:
-        opening = asyncio.ensure_future(asyncio.to_thread(self._open))
-        try:
-            await asyncio.shield(opening)
-        except asyncio.CancelledError:
-            # The open goes on in its thread and may still open the row, and
-            # `__aexit__` will not run: close the row here, as it would.
-            closing = asyncio.ensure_future(self._close_once_open(opening))
-            _CLOSING.add(closing)
-            closing.add_done_callback(_closed)
-            with contextlib.suppress(Exception):
-                await asyncio.shield(closing)
-            raise
-        return self
+        while True:
+            opening = asyncio.ensure_future(asyncio.to_thread(self._open))
+            try:
+                await asyncio.shield(opening)
+            except asyncio.CancelledError:
+                # The open goes on in its thread and may still open the row,
+                # and `__aexit__` will not run: close the row here, as it would.
+                closing = asyncio.ensure_future(self._close_once_open(opening))
+                _CLOSING.add(closing)
+                closing.add_done_callback(_closed)
+                with contextlib.suppress(Exception):
+                    await asyncio.shield(closing)
+                raise
+            except Refused as refusal:
+                pause = self._pause(refusal)
+                if pause is None:
+                    raise
+                # Nothing is open while it waits: a cancellation here leaves
+                # nothing to close.
+                await self._sleeper().sleep_async(pause)
+                continue
+            return self
 
     async def _close_once_open(self, opening: "asyncio.Future[None]") -> None:
         try:
