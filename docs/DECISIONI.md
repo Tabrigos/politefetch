@@ -1564,3 +1564,79 @@ alla vecchia e la vecchia prende la riga "Superata da".
   CHANGELOG. Uno schema Postgres esistente va aperto una volta con
   `migrate=True`. Ogni apertura dal gate legge lo stato una volta in più,
   per l'avviso e per `bytes_left`: prima lo faceva solo con un budget.
+
+## D-059 — Limiti a finestra per host e per chiave, contati sul registro
+
+- **Data e tappa**: 2026-10-29, issue #28, parte 2 (copre #12 e #16)
+- **Contesto**: un host aveva un solo valore di ogni tipo. `min_interval`
+  doveva essere insieme la cortesia verso la fonte (1 s) e la cadenza del
+  dato (da 1 minuto a 3 ore), una quota oraria non aveva forma, e una fonte
+  con più cataloghi sullo stesso host non poteva dare a ognuno la sua
+  cadenza.
+- **Decisione** (scelte del maintainer del 28/10: b-A, 1A, 2A):
+  - un limite `"N/P"` lascia partire al massimo N richieste in ogni
+    intervallo lungo P. Si conta dall'inizio delle richieste, sulle righe del
+    registro: ogni riga aperta conta, qualunque esito abbia (anche
+    abbandonata o `not_sent`). Non c'è uno stato nuovo da tenere allineato;
+  - `HostPolicy(limits=...)` per l'host, `key_limits=...` per ogni chiave;
+    la chiave si dà con `key=` a `gate.attempt`, `may_fetch`, `status` e ai
+    fetcher, e senza chiave è l'URL (2A: la lettura più prudente). La riga
+    del registro tiene la chiave;
+  - il rifiuto è `RATE_LIMIT`, fino a quando la richiesta più vecchia della
+    finestra ne esce: lo store legge l'inizio della N-esima richiesta più
+    recente dell'ambito, ordinata per ora d'inizio, così un orologio
+    tornato indietro conta ancora quelle partite "dopo";
+  - `min_interval` resta per host e si conta dalla fine (b-A, D-020); lo
+    slot in volo resta per host;
+  - il periodo va da più di zero a un giorno: oltre c'è il tetto
+    giornaliero, e la memoria dei tetti (D-058) dura un giorno;
+  - i processi che condividono lo store applicano, per ogni tipo e periodo,
+    il conteggio più basso chiesto nell'ultimo giorno, nella stessa tabella
+    `host_caps` di D-058; un processo senza limiti non ne toglie a nessuno;
+  - versione 3 dello schema: la colonna `key` sulle richieste, riempita con
+    l'URL per le righe scritte prima, e due indici per l'ora d'inizio.
+- **Alternative scartate**: GCRA, un solo istante per ambito, come
+  proponeva l'issue (1B): `"30/h"` con una raffica di 30 lascia passare fino
+  a 59 richieste in un'ora scorrevole, e senza raffica si torna alla #16;
+  un errore d'uso quando la policy ha `key_limits` e manca `key=` (2B);
+  contare i limiti in una tabella a sé (uno stato in più da tenere allineato
+  con il registro).
+- **Conseguenze**: ogni apertura fa una query per limite in vigore, su un
+  indice. Il registro non si può sfoltire sotto il periodo più lungo dei
+  limiti: lo dovrà rispettare la #17. Uno schema Postgres esistente va
+  aperto di nuovo una volta con `migrate=True`. Uno store scritto a mano
+  implementa `limit_starts` e prende `limits` e `key` in `open_request`.
+
+## D-060 — 404 e 410 fermano l'URL, non l'host
+
+- **Data e tappa**: 2026-10-29, issue #28, parte 2
+- **Contesto**: un 404 su un URL contava come un fallimento dell'host: la
+  pausa che cresce fermava tutti gli altri URL della stessa fonte, che
+  rispondeva bene. Una fonte con un catalogo sparito restava ferma per ore.
+- **Decisione** (scelta del maintainer del 27/10: c-A):
+  - un 404 o un 410 (`URL_STATUSES`) è una risposta per l'host: vale
+    `min_interval` e Retry-After, i suoi fallimenti restano come erano;
+  - l'URL ha fallimenti e una pausa sua (`UrlRecord.failures` e
+    `not_before`), con lo stesso backoff della politica: dopo l'n-esimo
+    404/410 consecutivo, `max(min_interval, backoff(n))`. Il rifiuto è
+    `URL_BACKOFF`, controllato nella stessa transazione dell'apertura;
+  - una risposta buona sull'URL (accettata o senza verdetto, come per
+    l'host) azzera pausa e fallimenti; una rifiutata e un fallimento
+    dell'host li lasciano come sono;
+  - errori di trasporto, 5xx, 429 e gli altri 4xx restano fallimenti
+    dell'host; 403 e 451 lo congelano come prima;
+  - un 404 arrivato dopo la riconciliazione non tocca l'URL, come i
+    validatori: la riconciliazione l'ha già contato come fallimento
+    dell'host, che è il caso più prudente;
+  - la promessa cauta scritta prima della richiesta resta per host: se il
+    processo muore non si sa se sarebbe stato un 404;
+  - versione 4 dello schema: due colonne su `urls`. Un URL noto solo per il
+    suo 404 ha una riga senza validatori.
+- **Alternative scartate**: un fallimento per URL per ogni stato 4xx (un
+  400 o un 401 dicono più spesso che è sbagliata la richiesta del
+  chiamante, e fermare l'host è il caso prudente); una pausa più lunga per
+  il 410 (un valore in più da configurare, per un caso raro).
+- **Conseguenze**: `close_request` passa a `update` lo stato con
+  `url_failures`, e `HostUpdate` ha `url_not_before`: uno store scritto a
+  mano li deve seguire. La tabella `urls` cresce anche per gli URL che
+  rispondono 404: la potatura della #17 li deve comprendere.

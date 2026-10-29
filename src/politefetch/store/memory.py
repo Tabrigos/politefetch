@@ -7,7 +7,7 @@ atomic between threads of one process, not between processes.
 """
 
 import threading
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field, replace
 from datetime import date, datetime, timedelta
 from types import TracebackType
@@ -21,6 +21,7 @@ from politefetch.store.base import (
     DataTimeRecord,
     HostState,
     HostUpdate,
+    Limit,
     Outcome,
     RequestRow,
     RowState,
@@ -30,7 +31,7 @@ from politefetch.store.base import (
     apply_close,
     apply_data_time,
     apply_late_close,
-    apply_validators,
+    apply_url,
     asked_caps,
     byte_changes,
     check_admission,
@@ -39,7 +40,9 @@ from politefetch.store.base import (
     check_threshold,
     check_unfreezer,
     is_late,
+    limits_in_force,
     log_abandoned,
+    remembered_caps,
 )
 
 __all__ = ["MemoryData", "MemoryStore"]
@@ -105,6 +108,7 @@ class MemoryStore:
         for (name_host, name, value), at in remembered.items():
             if name_host == host and at > cutoff:
                 lowest[name] = min(value, lowest.get(name, value))
+        daily_cap, byte_budget, limits = remembered_caps(lowest)
         return replace(
             base,
             day=day,
@@ -112,12 +116,18 @@ class MemoryStore:
             in_flight=in_flight,
             wire_bytes_today=self.data.wire.get((host, day), 0),
             decoded_bytes_today=self.data.decoded.get((host, day), 0),
-            lowest_daily_cap=lowest.get("daily_cap"),
-            lowest_byte_budget=lowest.get("byte_budget"),
+            lowest_daily_cap=daily_cap,
+            lowest_byte_budget=byte_budget,
+            lowest_limits=limits,
         )
 
     def _noted(
-        self, host: str, now: datetime, daily_cap: int, byte_budget: int | None
+        self,
+        host: str,
+        now: datetime,
+        daily_cap: int,
+        byte_budget: int | None,
+        limits: Sequence[Limit],
     ) -> dict[tuple[str, str, int], datetime]:
         """The caps after `host` is asked for with these at `now`, those
         forgotten left out; not stored yet. A clock gone back keeps the
@@ -126,7 +136,7 @@ class MemoryStore:
         caps = {
             k: at for k, at in self.data.caps.items() if k[0] != host or at > cutoff
         }
-        for name, value in asked_caps(daily_cap, byte_budget):
+        for name, value in asked_caps(daily_cap, byte_budget, limits):
             key = (host, name, value)
             caps[key] = max(caps.get(key, now), now)
         return caps
@@ -161,6 +171,30 @@ class MemoryStore:
             ]
         return found if latest is None else found[-latest:]
 
+    def limit_starts(
+        self, host: str, limits: Sequence[Limit], *, key: str | None
+    ) -> list[datetime | None]:
+        with self.data.lock:
+            return self._starts(host, limits, key)
+
+    def _starts(
+        self, host: str, limits: Sequence[Limit], key: str | None
+    ) -> list[datetime | None]:
+        starts: list[datetime | None] = []
+        for limit in limits:
+            found = sorted(
+                (
+                    r.opened_at
+                    for r in self.data.rows.values()
+                    if r.host == host and (not limit.per_key or r.key == key)
+                ),
+                reverse=True,
+            )
+            if limit.per_key and key is None:
+                found = []
+            starts.append(found[limit.count - 1] if len(found) >= limit.count else None)
+        return starts
+
     # --- critical operations ------------------------------------------------
 
     def open_request(
@@ -173,16 +207,24 @@ class MemoryStore:
         cautious: Callable[[HostState], datetime],
         byte_budget: int | None = None,
         abandon_before: datetime | None = None,
+        limits: Sequence[Limit] = (),
+        key: str | None = None,
     ) -> RequestRow:
         now = as_utc(now, "now")
+        scope = url if key is None else key
         with self.data.lock:
             if abandon_before is not None:
                 self._abandon(now, as_utc(abandon_before, "abandon_before"), host)
-            caps = self._noted(host, now, daily_cap, byte_budget)
+            caps = self._noted(host, now, daily_cap, byte_budget, limits)
             state = self._state(host, now, caps)
             record = self.data.urls.get(url)
             reserve = record.size if record is not None and record.size else 0
-            refusal = check_admission(state, now, daily_cap, byte_budget, reserve)
+            in_force = limits_in_force(state, limits)
+            windows = zip(in_force, self._starts(host, in_force, scope), strict=True)
+            paused = record.not_before if record is not None else None
+            refusal = check_admission(
+                state, now, daily_cap, byte_budget, reserve, list(windows), paused
+            )
             if refusal is not None:
                 self.data.caps = caps  # a refused open still lowers the caps
                 raise refusal
@@ -196,12 +238,13 @@ class MemoryStore:
                 opened_at=now,
                 state=RowState.IN_FLIGHT,
                 reserved_bytes=reserve,
+                key=scope,
             )
             self.data.next_id += 1
             self.data.rows[row.id] = row
-            key = (host, now.date())
-            self.data.counts[key] = self.data.counts.get(key, 0) + 1
-            self.data.wire[key] = self.data.wire.get(key, 0) + reserve
+            day = (host, now.date())
+            self.data.counts[day] = self.data.counts.get(day, 0) + 1
+            self.data.wire[day] = self.data.wire.get(day, 0) + reserve
             self.data.hosts[host] = replace(
                 state, not_before=promise, not_before_reason=RefusalReason.BACKOFF
             )
@@ -227,10 +270,11 @@ class MemoryStore:
                 new_state = apply_late_close(state, outcome, update(state))
                 record = None
             else:
-                new_state = apply_close(state, outcome, update(state))
-                record = apply_validators(
-                    self.data.urls.get(row.url), row.url, outcome, validators, now
-                )
+                previous = self.data.urls.get(row.url)
+                failed = previous.failures if previous is not None else 0
+                decided = update(replace(state, url_failures=failed))
+                new_state = apply_close(state, outcome, decided)
+                record = apply_url(previous, row.url, outcome, validators, decided, now)
             # Nothing has been written yet: everything below cannot fail.
             closed = replace(
                 row,

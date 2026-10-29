@@ -9,13 +9,28 @@ time and the outcome.
 import email.utils
 import math
 import re
+from collections.abc import Iterable
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 
 from politefetch.errors import RefusalReason
-from politefetch.store.base import Freeze, HostState, HostUpdate, Outcome, rejected
+from politefetch.store.base import (
+    Freeze,
+    HostState,
+    HostUpdate,
+    Limit,
+    Outcome,
+    rejected,
+    url_failure,
+)
 
-__all__ = ["HostPolicy", "parse_duration", "parse_retry_after", "parse_size"]
+__all__ = [
+    "HostPolicy",
+    "parse_duration",
+    "parse_limit",
+    "parse_retry_after",
+    "parse_size",
+]
 
 _DURATION = re.compile(
     r"(?:(?P<d>\d+)d)?(?:(?P<h>\d+)h)?(?:(?P<m>\d+)m(?!s))?"
@@ -104,6 +119,50 @@ def parse_size(value: int | str) -> int:
     return int(match["amount"]) * _SIZE_UNITS[match["unit"]]
 
 
+_LIMIT_TEXT = re.compile(r"(?P<count>\d+)/(?P<period>\S+)")
+
+
+def parse_limit(value: str | Limit, *, per_key: bool = False) -> Limit:
+    """Turn "30/h", "1/30m" or "3/10s" into a `Limit`: at most that many
+    requests started in any span of that period. A unit alone is one of it
+    ("30/h" is "30/1h"); the period is at most a day."""
+    if isinstance(value, Limit):
+        return value
+    if not isinstance(value, str):
+        raise TypeError(f"a limit is a text such as '30/h', got {value!r}")
+    match = _LIMIT_TEXT.fullmatch(value.strip())
+    if match is None:
+        raise ValueError(f"not a limit: {value!r} (use e.g. '30/h', '1/30m')")
+    period = match["period"]
+    if period.isalpha():
+        period = f"1{period}"
+    try:
+        return Limit(int(match["count"]), parse_duration(period), per_key)
+    except ValueError as error:
+        raise ValueError(f"not a limit: {value!r}: {error}") from None
+
+
+def _limits(
+    values: str | Limit | Iterable[str | Limit], *, per_key: bool
+) -> tuple[Limit, ...]:
+    if isinstance(values, str | Limit):
+        values = [values]
+    limits = tuple(parse_limit(v, per_key=per_key) for v in values)
+    for limit in limits:
+        if limit.per_key != per_key:
+            raise ValueError(
+                f"the limit {limit} is per_key={limit.per_key}: give the host's"
+                " in limits, the per-key ones in key_limits"
+            )
+    periods = [limit.period for limit in limits]
+    if len(set(periods)) < len(periods):
+        raise ValueError(
+            f"two limits of the same period in {[str(lim) for lim in limits]}:"
+            " give one, with the count you mean"
+        )
+    return limits
+
+
 def parse_retry_after(value: str | None, now: datetime) -> datetime | None:
     """Return the time a Retry-After header asks to wait until, or `None` if
     the header is missing or unreadable.
@@ -152,9 +211,17 @@ class HostPolicy:
             other 429 freezes.
         byte_budget: Wire bytes per UTC day, `None` (default) for no limit.
             Each request reserves the size of its URL's last full answer.
+        limits: At most N requests to the host started in any span of a
+            period, counted from the start of each request: "30/h" for an
+            hourly quota, "3/10s" for a short burst. Each one holds; none by
+            default.
+        key_limits: The same, for each key (`key=` of `Gate.attempt` and of
+            the fetchers; the URL when none is given): "1/30m" reads each
+            catalogue at most every half hour.
 
     Durations accept a `timedelta` or a string such as "90s" or "2h"; sizes an
-    int (bytes) or a string such as "50MB".
+    int (bytes) or a string such as "50MB"; limits a string such as "30/h"
+    or a `Limit`, one or several.
     """
 
     daily_cap: int
@@ -165,6 +232,8 @@ class HostPolicy:
     freeze_for: timedelta | None
     respect_retry_after_429: bool
     byte_budget: int | None
+    limits: tuple[Limit, ...]
+    key_limits: tuple[Limit, ...]
 
     def __init__(
         self,
@@ -177,6 +246,8 @@ class HostPolicy:
         freeze_for: timedelta | str | None = None,
         respect_retry_after_429: bool = False,
         byte_budget: int | str | None = None,
+        limits: str | Limit | Iterable[str | Limit] = (),
+        key_limits: str | Limit | Iterable[str | Limit] = (),
     ) -> None:
         if (
             isinstance(daily_cap, bool)
@@ -210,6 +281,8 @@ class HostPolicy:
             "byte_budget",
             None if byte_budget is None else parse_size(byte_budget),
         )
+        set_field(self, "limits", _limits(limits, per_key=False))
+        set_field(self, "key_limits", _limits(key_limits, per_key=True))
 
     def backoff(self, failures: int) -> timedelta:
         """The pause after the `failures`-th consecutive failure."""
@@ -245,16 +318,26 @@ class HostPolicy:
         Retry-After longer than any pause of the policy (`min_interval` and
         `backoff_max`) is honoured as a freeze until that time, after any
         answer: the status shows it, and `unfreeze` can lift it.
+
+        A 404 or a 410 is an answer for the host and a failure of its URL:
+        the URL pauses as the host would after its `state.url_failures + 1`-th
+        failure (`url_not_before`), the host only for `min_interval`.
         """
         longest = now + max(self.min_interval, self.backoff_max)
         asked_long = retry_at is not None and retry_at > longest
         promised = None if asked_long else retry_at
-        if outcome.ok or rejected(outcome):
+        missing = url_failure(outcome)
+        if outcome.ok or rejected(outcome) or missing:
             until = now + self.min_interval
             if promised is not None:
                 until = max(until, promised)
             long_freeze = self._long_freeze(now, outcome.status, retry_at, asked_long)
-            return HostUpdate(until, RefusalReason.MIN_INTERVAL, long_freeze)
+            url_until = None
+            if missing:  # the URL pauses as the host would after a failure
+                url_until = now + max(
+                    self.min_interval, self.backoff(state.url_failures + 1)
+                )
+            return HostUpdate(until, RefusalReason.MIN_INTERVAL, long_freeze, url_until)
         until = now + max(self.min_interval, self.backoff(state.failures + 1))
         if self._freezes(state, outcome.status, retry_at):
             # A 403/429/451 freeze is lifted by a person, and the pause the

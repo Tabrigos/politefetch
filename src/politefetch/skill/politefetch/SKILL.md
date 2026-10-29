@@ -129,7 +129,7 @@ datetime is a bug of the extractor and raises `ValueError`.
 |---|---|
 | One machine, one or more processes | `SqliteStore("ingest.db")`: the default; share the same file |
 | Several machines | `PostgresStore(conninfo, schema="politefetch")` (extra `postgres`) |
-| Processes on one store with different caps for a host | The lowest daily cap and byte budget asked for in the last day apply to all of them, and a process with a higher one logs a warning: lowering a cap holds at once, raising it a day after the old cap was last used. A test with `daily_cap=0` on a shared store stops the host for everyone for a day |
+| Processes on one store with different caps for a host | The lowest daily cap, byte budget and count of each limit asked for in the last day apply to all of them, and a process with a higher one logs a warning: lowering a cap holds at once, raising it a day after the old cap was last used. A test with `daily_cap=0` on a shared store stops the host for everyone for a day |
 | Upgrading politefetch over an existing store | SQLite migrates when it opens. Postgres refuses a schema with migrations pending: stop the processes that use it, open it once with `PostgresStore(..., migrate=True)`. A store newer than the code is refused; do not go back to an older version on a migrated store |
 | Tests only | `MemoryStore()`: forgets everything when the process ends |
 | No extra dependency | `politefetch.adapters.urllib.UrllibFetcher` |
@@ -151,7 +151,7 @@ reach you in it when the source asks for one.
 
 `HostPolicy(daily_cap, min_interval, *, backoff_base="1m", backoff_factor=2.0,
 backoff_max="6h", freeze_for=None, respect_retry_after_429=False,
-byte_budget=None)`
+byte_budget=None, limits=(), key_limits=())`
 
 - Durations take a unit: `"500ms"`, `"90s"`, `"15m"`, `"2h"`, `"1d"`,
   `"1h30m"`, or a `timedelta`. Sizes: an `int` of bytes, `"50MB"`, `"1GiB"`.
@@ -165,8 +165,14 @@ byte_budget=None)`
   previous request ended a few seconds after the run started. Run the job
   more often than `min_interval` (a refusal sends nothing) and let the gate
   pick the moment.
-- There is no hourly cap. For a quota per hour, set `min_interval` to the
-  hour divided by the quota (2 an hour: `"30m"`).
+- `limits=["30/h"]`: at most 30 requests to the host started in any span of
+  an hour, for a quota per hour; a burst of 30 goes, the 31st waits until
+  the first is an hour old (`RATE_LIMIT`). `"3/10s"` allows a short burst.
+  `key_limits=["1/30m"]`: the same for each key, given with `key=` to
+  `gate.attempt`, `may_fetch`, `status` and the fetchers; without `key=`
+  the URL is the key. Limits count every request opened, failed ones too,
+  from its start; `min_interval` stays per host, from the end. Periods go
+  up to a day; past that the daily cap holds.
 - `daily_cap`: below the documented quota, with margin; it counts requests
   sent, consumed before sending, per UTC day: it starts again at midnight
   UTC.
@@ -178,6 +184,10 @@ byte_budget=None)`
   which honours the first 429 that carries Retry-After and freezes on the
   second. `freeze_for` makes freezes expire; by default only a person lifts
   them.
+- A 404 or a 410 pauses only that URL, with the backoff of the policy
+  growing with its consecutive 404/410 (`"url_backoff"`); the host keeps
+  `min_interval` and its failures, and a good answer on the URL clears its
+  pause. Transport errors, 5xx, 429 and the other 4xx pause the host.
 - `byte_budget`: bytes on the wire per UTC day; a request reserves the size
   of the URL's last full answer and is corrected when it closes.
 - `Gate(store, policies, *, clock=None, default=None, reconcile_after=None)`:
@@ -210,7 +220,10 @@ message text.
 
 `RefusalReason` values: `"in_flight"` (another request to the host is
 open), `"min_interval"`, `"backoff"` (pause after a failure), `"frozen"`,
-`"daily_cap"`, `"byte_budget"`. When several apply, the one that ends last
+`"daily_cap"`, `"byte_budget"`, `"rate_limit"` (a window of `limits` or
+`key_limits` is full), `"url_backoff"` (the pause of this URL after a 404 or
+a 410; its host's other URLs may still go). When several apply, the one that
+ends last
 is reported, so waiting for `retry_after` does not run into the next.
 
 `FetchFailed.shape` values: `"connect_timeout"`, `"read_timeout"`,
@@ -296,9 +309,10 @@ def dashboard(gate: Gate) -> str:
 `reason`, `next_allowed` (`None` while frozen), `frozen`, `failures`,
 `throttled`, `in_flight`, `abandoned` (rows past `reconcile_after`, already
 counted in `failures` and left out of `in_flight`), `requests_today`,
-`daily_cap`, `wire_bytes_today`, `decoded_bytes_today`, `byte_budget`, and
-`recent` log rows, newest first. Given a URL it also counts the bytes that URL
-would reserve. It sends nothing and writes nothing, like `may_fetch`: a
+`daily_cap`, `wire_bytes_today`, `decoded_bytes_today`, `byte_budget`,
+`limits` (those in force), and `recent` log rows, newest first. Given a URL
+it also counts the bytes that URL would reserve and the windows of its key
+(`key=`, the URL by default). It sends nothing and writes nothing, like `may_fetch`: a
 dashboard can call it beside the process that fetches, or with read-only
 access.
 `gate.statuses()` covers the hosts with a policy of their own and, with a

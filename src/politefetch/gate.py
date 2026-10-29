@@ -58,6 +58,7 @@ from politefetch.store.base import (
     Validators,
     caps_in_force,
     check_admission,
+    limits_in_force,
 )
 
 __all__ = ["Attempt", "Gate", "Verdict", "normalize_host"]
@@ -75,6 +76,9 @@ CLOSE_TRIES = 3
 
 _RECONCILE_WITHOUT_FETCHERS = timedelta(hours=1)
 """The default `reconcile_after` while no fetcher bounds the requests."""
+
+_CAPS = (RefusalReason.DAILY_CAP, RefusalReason.BYTE_BUDGET, RefusalReason.RATE_LIMIT)
+"""The refusals a lower cap or limit of another process can cause."""
 
 Headers = Mapping[str, str] | Message
 """Response headers: any mapping (httpx, requests) or an `email.message.Message`
@@ -168,7 +172,7 @@ class Gate:
         if self._reconcile_after is not None and self._reconcile_after <= timedelta(0):
             raise ValueError("reconcile_after must be positive")
         self._longest_request: timedelta | None = None
-        self._warned: set[tuple[str, str, int | None, int]] = set()
+        self._warned: set[tuple[str, str, object, object]] = set()
 
     @property
     def reconcile_after(self) -> timedelta:
@@ -198,30 +202,37 @@ class Gate:
         now = self.clock.now() if now is None else now
         return self.store.reconcile(now=now, older_than=self.reconcile_after)
 
-    def may_fetch(self, url: str) -> Verdict:
-        """Tell whether a request to `url` may start now, and if not why and
-        until when. Advisory: `attempt` decides again, atomically. Sends
-        nothing and writes nothing: rows abandoned past `reconcile_after`
-        count as the next request to the host will count them."""
-        _, _, _, _, refusal = self._decide(url)
+    def may_fetch(self, url: str, *, key: str | None = None) -> Verdict:
+        """Tell whether a request to `url` (under `key`, the URL by default)
+        may start now, and if not why and until when. Advisory: `attempt`
+        decides again, atomically. Sends nothing and writes nothing: rows
+        abandoned past `reconcile_after` count as the next request to the
+        host will count them."""
+        _, _, _, _, refusal = self._decide(url, key)
         return Verdict(refusal)
 
-    def status(self, host_or_url: str, *, recent: int = 10) -> HostStatus:
+    def status(
+        self, host_or_url: str, *, recent: int = 10, key: str | None = None
+    ) -> HostStatus:
         """The readable state of a host: the decision `may_fetch` would take,
-        today's counts and bytes, and its latest `recent` log rows.
+        today's counts and bytes, the limits in force, and its latest
+        `recent` log rows.
 
         Given a URL, the decision counts the bytes that URL would reserve
-        against the byte budget, as `may_fetch` does; given a host, it counts
-        none. Like `may_fetch`, it sends nothing and writes nothing, so it can
-        run beside the process that fetches, or without the right to write.
+        against the byte budget and the windows of its key (`key`, the URL by
+        default), as `may_fetch` does; given a host, it counts no bytes and
+        the per-key windows only for a `key` given. Like `may_fetch`, it
+        sends nothing and writes nothing, so it can run beside the process
+        that fetches, or without the right to write.
         """
         if recent < 0:
             raise ValueError(f"recent must not be negative, got {recent}")
-        host, now, state, abandoned, refusal = self._decide(host_or_url)
+        host, now, state, abandoned, refusal = self._decide(host_or_url, key)
         policy = self.policy_for(host)
         daily_cap, byte_budget = caps_in_force(
             state, policy.daily_cap, policy.byte_budget
         )
+        limits = limits_in_force(state, policy.limits + policy.key_limits)
         rows = self.store.rows(host=host, latest=recent) if recent else []
         freeze = state.freeze
         return HostStatus(
@@ -242,6 +253,7 @@ class Gate:
             decoded_bytes_today=state.decoded_bytes_today,
             byte_budget=byte_budget,
             recent=tuple(reversed(rows)),
+            limits=limits,
         )
 
     def statuses(
@@ -260,12 +272,14 @@ class Gate:
         return [self.status(name, recent=recent) for name in names]
 
     def _decide(
-        self, host_or_url: str
+        self, host_or_url: str, key: str | None = None
     ) -> tuple[str, datetime, HostState, int, Refused | None]:
         """The decision `attempt` would take now, read without writing: the
         rows past `reconcile_after` count as the next request to the host
         will count them when it closes them, one failure each."""
         is_url = "://" in host_or_url
+        if key is None and is_url:
+            key = host_or_url
         host = _host(host_or_url)
         policy = self.policy_for(host)
         now = self.clock.now()
@@ -281,19 +295,47 @@ class Gate:
                 in_flight=max(0, state.in_flight - abandoned),
                 failures=state.failures + abandoned,
             )
-        reserve = 0
+        reserve, paused = 0, None
         if is_url:
             record = self.store.url_record(host_or_url)
             reserve = record.size if record is not None and record.size else 0
+            paused = record.not_before if record is not None else None
+        limits = limits_in_force(state, policy.limits + policy.key_limits)
+        starts = self.store.limit_starts(host, limits, key=key)
         refusal = check_admission(
-            state, now, policy.daily_cap, policy.byte_budget, reserve
+            state,
+            now,
+            policy.daily_cap,
+            policy.byte_budget,
+            reserve,
+            list(zip(limits, starts, strict=True)),
+            paused,
         )
         return host, now, state, abandoned, refusal
 
     def _warn_lower_caps(self, policy: HostPolicy, state: HostState) -> None:
         """Say, once for each pair, that this gate's cap for the host is above
         the one in force: another process sharing the store asked for a
-        lower one, and the lower one applies (#31)."""
+        lower one, and the lower one applies (#31, D-059 for the limits)."""
+        in_force = {
+            limit.scope: limit
+            for limit in limits_in_force(state, policy.limits + policy.key_limits)
+        }
+        for limit in policy.limits + policy.key_limits:
+            lower = in_force[limit.scope]
+            seen = (state.host, "limit", str(limit), str(lower))
+            if lower.count == limit.count or seen in self._warned:
+                continue
+            self._warned.add(seen)
+            _log.warning(
+                "%s: this process asks for %slimit %s, above the %s another"
+                " process sharing the store asked for in the last day; the lower"
+                " one applies until a day after it was last asked for",
+                state.host,
+                "per-key " if limit.per_key else "",
+                limit,
+                lower,
+            )
         caps = caps_in_force(state, policy.daily_cap, policy.byte_budget)
         own = (policy.daily_cap, policy.byte_budget)
         for name, mine, held in zip(
@@ -315,10 +357,12 @@ class Gate:
                 held,
             )
 
-    def attempt(self, url: str) -> "Attempt":
-        """A context manager (sync or async) around one request to `url`."""
+    def attempt(self, url: str, *, key: str | None = None) -> "Attempt":
+        """A context manager (sync or async) around one request to `url`.
+        `key` names what the request reads for the policy's `key_limits`;
+        without it the URL is the key."""
         host = host_of(url)
-        return Attempt(self, url, host, self.policy_for(host))
+        return Attempt(self, url, host, self.policy_for(host), key)
 
     def note_data_time(self, url: str, data_time: datetime) -> DataTimeRecord:
         """Record the data time a read of `url` returned, for stuck-source
@@ -338,9 +382,18 @@ class Attempt:
     the verdict on its body: `accept` when you take it, `reject` when not.
     `reject("not_sent")` closes an attempt that sent nothing."""
 
-    def __init__(self, gate: Gate, url: str, host: str, policy: HostPolicy) -> None:
+    def __init__(
+        self,
+        gate: Gate,
+        url: str,
+        host: str,
+        policy: HostPolicy,
+        key: str | None = None,
+    ) -> None:
         self.url = url
         self.host = host
+        self.key = url if key is None else key
+        """What the per-key limits count this request under."""
         self._gate = gate
         self._policy = policy
         self._row: RequestRow | None = None
@@ -525,9 +578,11 @@ class Attempt:
                 byte_budget=policy.byte_budget,
                 cautious=lambda state: policy.cautious_until(state, now),
                 abandon_before=now - gate.reconcile_after,
+                limits=policy.limits + policy.key_limits,
+                key=self.key,
             )
         except Refused as refusal:
-            if refusal.reason in (RefusalReason.DAILY_CAP, RefusalReason.BYTE_BUDGET):
+            if refusal.reason in _CAPS:
                 gate._warn_lower_caps(policy, gate.store.host_state(self.host, now))
             raise
         state = gate.store.host_state(self.host, now)

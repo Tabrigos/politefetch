@@ -8,7 +8,7 @@ from pathlib import Path
 
 import pytest
 
-from politefetch.store import RowState
+from politefetch.store import Limit, RowState
 from politefetch.testing.processes import ChildFailed, spawn
 
 from . import children
@@ -66,6 +66,19 @@ def test_processes_with_different_caps_apply_the_lowest(
     assert sum(admitted) == low - 1
     with children.open_store(spec) as store:
         assert store.requests_on(HOST, children.DAY_START.date()) == low
+
+
+def test_processes_together_never_exceed_a_window(spec: children.StoreSpec) -> None:
+    window = Limit(5, timedelta(hours=1))
+    start_ns = children.clock_ns()
+    workers = [
+        spawn(children.hammer, spec, HOST, 1000, 100, start_ns, (window,))
+        for _ in range(4)
+    ]
+    admitted = [w.join(timeout=300) for w in workers]
+    assert sum(admitted) == window.count
+    with children.open_store(spec) as store:
+        assert len(store.rows()) == window.count
 
 
 def test_a_process_dying_mid_request_leaves_a_row_to_reconcile(

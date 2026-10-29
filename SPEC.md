@@ -31,10 +31,18 @@ promised must outlive the process**.
 3. **The pause after an error grows** (exponential with a cap, configurable);
    `Retry-After` is a minimum. **403, 429 and 451 freeze the host** until a
    person unblocks it (or until a configured expiry): they are not retried on
-   their own.
+   their own. A 404 or a 410 pauses only its URL, with the same growing
+   pause, and the host keeps its spacing: one missing URL does not stop the
+   others. Transport errors, 5xx, 429 and the other 4xx pause the host.
 4. **A daily cap per host**, in the persistent state, consumed *before* the
    request by a single point that everything passes through. It is not reset
    on restart. It is the safety net that does not depend on any other logic.
+   Limits over a window ("30/h" for the host, "1/30m" for each key the
+   caller names, the URL by default) are checked at the same point: at most
+   that many requests started in any span of the period, counted on the
+   request log from the start of each request, whatever its outcome. The
+   minimum interval stays per host and counts from the end of the previous
+   request.
 5. **Tests are an outbound path.** The library offers a socket barrier for
    pytest, with proof that a real call fails and a simulated one passes. Only
    loopback and Unix sockets pass, private networks are blocked too unless
@@ -100,8 +108,8 @@ promised must outlive the process**.
   (default, the standard library's `sqlite3`), Postgres (`postgres` extra).
   The critical operations are atomic: two processes sharing the store do not
   exceed the cap together, nor the lower one when their caps differ (the
-  store remembers for a day the caps a host was asked for, and the lowest
-  applies). The SQLite and Postgres stores record a schema
+  store remembers for a day the caps and limits a host was asked for, and
+  the lowest applies). The SQLite and Postgres stores record a schema
   version; a later version is a migration that only adds, applied in one
   transaction (SQLite when it opens, an existing Postgres schema only when
   opened with `migrate=True`), and a database newer than the code is

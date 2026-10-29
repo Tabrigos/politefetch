@@ -16,7 +16,7 @@ from politefetch.clock import FakeClock
 from politefetch.errors import RefusalReason, Refused
 from politefetch.gate import Gate
 from politefetch.policy import HostPolicy
-from politefetch.store import HostState, HostUpdate, Outcome, SqliteStore, Store
+from politefetch.store import HostState, HostUpdate, Limit, Outcome, SqliteStore, Store
 from politefetch.store.postgres import PostgresStore
 
 from .fetching import fetch
@@ -84,7 +84,14 @@ def open_store(spec: StoreSpec, *, wait: float = 30.0) -> Store:
     return PostgresStore(where, schema=schema, lock_timeout=wait)
 
 
-def hammer(spec: StoreSpec, host: str, cap: int, attempts: int, start_ns: int) -> int:
+def hammer(
+    spec: StoreSpec,
+    host: str,
+    cap: int,
+    attempts: int,
+    start_ns: int,
+    limits: tuple[Limit, ...] = (),
+) -> int:
     """Try `attempts` requests as fast as possible; return how many got in."""
     admitted = 0
     with open_store(spec) as store:
@@ -97,6 +104,7 @@ def hammer(spec: StoreSpec, host: str, cap: int, attempts: int, start_ns: int) -
                     now=now,
                     daily_cap=cap,
                     cautious=_promise_after(now),
+                    limits=limits,
                 )
             except Refused:
                 continue

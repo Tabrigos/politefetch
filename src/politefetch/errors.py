@@ -68,6 +68,12 @@ class RefusalReason(StrEnum):
     """Today's request cap for the host is used up."""
     BYTE_BUDGET = "byte_budget"
     """Today's byte budget for the host is used up."""
+    RATE_LIMIT = "rate_limit"
+    """A limit of the policy ("30/h", for the host or for a key) already has
+    as many requests in its window as it allows."""
+    URL_BACKOFF = "url_backoff"
+    """The pause after a 404 or a 410 of this URL has not elapsed; the host
+    may still be asked for its other URLs."""
 
 
 class Refused(PoliteFetchError):
