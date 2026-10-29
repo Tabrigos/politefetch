@@ -5,10 +5,12 @@ needs the time receives a `Clock`. Production code uses `SystemClock`; tests
 use `FakeClock` and move time by hand. All times are timezone-aware UTC.
 """
 
+import asyncio
+import time
 from datetime import UTC, datetime, timedelta
-from typing import Protocol
+from typing import Protocol, runtime_checkable
 
-__all__ = ["Clock", "FakeClock", "SystemClock", "as_utc"]
+__all__ = ["Clock", "FakeClock", "SleepingClock", "SystemClock", "as_utc"]
 
 
 def as_utc(value: datetime, name: str = "time") -> datetime:
@@ -34,11 +36,35 @@ class Clock(Protocol):
         ...
 
 
+@runtime_checkable
+class SleepingClock(Clock, Protocol):
+    """A clock that can also wait: what `wait_up_to` needs (D-061).
+
+    The gate waits through the clock it reads, so a fake clock that moves
+    when it sleeps keeps the wait and its bound in step. A `Clock` without
+    these methods still serves for everything else.
+    """
+
+    def sleep(self, delta: timedelta) -> None:
+        """Wait for `delta`."""
+        ...
+
+    async def sleep_async(self, delta: timedelta) -> None:
+        """Wait for `delta` without blocking the event loop."""
+        ...
+
+
 class SystemClock:
     """The real wall clock."""
 
     def now(self) -> datetime:
         return datetime.now(UTC)  # noqa: TID251 - the one place allowed to
+
+    def sleep(self, delta: timedelta) -> None:
+        time.sleep(max(0.0, delta.total_seconds()))
+
+    async def sleep_async(self, delta: timedelta) -> None:
+        await asyncio.sleep(max(0.0, delta.total_seconds()))
 
 
 class FakeClock:
@@ -59,3 +85,12 @@ class FakeClock:
     def set(self, when: datetime) -> None:
         """Jump to `when`, forward or backward, as a real wall clock can."""
         self._now = as_utc(when, "when")
+
+    def sleep(self, delta: timedelta) -> None:
+        """Move forward by `delta` at once: nothing waits."""
+        self.advance(max(delta, timedelta(0)))
+
+    async def sleep_async(self, delta: timedelta) -> None:
+        """Move forward by `delta`, letting other tasks run once."""
+        self.advance(max(delta, timedelta(0)))
+        await asyncio.sleep(0)

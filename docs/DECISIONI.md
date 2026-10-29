@@ -1640,3 +1640,47 @@ alla vecchia e la vecchia prende la riga "Superata da".
   `url_failures`, e `HostUpdate` ha `url_not_before`: uno store scritto a
   mano li deve seguire. La tabella `urls` cresce anche per gli URL che
   rispondono 404: la potatura della #17 li deve comprendere.
+
+## D-061 — `wait_up_to`: un'attesa breve e limitata, solo per `min_interval`
+
+- **Data e tappa**: 2026-10-29, issue #14, riscritta sul modello della #28
+- **Contesto**: una chiamata logica fatta di due o tre GET a pochi secondi
+  l'una dall'altra riceveva `Refused` alla seconda, e chi chiama si scriveva
+  da sé un'attesa (una prima integrazione l'ha fatto). La prima stesura, del
+  27/10, aspettava anche `in_flight` e metteva `sleep` nel protocollo `Clock`;
+  la revisione R3 della #28 l'ha ridotta: con i limiti a finestra resta da
+  aspettare solo la spaziatura dell'host. La regola «mai in un ciclo su
+  `Refused`» resta.
+- **Decisione** (scelte del maintainer del 29/10: 1A, 2A):
+  - `wait_up_to=` su `gate.attempt` (sincrono e asincrono) e su `get` dei
+    fetcher; senza, nulla cambia;
+  - si aspetta solo un rifiuto `min_interval`, anche quando viene da un
+    Retry-After breve di una risposta buona, e solo se finisce entro il
+    limite, contato dal primo rifiuto: se un altro processo prende l'host
+    alla fine dell'attesa, la seconda attesa sta nello stesso limite.
+    `in_flight`, `backoff`, `url_backoff`, `rate_limit`, `frozen`,
+    `daily_cap` e `byte_budget` rifiutano subito, come un'attesa oltre il
+    limite;
+  - si dorme fino al `retry_after` del rifiuto e si chiede di nuovo al Gate,
+    che decide in modo atomico come sempre: l'attesa non apre righe e non
+    manda niente. Siccome il motivo riportato è quello che finisce per
+    ultimo, alla fine dell'attesa anche gli altri vincoli sono finiti;
+  - il sonno passa dall'orologio del Gate, ma fuori dal protocollo `Clock`:
+    `SleepingClock` (`sleep` e `sleep_async`) è un protocollo a parte, che
+    `SystemClock` e `FakeClock` seguono. `FakeClock` avanza quando dorme, così
+    i test non aspettano. Con un orologio scritto a mano senza quei metodi
+    tutto il resto funziona come prima, e `wait_up_to` dà `TypeError`
+    quando si chiama `attempt`. Un orologio che non avanza mentre dorme (un
+    finto con `sleep` vuoto, l'ora di sistema rimessa indietro) chiude
+    l'attesa con il rifiuto, invece di chiedere al Gate all'infinito;
+  - nell'attesa asincrona non c'è una riga aperta: una cancellazione lì non
+    lascia niente da chiudere.
+- **Alternative scartate**: aspettare anche `in_flight` (1B: un'attesa che
+  interroga lo store ogni secondo mentre un altro lavora); aspettare anche
+  `rate_limit` (1C: l'attesa diventa uno scheduler e nasconde chi interroga
+  troppo spesso); `sleep` nel protocollo `Clock` (2B: rompe chi ha scritto un
+  orologio suo); una funzione `Gate(sleep=...)` accanto all'orologio (2C: con
+  un orologio finto e un sonno vero il limite, che si misura sull'orologio,
+  non finisce mai).
+- **Conseguenze**: nessuna rottura. Un `Clock` scritto a mano che vuole
+  `wait_up_to` aggiunge `sleep` e `sleep_async`.

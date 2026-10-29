@@ -107,7 +107,8 @@ def poll(gate: Gate, url: str = URL) -> list[dict[str, Any]] | None:
 
 `fetch.get(url, *, expect="json", data_time=None, max_age=None,
 max_ahead="15m", stuck_after=None, headers=None, allow_empty=False,
-max_bytes=None)` returns a `FetchResult`:
+max_bytes=None, parse=None, conditional=True, key=None, wait_up_to=None)`
+returns a `FetchResult`:
 `content` (parsed JSON, text or bytes according to `expect`: `"json"`,
 `"text"` or `"bytes"`), `status`, `headers`, `body`, `not_modified`,
 `data_time`, `wire_bytes`, `decoded_bytes`. It sends the conditional headers
@@ -180,6 +181,12 @@ byte_budget=None, limits=(), key_limits=())`
   endpoints of one host share them. A job that reads several reads one per
   run, the one read least recently (the README shows how), instead of
   asking for each and being refused.
+- One logical call made of a few GETs to a host seconds apart:
+  `wait_up_to="5s"` on `get` or `gate.attempt` waits out `min_interval`
+  when it ends within that bound, counted from the first refusal, and asks
+  the gate again; every other refusal comes at once. It waits through the
+  gate's clock: a clock of your own needs `sleep` and `sleep_async`
+  (`SleepingClock`).
 - 403 and 451 freeze the host; 429 too, unless `respect_retry_after_429=True`,
   which honours the first 429 that carries Retry-After and freezes on the
   second. `freeze_for` makes freezes expire; by default only a person lifts
@@ -208,7 +215,7 @@ message text.
 
 | Error | Meaning | What to do |
 |---|---|---|
-| `Refused` | The gate said no; nothing was sent. `reason`, `retry_after` (`None` while frozen until a person unlocks) | Ask again at `retry_after` or later; never in a loop |
+| `Refused` | The gate said no; nothing was sent. `reason`, `retry_after` (`None` while frozen until a person unlocks) | Ask again at `retry_after` or later; never in a loop (`wait_up_to` waits out a short `min_interval`) |
 | `FetchFailed` | Sent, no usable answer, or still arriving at the `deadline`; `shape`, `status`, and `note` when the answer froze the host (with how to lift it). The gate already recorded it and grew the pause | Do not retry now: the next call will be refused until the pause ends |
 | `OutcomeNotSaved` | Sent, but the store could not save how it ended; `shape`, `status`. The host stays blocked until the reconciliation | Check the store (a lock held too long); a person may need to apply a lost 403/429 by hand |
 | `NoPolicy` | The host has no policy and the gate no default; nothing was sent. `host` | Add a `HostPolicy` for it |
@@ -437,7 +444,8 @@ behind the barrier and can kill it mid-request, to test crashes.
   gate refuses anyway, and each extra call teaches you nothing. The gate is
   the retry policy.
 - **Catch `Refused` and try again sooner than `retry_after`**, or sleep in a
-  loop on it. Let the scheduler run you again later.
+  loop on it. Let the scheduler run you again later; `wait_up_to` is the
+  one bounded wait.
 - **Use `MemoryStore` outside tests**: a restart forgets every promise and
   count. Use one `SqliteStore` file (or one Postgres schema) per set of
   processes that call the same hosts; separate stores mean separate caps.

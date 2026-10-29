@@ -7,7 +7,7 @@ and the caller safe from the source (truncated bodies, HTML instead of data,
 data that stopped advancing). See SPEC.md for the rules.
 """
 
-from politefetch.clock import Clock, FakeClock, SystemClock
+from politefetch.clock import Clock, FakeClock, SleepingClock, SystemClock
 from politefetch.errors import (
     BodyTooLarge,
     ContentError,
@@ -42,6 +42,7 @@ __all__ = [
     "PoliteFetchError",
     "RefusalReason",
     "Refused",
+    "SleepingClock",
     "SourceNotReady",
     "StaleData",
     "StuckSource",

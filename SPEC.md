@@ -27,7 +27,10 @@ promised must outlive the process**.
 2. **A single attempt.** No automatic retries: a timeout does not distinguish
    "the request did not arrive" from "the source's firewall drops the
    packets". Whoever wants to try again calls again later, and the library
-   decides whether it can.
+   decides whether it can. The one wait it offers, `wait_up_to`, is before
+   sending: it waits out a short `min_interval` within the caller's bound and
+   asks again, and never waits out a pause after a failure, a quota or a
+   freeze.
 3. **The pause after an error grows** (exponential with a cap, configurable);
    `Retry-After` is a minimum. **403, 429 and 451 freeze the host** until a
    person unblocks it (or until a configured expiry): they are not retried on
