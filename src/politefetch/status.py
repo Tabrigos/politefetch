@@ -1,5 +1,6 @@
 """Readable state per host: next allowed request, reason for any block,
-today's counts and bytes, latest log rows; serialisable to JSON.
+today's counts and bytes, the last good answer, latest log rows, and the
+URL asked for; serialisable to JSON.
 
     status = gate.status("celestrak.org")      # or a URL, or gate.statuses()
     status.may_fetch, status.reason, status.next_allowed
@@ -17,7 +18,7 @@ from datetime import date, datetime
 from politefetch.errors import RefusalReason
 from politefetch.store.base import Freeze, Limit, RequestRow
 
-__all__ = ["HostStatus", "to_json"]
+__all__ = ["HostStatus", "UrlStatus", "to_json"]
 
 Json = dict[str, object]
 
@@ -65,6 +66,38 @@ def _limit(limit: Limit) -> Json:
 
 
 @dataclass(frozen=True, slots=True)
+class UrlStatus:
+    """One URL of a host, in the status asked for that URL.
+
+    Attributes:
+        url: The URL.
+        last_good: When the last answer of the URL that the caller accepted
+            closed; `None` before the first.
+        not_ready: The answers rejected as `"not_ready"` (empty, half a JSON)
+            since `last_good`: alert when it keeps growing.
+        failures: The consecutive 404 and 410 answers since its last good
+            answer.
+        paused_until: The URL's pause after a 404 or a 410, while it lasts;
+            `None` otherwise.
+    """
+
+    url: str
+    last_good: datetime | None
+    not_ready: int
+    failures: int = 0
+    paused_until: datetime | None = None
+
+    def to_dict(self) -> Json:
+        return {
+            "url": self.url,
+            "last_good": _time(self.last_good),
+            "not_ready": self.not_ready,
+            "failures": self.failures,
+            "paused_until": _time(self.paused_until),
+        }
+
+
+@dataclass(frozen=True, slots=True)
 class HostStatus:
     """One host as of `at`.
 
@@ -103,6 +136,10 @@ class HostStatus:
         limits: The limits in force, chosen as `daily_cap` is for each kind
             and period: the host's first, then the per-key ones, each sorted
             by period.
+        last_good: When the last answer the caller accepted, of any URL of
+            the host, closed; `None` before the first. It stays when the log
+            rows are gone.
+        url: The URL the status was asked for, if it was asked for one.
     """
 
     host: str
@@ -123,6 +160,8 @@ class HostStatus:
     recent: tuple[RequestRow, ...]
     abandoned: int = 0
     limits: tuple[Limit, ...] = ()
+    last_good: datetime | None = None
+    url: UrlStatus | None = None
 
     def to_dict(self) -> Json:
         """The status as JSON-ready values: times as ISO 8601 strings with
@@ -138,6 +177,8 @@ class HostStatus:
             "throttled": self.throttled,
             "in_flight": self.in_flight,
             "abandoned": self.abandoned,
+            "last_good": _time(self.last_good),
+            "url": None if self.url is None else self.url.to_dict(),
             "today": {
                 "day": self.day.isoformat(),
                 "requests": self.requests_today,

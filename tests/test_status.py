@@ -252,6 +252,8 @@ def test_json_shape(gate: Gate, clock: FakeClock) -> None:
         "throttled": 0,
         "in_flight": 0,
         "abandoned": 0,
+        "last_good": None,  # answered, but not accepted
+        "url": None,
         "today": {
             "day": "2026-10-16",
             "requests": 1,

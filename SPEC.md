@@ -69,10 +69,14 @@ promised must outlive the process**.
 - **Truncated**: body shorter than `Content-Length`, JSON that ends midway,
   empty body where data is needed → `SourceNotReady` (transient). A
   complete answer that is not ready (empty, half a JSON) is recorded as an
-  answer the caller rejected; a transfer cut short is a failure.
+  answer the caller rejected, and counted per URL until the next accepted
+  one, so a source that stays not ready shows in the status; a transfer cut
+  short is a failure.
 - **The caller's verdict**: the source's answer and what the caller does
   with its body are recorded apart. Only a body the caller accepts has its
-  validators saved; a rejected one leaves the failures as they were.
+  validators saved and becomes the last good answer of its host and URL,
+  kept in the store apart from the log; a rejected one leaves the failures
+  as they were.
 - **Unexpected content**: HTML (by the first tag of the body past white
   space, comments and an XML declaration, or by `Content-Type`) where JSON or
   text is expected, redirect to another host, a data time too far ahead of
