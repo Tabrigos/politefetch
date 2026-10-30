@@ -165,13 +165,23 @@ print(to_json(gate.statuses(), indent=2))
               "closed_at": "2026-10-16T12:00:32+00:00", "ok": true,
               "status": 200, "failure": null, "wire_bytes": 2310,
               "decoded_bytes": 5120, "reserved_bytes": 0,
-              "key": "https://services.swpc.noaa.gov/..."}]
+              "key": "https://services.swpc.noaa.gov/...", "tag": "kp"}]
 }
 ```
+
+A row keeps the `tag` given to `fetch.get(url, tag="kp")` or
+`gate.attempt(url, tag=...)`: the name of the logical call it belongs to.
 
 A frozen host stays frozen until a person lifts the freeze, which leaves a
 trace: `gate.unfreeze("services.swpc.noaa.gov", by="alice", note="asked them")`.
 The error of the request that froze it says so, and how to lift it.
+
+The log grows with every request. Prune it from a daily job:
+`gate.prune("30d")` removes the closed rows opened more than 30 days ago,
+and the records of the URLs no row refers to any more (their validators,
+their last good answer). At least a day: the limits count the rows of the
+last day. The hosts' state stays. SQLite does not shrink the file on its
+own: run `VACUUM` now and then if its size matters.
 
 ## Several endpoints of one host
 

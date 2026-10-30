@@ -120,7 +120,10 @@ promised must outlive the process**.
   version; a later version is a migration that only adds, applied in one
   transaction (SQLite when it opens, an existing Postgres schema only when
   opened with `migrate=True`), and a database newer than the code is
-  refused.
+  refused. Pruning (`prune`) removes the closed rows older than a bound of
+  at least a day, the one the limits count, and the records no row refers
+  to any more; never a row in flight or reconciled, a URL's pause still
+  running, or a host's state.
 - **Transport adapters**: `urllib` (standard library, in the core), `httpx`
   and `requests` (extras). An adapter sends one GET and hands back the body
   as transferred, piece by piece; reading, the deadline, the size limit and
@@ -130,8 +133,8 @@ promised must outlive the process**.
 - **Test kit** (`politefetch.testing`): socket barrier, source simulator,
   worst-case counter.
 - **Readable state**: for each host, next allowed request, reason for any
-  block, today's counts and bytes, latest rows; serializable to JSON for a
-  dashboard.
+  block, today's counts and bytes, latest rows with the caller's tag;
+  serializable to JSON for a dashboard.
 
 Synchronous and asynchronous with the same semantics. A cancelled
 asynchronous request is closed in a thread of its own, which a second

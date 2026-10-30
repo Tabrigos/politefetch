@@ -55,6 +55,7 @@ from politefetch.store.base import (
     HostUpdate,
     Limit,
     Outcome,
+    Pruned,
     RequestRow,
     RowState,
     Unfreeze,
@@ -69,6 +70,7 @@ from politefetch.store.base import (
     check_admission,
     check_cautious,
     check_latest,
+    check_prune,
     check_threshold,
     check_unfreezer,
     is_late,
@@ -203,11 +205,17 @@ _MIGRATIONS: tuple[tuple[str, ...], ...] = (
         "UPDATE urls SET last_good = (SELECT MAX(closed_at) FROM requests"
         " WHERE requests.url = urls.url AND ok AND state = 'closed')",
     ),
+    # 6: the caller's tag of each request, and the URL index pruning looks
+    # its records up with (#17, D-063).
+    (
+        "ALTER TABLE requests ADD COLUMN tag text",
+        "CREATE INDEX requests_by_url ON requests (url)",
+    ),
 )
 
 _ROW_COLUMNS = (
     "id, host, url, opened_at, state, closed_at, ok, status, failure,"
-    " reserved_bytes, wire_bytes, decoded_bytes, key"
+    " reserved_bytes, wire_bytes, decoded_bytes, key, tag"
 )
 
 
@@ -227,7 +235,7 @@ def _freeze(
 
 def _row(record: tuple[Any, ...]) -> RequestRow:
     row_id, host, url, opened_at, state, closed_at, ok, status, failure = record[:9]
-    reserved, wire, decoded, key = record[9:]
+    reserved, wire, decoded, key, tag = record[9:]
     outcome = None
     if ok is not None:
         outcome = Outcome(
@@ -247,6 +255,7 @@ def _row(record: tuple[Any, ...]) -> RequestRow:
         outcome=outcome,
         reserved_bytes=reserved,
         key=key,
+        tag=tag,
     )
 
 
@@ -709,6 +718,7 @@ class PostgresStore:
         abandon_before: datetime | None = None,
         limits: Sequence[Limit] = (),
         key: str | None = None,
+        tag: str | None = None,
     ) -> RequestRow:
         now = as_utc(now, "now")
         key = url if key is None else key
@@ -735,7 +745,7 @@ class PostgresStore:
             )
             if refusal is None:
                 opened = self._admit(
-                    conn, host, url, key, now, state, reserve, cautious
+                    conn, host, url, key, tag, now, state, reserve, cautious
                 )
         for row in abandoned:  # logged once committed
             log_abandoned(row)
@@ -751,6 +761,7 @@ class PostgresStore:
         host: str,
         url: str,
         key: str,
+        tag: str | None,
         now: datetime,
         state: HostState,
         reserve: int,
@@ -760,9 +771,9 @@ class PostgresStore:
         transaction."""
         promise = check_cautious(now, cautious(state))
         inserted = conn.execute(
-            "INSERT INTO requests (host, url, opened_at, state, reserved_bytes, key)"
-            " VALUES (%s, %s, %s, %s, %s, %s) RETURNING id",
-            (host, url, now, RowState.IN_FLIGHT.value, reserve, key),
+            "INSERT INTO requests (host, url, opened_at, state, reserved_bytes, key,"
+            " tag) VALUES (%s, %s, %s, %s, %s, %s, %s) RETURNING id",
+            (host, url, now, RowState.IN_FLIGHT.value, reserve, key, tag),
         ).fetchone()
         assert inserted is not None
         conn.execute(
@@ -785,6 +796,7 @@ class PostgresStore:
             state=RowState.IN_FLIGHT,
             reserved_bytes=reserve,
             key=key,
+            tag=tag,
         )
 
     def close_request(
@@ -866,6 +878,36 @@ class PostgresStore:
         for row in reconciled:  # logged once committed
             log_abandoned(row)
         return reconciled
+
+    def prune(self, *, now: datetime, older_than: timedelta) -> Pruned:
+        now = as_utc(now, "now")
+        check_prune(older_than)
+        cutoff = now - older_than
+        with self._write() as conn:
+            rows = conn.execute(
+                "DELETE FROM requests WHERE state = %s AND opened_at < %s",
+                (RowState.CLOSED.value, cutoff),
+            ).rowcount
+            urls = conn.execute(
+                "DELETE FROM urls WHERE updated_at < %s"
+                " AND (not_before IS NULL OR not_before <= %s) AND NOT EXISTS"
+                " (SELECT 1 FROM requests WHERE requests.url = urls.url)",
+                (cutoff, now),
+            ).rowcount
+            data_times = conn.execute(
+                "DELETE FROM data_times WHERE updated_at < %s AND NOT EXISTS"
+                " (SELECT 1 FROM requests WHERE requests.url = data_times.url)",
+                (cutoff,),
+            ).rowcount
+            # The session's time zone is UTC: a day starts at its midnight.
+            days = conn.execute(
+                "DELETE FROM daily_counts WHERE day < %s AND NOT EXISTS"
+                " (SELECT 1 FROM requests WHERE requests.host = daily_counts.host"
+                " AND requests.opened_at >= daily_counts.day::timestamptz"
+                " AND requests.opened_at < (daily_counts.day + 1)::timestamptz)",
+                (cutoff.date(),),
+            ).rowcount
+        return Pruned(rows=rows, urls=urls, data_times=data_times, days=days)
 
     @staticmethod
     def _abandon(

@@ -79,6 +79,21 @@ All notable changes to politefetch. The format follows
   again. A store of your own keeps `HostState.last_good` and the new fields
   of `UrlRecord`, as `apply_close` and `apply_url` set them from
   `HostUpdate.accepted_at`.
+- `tag=` on `gate.attempt` and on the fetchers' `get` (#17): the name of the
+  logical call a request belongs to, up to 200 characters, kept in its row
+  (`RequestRow.tag`, and `"tag"` in the JSON of `status`).
+- `gate.prune(older_than)` and `Store.prune` (#17), for a daily job: in one
+  transaction, the closed rows opened before `now - older_than`, then the
+  URL records, data-time records and daily counts no row refers to any more,
+  and it returns how many of each (`Pruned`). It never removes a row in
+  flight or reconciled (a late close still finds it), a URL's pause still
+  running, a host's state or an unfreeze trace; `older_than` under a day is
+  `ValueError`, since the limits count the rows of the last day. A URL
+  forgotten starts again without validators, last good answer or 404 count.
+  The schema goes to version 6 (`tag` on the rows, and an index on their
+  URL); **an existing Postgres schema must be opened once with
+  `migrate=True`** again. A store of your own implements `prune` and takes
+  `tag` in `open_request`.
 
 ### Changed
 

@@ -53,6 +53,7 @@ def _row(row: RequestRow) -> Json:
         "decoded_bytes": None if outcome is None else outcome.decoded_bytes,
         "reserved_bytes": row.reserved_bytes,
         "key": row.key,
+        "tag": row.tag,
     }
 
 

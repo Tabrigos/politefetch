@@ -277,6 +277,7 @@ def test_json_shape(gate: Gate, clock: FakeClock) -> None:
                 "decoded_bytes": 480,
                 "reserved_bytes": 0,
                 "key": URL,
+                "tag": None,
             }
         ],
     }
