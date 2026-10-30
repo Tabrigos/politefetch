@@ -15,8 +15,8 @@ All notable changes to politefetch. The format follows
 - The SQLite and Postgres stores record a schema version, and later versions
   come as migrations that only add, each in one transaction with the version
   update (#11). SQLite migrates when it opens; an existing Postgres schema
-  with migrations pending is refused until it is opened once with
-  `PostgresStore(..., migrate=True)`. A store newer than the code is refused.
+  with migrations pending is refused until `PostgresStore.setup(...)` has
+  migrated it once. A store newer than the code is refused.
   A store written by 0.1 opens with every promise, count and freeze, as two
   fixtures written by 0.1.1 show.
 - A `politefetch` logger (#30): WARNING when a host freezes and when a row is
@@ -52,8 +52,8 @@ All notable changes to politefetch. The format follows
   asked for each period in the last day, as with the caps; `HostStatus`
   shows the limits in force, and the rows their `key`. The schema goes to
   version 3 (a `key` column on the requests, the URL for the rows written
-  before); **an existing Postgres schema must be opened once with
-  `migrate=True`** again. A store of your own implements `limit_starts` and
+  before); **an existing Postgres schema must be migrated once with
+  `PostgresStore.setup`** again. A store of your own implements `limit_starts` and
   takes `limits` and `key` in `open_request`.
 - `wait_up_to=` on `gate.attempt` (sync and async) and on the fetchers' `get`
   (#14): a refusal for `min_interval` that ends within the bound, counted
@@ -75,8 +75,8 @@ All notable changes to politefetch. The format follows
   `paused_until`; both are in the JSON. The skill says what to alert on. The
   schema goes to version 5 (`last_good` on the hosts and URLs, filled
   from the log for the rows written before, and `not_ready` on the URLs);
-  **an existing Postgres schema must be opened once with `migrate=True`**
-  again. A store of your own keeps `HostState.last_good` and the new fields
+  **an existing Postgres schema must be migrated once with
+  `PostgresStore.setup`** again. A store of your own keeps `HostState.last_good` and the new fields
   of `UrlRecord`, as `apply_close` and `apply_url` set them from
   `HostUpdate.accepted_at`.
 - `tag=` on `gate.attempt` and on the fetchers' `get` (#17): the name of the
@@ -91,9 +91,22 @@ All notable changes to politefetch. The format follows
   `ValueError`, since the limits count the rows of the last day. A URL
   forgotten starts again without validators, last good answer or 404 count.
   The schema goes to version 6 (`tag` on the rows, and an index on their
-  URL); **an existing Postgres schema must be opened once with
-  `migrate=True`** again. A store of your own implements `prune` and takes
+  URL); **an existing Postgres schema must be migrated once with
+  `PostgresStore.setup`** again. A store of your own implements `prune` and takes
   `tag` in `open_request`.
+- `PostgresStore.setup(conninfo, schema=...)` creates the Postgres schema or
+  migrates it, in one transaction, and `PostgresStore(..., create=False)`
+  opens the store without running any DDL, so the application's role needs
+  no privilege to create schemas or tables (#18). With `create=False` a
+  missing schema, or one with migrations pending, is refused with a message
+  that names `setup`. `setup` replaces the `migrate=True` of the earlier
+  0.2 work, never released.
+- `PostgresStore(pool=...)` in place of the conninfo (#18): each transaction
+  borrows a connection from a `psycopg_pool.ConnectionPool`, or any object
+  with its `connection()`, so the threads of a process write at once. The
+  store turns off prepared statements and asks for tuple rows while it holds
+  a connection, and gives it back as it was; closing the store leaves the
+  pool open, and the pool replaces the connections it finds lost.
 
 ### Changed
 
@@ -106,7 +119,7 @@ All notable changes to politefetch. The format follows
   `not_before`, `HostUpdate` has `url_not_before`, and the state that
   `close_request` gives `update` has the URL's `url_failures`. The schema
   goes to version 4 (two columns on `urls`); **an existing Postgres schema
-  must be opened once with `migrate=True`**.
+  must be migrated once with `PostgresStore.setup`**.
 - **The caller's verdict is recorded apart from the source's answer**
   (#28, part 1; covers #22). `attempt.accept()` says you took the body of a
   good answer: only then are its validators saved and the failures reset.
@@ -132,9 +145,8 @@ All notable changes to politefetch. The format follows
   `byte_budget`, and `attempt.bytes_left`, give the caps in force;
   `HostState` has `lowest_daily_cap` and `lowest_byte_budget`. The store
   schema goes to version 2 (a `host_caps` table): SQLite migrates when it
-  opens; **an existing Postgres schema must be opened once with
-  `PostgresStore(..., migrate=True)`**, with the processes that use it
-  stopped.
+  opens; **an existing Postgres schema must be migrated once with
+  `PostgresStore.setup(...)`**, with the processes that use it stopped.
 - `status`, `statuses` and `may_fetch` write nothing (#29): a dashboard no
   longer competes for the write lock with the process that fetches, and can
   run with read-only access. A row in flight past `reconcile_after` shows in
@@ -152,6 +164,18 @@ All notable changes to politefetch. The format follows
   as `text/html`; an HTML page is still recognised by its first tag, and a
   body served as HTML that does not parse is still `UnexpectedContent`.
   Text keeps the Content-Type check (#15).
+- **The Postgres store locks per host** (#18). The writes of one host take
+  the schema's advisory lock shared and the host's lock exclusively, so the
+  writers of different hosts no longer queue behind each other; `reconcile`,
+  `prune`, `setup` and opening a store that may create the schema take the
+  schema's lock exclusively. A process of 0.1 takes the same schema lock
+  exclusively for every write, so it still excludes every writer.
+  `lock_timeout` applies to each lock. A transaction also begins in two
+  round trips instead of five. Measured with Postgres 16 in a container, a
+  round trip of half a millisecond: four processes on four hosts open and
+  close 2.4 to 2.5 times the requests per second they did, eight 2.8 to 3.1
+  times; one process gains 6 to 9%, and processes on one host stay as they
+  were.
 
 ### Fixed
 

@@ -1,37 +1,42 @@
 """Postgres store, behind the `postgres` extra (psycopg 3).
 
     store = PostgresStore("host=db dbname=ingest user=ingest", schema="politefetch")
+    store = PostgresStore(pool=pool, schema="politefetch", create=False)
 
 Safe to share between processes and machines:
 
-- every critical operation is one transaction that first takes a
-  transaction-level advisory lock for the schema, so operations that change
-  state run one at a time, as with SQLite's `BEGIN IMMEDIATE`; reads run in
-  `REPEATABLE READ` snapshots and do not wait;
-- `lock_timeout` bounds the wait for that lock: if it runs out the
+- every critical operation is one transaction that first takes
+  transaction-level advisory locks: the writes of one host take the
+  schema's lock shared and the host's lock, so the writers of a host run one
+  at a time while those of other hosts go on; the operations across hosts
+  (`reconcile`, `prune`, creating and migrating the schema) take the
+  schema's lock alone. Reads run in `REPEATABLE READ` snapshots and do not
+  wait;
+- `lock_timeout` bounds the wait for each lock: if it runs out the
   operation raises (`psycopg.errors.LockNotAvailable`) and nothing is sent;
 - a process that dies inside a transaction loses its connection, and
-  Postgres rolls the transaction back and releases the lock;
+  Postgres rolls the transaction back and releases the locks;
 - nothing is set for the session: every transaction sets its own schema,
   time zone and lock timeout (`SET LOCAL`), and statements are not
   prepared, so a pooler in transaction mode (pgbouncer) that resets the
   server connection between transactions changes nothing;
-- a connection found lost when a transaction starts is opened again, and
-  the transaction runs on the new one; one lost in the middle raises, and
-  the next operation opens a new one;
+- the store opens a connection of its own, or borrows one from the caller's
+  pool for each transaction (`politefetch.store._postgres_connections`). A
+  connection found lost when a transaction starts is replaced, and the
+  transaction runs on the new one; one lost in the middle raises;
 - on opening, the machine's clock is compared with the server's: every
   machine sharing the store writes promises with its own clock, and one
   that runs ahead would ask the source too early. Beyond `max_clock_skew`
   the store refuses to open.
 
-Tables live in their own schema (default `politefetch`), created with
-`CREATE ... IF NOT EXISTS`. The rules are those of `politefetch.store.base`,
-shared with the other stores.
+Tables live in their own schema (default `politefetch`). `PostgresStore.setup`
+creates it or migrates it, with a role that may create tables; a store opened
+with `create=False` runs no DDL, so its role needs no such privilege. The
+rules are those of `politefetch.store.base`, shared with the other stores.
 """
 
 import hashlib
 import re
-import threading
 from collections.abc import Callable, Iterator, Sequence
 from contextlib import AbstractContextManager, ExitStack, contextmanager, suppress
 from dataclasses import replace
@@ -45,6 +50,12 @@ from psycopg import sql
 from politefetch.clock import Clock, SystemClock, as_utc
 from politefetch.errors import RefusalReason
 from politefetch.policy import parse_duration
+from politefetch.store._postgres_connections import (
+    Connections,
+    OwnConnection,
+    Pool,
+    PooledConnections,
+)
 from politefetch.store._schema import BASE_VERSION, VERSION_TABLE, pending
 from politefetch.store.base import (
     ABANDONED,
@@ -262,8 +273,12 @@ def _row(record: tuple[Any, ...]) -> RequestRow:
 _Conn = psycopg.Connection[tuple[Any, ...]]
 
 
-def _lock_key(schema: str) -> int:
-    digest = hashlib.sha256(f"politefetch:{schema}".encode()).digest()
+def _lock_key(schema: str, what: str = "") -> int:
+    """The advisory lock of the schema, or of one host or URL in it. The
+    schema's key is the one 0.1 took for every write, so a process of 0.1
+    still excludes every writer of this version."""
+    name = f"politefetch:{schema}" + (f":{what}" if what else "")
+    digest = hashlib.sha256(name.encode()).digest()
     return int.from_bytes(digest[:8], "big", signed=True)
 
 
@@ -272,55 +287,104 @@ class PostgresStore:
 
     def __init__(
         self,
-        conninfo: str,
+        conninfo: str | None = None,
         *,
+        pool: Pool | None = None,
         schema: str = "politefetch",
         lock_timeout: float = 30.0,
         clock: Clock | None = None,
         max_clock_skew: timedelta | str | None = "1m",
-        migrate: bool = False,
+        create: bool = True,
     ) -> None:
-        """`clock` is the machine's (by default the system clock), compared
-        once with the server's; `max_clock_skew=None` skips the check.
+        """Connects with `conninfo`, or borrows a connection from `pool`
+        (a `psycopg_pool.ConnectionPool`, which stays the caller's) for each
+        transaction. `clock` is the machine's (by default the system clock),
+        compared once with the server's; `max_clock_skew=None` skips the
+        check.
 
-        A new schema is created at its latest version. An existing one with
-        migrations pending is refused unless `migrate=True`: other machines
-        may be using it, so stop them, then open it once with `migrate=True`.
+        A new schema is created at its latest version, which needs a role
+        that may create schemas and tables. With `create=False` the store
+        runs no DDL, and a schema that is missing is refused: create it with
+        `PostgresStore.setup`. Either way an existing schema with migrations
+        pending is refused: other machines may be using it, so stop them,
+        then run `PostgresStore.setup` once.
         """
+        skew = None if max_clock_skew is None else parse_duration(max_clock_skew)
+        self._prepare(conninfo, pool, schema, lock_timeout)
+        try:
+            if skew is not None:
+                self._check_clock(clock if clock is not None else SystemClock(), skew)
+            if create:
+                with self._write(exclusive=True) as conn:
+                    self._create(conn, migrate=False)
+            else:
+                with self._read() as conn:
+                    self._check_version(conn)
+        except BaseException:
+            self.close()
+            raise
+
+    @classmethod
+    def setup(
+        cls,
+        conninfo: str | None = None,
+        *,
+        pool: Pool | None = None,
+        schema: str = "politefetch",
+        lock_timeout: float = 30.0,
+    ) -> None:
+        """Create the schema, or bring an existing one to the latest version,
+        in one transaction. Run it as a role that may create schemas and
+        tables, before the processes that open the store with `create=False`
+        start; with migrations pending, stop the processes that use the
+        schema first. On a schema already at the latest version it changes
+        nothing."""
+        store = cls.__new__(cls)
+        store._prepare(conninfo, pool, schema, lock_timeout)
+        try:
+            with store._write(exclusive=True) as conn:
+                store._create(conn, migrate=True)
+        finally:
+            store.close()
+
+    # --- plumbing -----------------------------------------------------------
+
+    def _prepare(
+        self, conninfo: str | None, pool: Pool | None, schema: str, lock_timeout: float
+    ) -> None:
+        if (conninfo is None) == (pool is None):
+            raise ValueError("pass a conninfo or a pool, one of the two")
         if not _SCHEMA_NAME.fullmatch(schema):
             raise ValueError(f"schema must be a lowercase identifier, got {schema!r}")
         if not lock_timeout > 0:
             raise ValueError("lock_timeout must be positive")
-        skew = None if max_clock_skew is None else parse_duration(max_clock_skew)
         self.schema = schema
-        self._conninfo = conninfo
         self._lock_key = _lock_key(schema)
         self._lock_timeout = f"{int(lock_timeout * 1000)}ms"
         self._local = (
             sql.SQL("SET LOCAL search_path TO {}").format(sql.Identifier(schema)),
             sql.SQL("SET LOCAL TIME ZONE 'UTC'"),
         )
-        self._lock = threading.RLock()
-        self._conn: _Conn | None = self._connect()
-        try:
-            if skew is not None:
-                self._check_clock(clock if clock is not None else SystemClock(), skew)
-            with self._write() as conn:
-                conn.execute(
-                    sql.SQL("CREATE SCHEMA IF NOT EXISTS {}").format(
-                        sql.Identifier(schema)
-                    )
-                )
-                found = conn.execute("SELECT to_regclass('hosts')").fetchone()
-                new = found is None or found[0] is None
-                for statement in _TABLES:
-                    conn.execute(statement.encode())
-                self._migrate(conn, new=new, asked=migrate)
-        except BaseException:
-            self._conn.close()
-            raise
+        self._connections: Connections
+        if pool is not None:
+            self._connections = PooledConnections(pool)
+        else:
+            assert conninfo is not None
+            self._connections = OwnConnection(conninfo)
 
-    # --- plumbing -----------------------------------------------------------
+    def _create(self, conn: _Conn, *, migrate: bool) -> None:
+        """Create the schema and its tables if missing, then run the pending
+        migrations: always on a new schema, on an existing one if asked."""
+        conn.execute(
+            sql.SQL("CREATE SCHEMA IF NOT EXISTS {}").format(
+                sql.Identifier(self.schema)
+            )
+        )
+        found = conn.execute("SELECT to_regclass('hosts')").fetchone()
+        new = found is None or found[0] is None
+        for statement in _TABLES:
+            conn.execute(statement.encode())
+        self._migrate(conn, new=new, asked=migrate)
 
     def _migrate(self, conn: _Conn, *, new: bool, asked: bool) -> None:
         """Record the version if the schema had none (a new one, or one
@@ -335,23 +399,43 @@ class PostgresStore:
             current = int(found[0])
         steps = pending(current, _MIGRATIONS, f"the Postgres schema {self.schema!r}")
         if steps and not (new or asked):
-            raise ValueError(
-                f"the Postgres schema {self.schema!r} has schema version {current},"
-                f" this politefetch needs {steps[-1][0]}: stop the processes that"
-                " use it, then open it once with PostgresStore(..., migrate=True)"
-            )
+            raise self._behind(current, steps[-1][0])
         for version, statements in steps:
             for statement in statements:
                 conn.execute(statement.encode())
             conn.execute("UPDATE schema_version SET version = %s", (version,))
 
-    def _connect(self) -> _Conn:
-        # No prepared statements: a pooler may hand the next transaction a
-        # server connection that never saw them.
-        return psycopg.connect(self._conninfo, autocommit=True, prepare_threshold=None)
+    def _check_version(self, conn: _Conn) -> None:
+        """Refuse a schema that is missing or not at the latest version,
+        running no DDL."""
+        found = conn.execute(
+            "SELECT to_regclass('hosts'), to_regclass('schema_version')"
+        ).fetchone()
+        assert found is not None
+        if found[0] is None:
+            raise ValueError(
+                f"the Postgres schema {self.schema!r} has no politefetch tables:"
+                " create it with PostgresStore.setup(...), as a role that may"
+                " create schemas and tables"
+            )
+        current = BASE_VERSION
+        if found[1] is not None:
+            recorded = conn.execute("SELECT version FROM schema_version").fetchone()
+            current = BASE_VERSION if recorded is None else int(recorded[0])
+        steps = pending(current, _MIGRATIONS, f"the Postgres schema {self.schema!r}")
+        if steps:
+            raise self._behind(current, steps[-1][0])
+
+    def _behind(self, current: int, latest: int) -> ValueError:
+        return ValueError(
+            f"the Postgres schema {self.schema!r} has schema version {current},"
+            f" this politefetch needs {latest}: stop the processes that use it,"
+            " then run PostgresStore.setup(...) once"
+        )
 
     def _check_clock(self, clock: Clock, max_skew: timedelta) -> None:
-        found = self._connection().execute("SELECT now()").fetchone()
+        with self._read() as conn:
+            found = conn.execute("SELECT now()").fetchone()
         assert found is not None
         skew = clock.now() - found[0]
         if abs(skew) > max_skew:
@@ -363,63 +447,72 @@ class PostgresStore:
                 " ends. Fix the clock (NTP), or pass max_clock_skew=None"
             )
 
-    def _connection(self) -> _Conn:
-        if self._conn is None:
-            raise RuntimeError("the store is closed")
-        if self._conn.closed or self._conn.broken:
-            self._conn = self._connect()
-        return self._conn
-
     @contextmanager
-    def _transaction(self, start: Callable[[_Conn], None]) -> Iterator[_Conn]:
-        """A transaction with the store's own settings, begun by `start`. A
-        connection lost before anything ran is replaced, once."""
-        with self._lock:
+    def _transaction(self, start: Sequence[sql.Composable]) -> Iterator[_Conn]:
+        """A transaction begun by the statements `start`, then the store's
+        own settings. A connection lost before anything ran is replaced,
+        once."""
+        with ExitStack() as stack:
+            conn = stack.enter_context(self._connections.borrow())
             try:
-                conn, transaction = self._begin(start)
+                transaction = self._begin(conn, start)
             except psycopg.OperationalError:
-                if self._conn is None or not self._conn.broken:
+                if not conn.broken:
                     raise
-                conn, transaction = self._begin(start)
-            with ExitStack() as stack:
-                stack.push(transaction)
-                yield conn
+                stack.close()  # gives the lost connection back
+                conn = stack.enter_context(self._connections.borrow())
+                transaction = self._begin(conn, start)
+            stack.push(transaction)
+            yield conn
 
-    def _begin(self, start: Callable[[_Conn], None]) -> tuple[_Conn, Any]:
-        conn = self._connection()
+    def _begin(self, conn: _Conn, start: Sequence[sql.Composable]) -> Any:
         transaction = conn.transaction()
         transaction.__enter__()
         try:
-            start(conn)
-            for statement in self._local:
-                conn.execute(statement)
+            # One round trip: statements with no parameters go together, and
+            # run in order.
+            conn.execute(sql.SQL("; ").join([*start, *self._local]))
         except BaseException as error:
             # Rolling back a lost connection fails too: the first error counts.
             with suppress(psycopg.Error):
                 transaction.__exit__(type(error), error, error.__traceback__)
             raise
-        return conn, transaction
+        return transaction
 
-    def _write(self) -> AbstractContextManager[_Conn]:
-        """A transaction that holds the schema's lock: one writer at a time."""
-
-        def start(conn: _Conn) -> None:
-            conn.execute(
-                sql.SQL("SET LOCAL lock_timeout = {}").format(
-                    sql.Literal(self._lock_timeout)
-                )
-            )
-            conn.execute("SELECT pg_advisory_xact_lock(%s)", (self._lock_key,))
-
+    def _write(
+        self, *, exclusive: bool = False, hold: str | None = None
+    ) -> AbstractContextManager[_Conn]:
+        """A transaction that holds the schema's lock: shared by the writes of
+        one host, each of which also holds its host's lock (`hold`, or
+        `_hold` once the host is known); exclusive for the operations across
+        hosts, which wait for every writer and make every writer wait."""
+        take = "pg_advisory_xact_lock" if exclusive else "pg_advisory_xact_lock_shared"
+        start = [
+            sql.SQL("SET LOCAL lock_timeout = {}").format(
+                sql.Literal(self._lock_timeout)
+            ),
+            sql.SQL("SELECT {}({})").format(sql.SQL(take), sql.Literal(self._lock_key)),
+        ]
+        if hold is not None:
+            start.append(self._lock_on(hold))
         return self._transaction(start)
+
+    def _lock_on(self, what: str) -> sql.Composed:
+        """The lock of one host or URL, held until the transaction ends. A
+        writer holds at most one, after the schema's: no two writers can
+        wait for each other."""
+        return sql.SQL("SELECT pg_advisory_xact_lock({})").format(
+            sql.Literal(_lock_key(self.schema, what))
+        )
+
+    def _hold(self, conn: _Conn, what: str) -> None:
+        conn.execute(self._lock_on(what))
 
     def _read(self) -> AbstractContextManager[_Conn]:
         """A consistent snapshot, without waiting for writers."""
-
-        def start(conn: _Conn) -> None:
-            conn.execute("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY")
-
-        return self._transaction(start)
+        return self._transaction(
+            [sql.SQL("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY")]
+        )
 
     @staticmethod
     def _state(
@@ -724,7 +817,7 @@ class PostgresStore:
         key = url if key is None else key
         abandoned: list[RequestRow] = []
         opened: RequestRow | None = None
-        with self._write() as conn:
+        with self._write(hold=f"host:{host}") as conn:
             if abandon_before is not None:
                 cutoff = as_utc(abandon_before, "abandon_before")
                 abandoned = self._abandon(conn, now, cutoff, host)
@@ -810,6 +903,9 @@ class PostgresStore:
     ) -> RequestRow:
         now = as_utc(now, "now")
         with self._write() as conn:
+            # The row's host is known only from the row, read again once its
+            # lock is held: another close may have come first.
+            self._hold(conn, f"host:{self._get_row(conn, row_id).host}")
             row = self._get_row(conn, row_id)
             late = is_late(row)
             if row.state is not RowState.IN_FLIGHT and not late:
@@ -873,7 +969,7 @@ class PostgresStore:
     def reconcile(self, *, now: datetime, older_than: timedelta) -> list[RequestRow]:
         now = as_utc(now, "now")
         check_threshold(older_than)
-        with self._write() as conn:
+        with self._write(exclusive=True) as conn:
             reconciled = self._abandon(conn, now, now - older_than)
         for row in reconciled:  # logged once committed
             log_abandoned(row)
@@ -883,7 +979,7 @@ class PostgresStore:
         now = as_utc(now, "now")
         check_prune(older_than)
         cutoff = now - older_than
-        with self._write() as conn:
+        with self._write(exclusive=True) as conn:
             rows = conn.execute(
                 "DELETE FROM requests WHERE state = %s AND opened_at < %s",
                 (RowState.CLOSED.value, cutoff),
@@ -953,7 +1049,7 @@ class PostgresStore:
         self, url: str, data_time: datetime, *, now: datetime
     ) -> DataTimeRecord:
         now = as_utc(now, "now")
-        with self._write() as conn:
+        with self._write(hold=f"url:{url}") as conn:
             record = apply_data_time(
                 self._data_time_record(conn, url), url, data_time, now
             )
@@ -972,7 +1068,7 @@ class PostgresStore:
     ) -> Unfreeze | None:
         now = as_utc(now, "now")
         check_unfreezer(by)
-        with self._write() as conn:
+        with self._write(hold=f"host:{host}") as conn:
             found = conn.execute(
                 "SELECT freeze_since, freeze_until, freeze_status, freeze_note"
                 " FROM hosts WHERE host = %s",
@@ -1009,10 +1105,8 @@ class PostgresStore:
     # --- lifecycle ----------------------------------------------------------
 
     def close(self) -> None:
-        with self._lock:
-            if self._conn is not None:
-                self._conn.close()
-                self._conn = None
+        """Close the store's connection; a pool stays open."""
+        self._connections.close()
 
     def __enter__(self) -> Self:
         return self

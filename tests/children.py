@@ -12,6 +12,8 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Final
 
+from psycopg_pool import ConnectionPool
+
 from politefetch.clock import FakeClock
 from politefetch.errors import RefusalReason, Refused
 from politefetch.gate import Gate
@@ -74,13 +76,28 @@ def _next_after(moment: datetime) -> Callable[[HostState], HostUpdate]:
 
 
 StoreSpec = tuple[str, str, str]
-"""("sqlite", path, "") or ("postgres", conninfo, schema): picklable."""
+"""("sqlite", path, ""), or ("postgres" or "postgres-pool", conninfo, schema):
+picklable."""
+
+
+class PooledStore(PostgresStore):
+    """A Postgres store on a pool of its own, closed with it."""
+
+    def __init__(self, conninfo: str, schema: str, wait: float) -> None:
+        self.own_pool = ConnectionPool(conninfo, min_size=1, max_size=2, open=True)
+        super().__init__(pool=self.own_pool, schema=schema, lock_timeout=wait)
+
+    def close(self) -> None:
+        super().close()
+        self.own_pool.close()
 
 
 def open_store(spec: StoreSpec, *, wait: float = 30.0) -> Store:
     kind, where, schema = spec
     if kind == "sqlite":
         return SqliteStore(where, busy_timeout=wait)
+    if kind == "postgres-pool":
+        return PooledStore(where, schema, wait)
     return PostgresStore(where, schema=schema, lock_timeout=wait)
 
 
