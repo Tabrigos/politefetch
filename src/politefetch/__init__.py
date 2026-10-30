@@ -26,7 +26,7 @@ from politefetch.gate import Gate
 from politefetch.policy import HostPolicy
 from politefetch.store.base import Limit
 
-__version__ = "0.1.1"
+__version__ = "0.2.0rc1"
 
 __all__ = [
     "BodyTooLarge",
