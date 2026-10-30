@@ -30,6 +30,7 @@ __all__ = [
     "HostUpdate",
     "Limit",
     "Outcome",
+    "Pruned",
     "RequestRow",
     "RowState",
     "Store",
@@ -404,6 +405,23 @@ class Unfreeze:
 
 
 @dataclass(frozen=True, slots=True)
+class Pruned:
+    """What `prune` removed.
+
+    Attributes:
+        rows: The closed log rows.
+        urls: The URL records (validators, size, pause, last good answer).
+        data_times: The data-time records.
+        days: The daily counts, one per host and UTC day.
+    """
+
+    rows: int
+    urls: int
+    data_times: int
+    days: int
+
+
+@dataclass(frozen=True, slots=True)
 class RequestRow:
     """One request in the log.
 
@@ -421,6 +439,8 @@ class RequestRow:
             row opened: the wire size of the URL's last full answer.
         key: The key the per-key limits count the request under: the one
             given, or the URL.
+        tag: The caller's name for the logical call the request belongs
+            to, if it gave one.
     """
 
     id: int
@@ -432,6 +452,7 @@ class RequestRow:
     outcome: Outcome | None = field(default=None)
     reserved_bytes: int = 0
     key: str | None = None
+    tag: str | None = None
 
 
 class Store(Protocol):
@@ -465,6 +486,7 @@ class Store(Protocol):
         abandon_before: datetime | None = None,
         limits: Sequence[Limit] = (),
         key: str | None = None,
+        tag: str | None = None,
     ) -> RequestRow:
         """Admit a request, or raise `Refused` having written nothing else.
 
@@ -487,7 +509,7 @@ class Store(Protocol):
         `cautious(state)` is written (it must be later than `now`), today's
         count grows by one, the wire size of the URL's last full answer is
         reserved against `byte_budget` (bytes per UTC day, `None` for no
-        limit), and a row is opened in flight under its key.
+        limit), and a row is opened in flight under its key, with `tag`.
         """
         ...
 
@@ -546,6 +568,21 @@ class Store(Protocol):
         """Close as failed every row in flight since `now - older_than` or
         earlier, and return them. The cautious promise written when they
         opened stays."""
+        ...
+
+    def prune(self, *, now: datetime, older_than: timedelta) -> Pruned:
+        """Remove what the log no longer needs, in one transaction, and
+        say how much.
+
+        Removed: the `CLOSED` rows opened before `now - older_than`; then the
+        URL records and data-time records of the URLs no row refers to any
+        more, not written since that cutoff, and whose pause (`not_before`)
+        is over; and the daily counts of the days before the cutoff's UTC
+        day that no row opened in. Kept: the rows in flight and those the
+        reconciliation closed (a late close still finds them), the hosts and
+        the unfreeze traces. Raises `ValueError` for `older_than` under a
+        day (`check_prune`): the limits count the rows of the last day.
+        """
         ...
 
     def unfreeze(
@@ -958,3 +995,13 @@ def check_latest(latest: int | None) -> None:
 def check_threshold(older_than: timedelta) -> None:
     if older_than <= timedelta(0):
         raise ValueError(f"older_than must be positive, got {older_than}")
+
+
+def check_prune(older_than: timedelta) -> None:
+    """The limits count the rows of the last day: pruning under it would
+    let more requests through."""
+    if older_than < CAP_MEMORY:
+        raise ValueError(
+            f"older_than must be at least a day ({CAP_MEMORY}): the limits count"
+            f" the rows of the last day, got {older_than}"
+        )

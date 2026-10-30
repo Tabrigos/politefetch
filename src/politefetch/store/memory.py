@@ -23,6 +23,7 @@ from politefetch.store.base import (
     HostUpdate,
     Limit,
     Outcome,
+    Pruned,
     RequestRow,
     RowState,
     Unfreeze,
@@ -37,6 +38,7 @@ from politefetch.store.base import (
     check_admission,
     check_cautious,
     check_latest,
+    check_prune,
     check_threshold,
     check_unfreezer,
     is_late,
@@ -209,6 +211,7 @@ class MemoryStore:
         abandon_before: datetime | None = None,
         limits: Sequence[Limit] = (),
         key: str | None = None,
+        tag: str | None = None,
     ) -> RequestRow:
         now = as_utc(now, "now")
         scope = url if key is None else key
@@ -239,6 +242,7 @@ class MemoryStore:
                 state=RowState.IN_FLIGHT,
                 reserved_bytes=reserve,
                 key=scope,
+                tag=tag,
             )
             self.data.next_id += 1
             self.data.rows[row.id] = row
@@ -314,6 +318,49 @@ class MemoryStore:
         check_threshold(older_than)
         with self.data.lock:
             return self._abandon(now, now - older_than)
+
+    def prune(self, *, now: datetime, older_than: timedelta) -> Pruned:
+        now = as_utc(now, "now")
+        check_prune(older_than)
+        cutoff = now - older_than
+        data = self.data
+        with data.lock:
+            rows = [
+                row_id
+                for row_id, r in data.rows.items()
+                if r.state is RowState.CLOSED and r.opened_at < cutoff
+            ]
+            for row_id in rows:
+                del data.rows[row_id]
+            referred = {r.url for r in data.rows.values()}
+            urls = [
+                url
+                for url, record in data.urls.items()
+                if url not in referred
+                and record.updated_at < cutoff
+                and (record.not_before is None or record.not_before <= now)
+            ]
+            for url in urls:
+                del data.urls[url]
+            data_times = [
+                url
+                for url, found in data.data_times.items()
+                if url not in referred and found.updated_at < cutoff
+            ]
+            for url in data_times:
+                del data.data_times[url]
+            opened = {(r.host, r.opened_at.date()) for r in data.rows.values()}
+            days = {
+                day
+                for day in data.counts.keys() | data.wire.keys() | data.decoded.keys()
+                if day[1] < cutoff.date() and day not in opened
+            }
+            for day in days:
+                for counts in (data.counts, data.wire, data.decoded):
+                    counts.pop(day, None)
+        return Pruned(
+            rows=len(rows), urls=len(urls), data_times=len(data_times), days=len(days)
+        )
 
     def _abandon(
         self, now: datetime, cutoff: datetime, host: str | None = None

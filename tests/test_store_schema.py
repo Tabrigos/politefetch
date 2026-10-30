@@ -30,7 +30,7 @@ from .stores import POSTGRES_DSN, drop_schema, fresh_schema, needs_postgres
 FIXTURES = Path(__file__).parent / "fixtures"
 T0 = datetime(2026, 10, 20, 12, tzinfo=UTC)  # when the 0.1.1 fixture begins
 LATER = datetime(2026, 10, 20, 16, 30, tzinfo=UTC)  # after it was written
-LATEST = 5  # the schema version of this politefetch
+LATEST = 6  # the schema version of this politefetch
 
 # Two migrations where the second needs the first: run out of order, or twice,
 # they fail.
@@ -123,8 +123,8 @@ def test_a_store_written_by_0_1_opens_with_every_row(tmp_path: Path, name: str) 
         **before,
         "host_caps": [],  # version 2 adds an empty table
         "hosts": sorted(((*h, good.get(h[0])) for h in before["hosts"]), key=repr),
-        # version 3 gives every request its URL as key
-        "requests": sorted(((*r, r[2]) for r in before["requests"]), key=repr),
+        # version 3 gives every request its URL as key; version 6: no tag
+        "requests": sorted(((*r, r[2], None) for r in before["requests"]), key=repr),
         # version 4: no URL has failed yet; version 5: nothing not ready
         "urls": sorted(
             ((*r, 0, None, good.get(r[0]), 0) for r in before["urls"]), key=repr
@@ -373,6 +373,8 @@ def written_by_0_1(schema: str) -> None:
     pg(schema, "ALTER TABLE hosts DROP COLUMN last_good")  # version 5
     pg(schema, "ALTER TABLE urls DROP COLUMN last_good")
     pg(schema, "ALTER TABLE urls DROP COLUMN not_ready")
+    pg(schema, "ALTER TABLE requests DROP COLUMN tag")  # version 6
+    pg(schema, "DROP INDEX requests_by_url")
 
 
 @needs_postgres
@@ -397,6 +399,8 @@ def test_a_postgres_schema_written_by_0_1_opens_with_its_state(schema: str) -> N
         record = store.url_record("https://ok.example/data.json")
         assert record is not None
         assert (record.last_good, record.not_ready) == (T0, 0)
+        # Version 6: the rows written before have no tag.
+        assert [r.tag for r in store.rows()] == [None, None]
     assert pg_version(schema) == LATEST
 
 

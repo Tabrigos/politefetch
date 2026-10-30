@@ -23,7 +23,7 @@ The gate: decides whether a request may start and keeps the request log.
 
 ### `Attempt`
 
-`Attempt(gate: Gate, url: str, host: str, policy: HostPolicy, key: str | None = None, wait_up_to: timedelta | None = None)`
+`Attempt(gate: Gate, url: str, host: str, policy: HostPolicy, key: str | None = None, wait_up_to: timedelta | None = None, tag: str | None = None)`
 
 One request through the gate. Record what the source did with `response` or `failure` before the block ends, and, for a good answer, the verdict on its body: `accept` when you take it, `reject` when not. `reject("not_sent")` closes an attempt that sent nothing.
 
@@ -45,10 +45,11 @@ The single point every request to a protected host goes through.
 - `.bound_requests(longest: timedelta) -> None`: Note that requests through this gate end within `longest`, as a fetcher's do: the default `reconcile_after` follows the longest one noted. Called by the fetchers; a value given by hand is kept.
 - `.policy_for(host: str) -> HostPolicy`
 - `.reconcile(now: datetime | None = None) -> list[RequestRow]`: Close as failed the rows in flight for longer than `reconcile_after`.
+- `.prune(older_than: timedelta | str) -> Pruned`: Remove the closed log rows opened more than `older_than` ago (at least a day: the limits count the rows of the last day), and what no row refers to any more (`Store.prune`). Run it now and then, as a daily job; the hosts' state stays.
 - `.may_fetch(url: str, *, key: str | None = None) -> Verdict`: Tell whether a request to `url` (under `key`, the URL by default) may start now, and if not why and until when. Advisory: `attempt` decides again, atomically. Sends nothing and writes nothing: rows abandoned past `reconcile_after` count as the next request to the host will count them.
 - `.status(host_or_url: str, *, recent: int = 10, key: str | None = None) -> HostStatus`: The readable state of a host: the decision `may_fetch` would take, today's counts and bytes, the limits in force, its last good answer, and its latest `recent` log rows.
 - `.statuses(hosts: Iterable[str] | None = None, *, recent: int = 10) -> list[HostStatus]`: `status` of each of `hosts` (hosts or URLs), in their order; by default of every host with a policy of its own and, when the gate has a `default` policy, of every host the store knows, sorted by name.
-- `.attempt(url: str, *, key: str | None = None, wait_up_to: timedelta | str | None = None) -> Attempt`: A context manager (sync or async) around one request to `url`. `key` names what the request reads for the policy's `key_limits`; without it the URL is the key.
+- `.attempt(url: str, *, key: str | None = None, wait_up_to: timedelta | str | None = None, tag: str | None = None) -> Attempt`: A context manager (sync or async) around one request to `url`. `key` names what the request reads for the policy's `key_limits`; without it the URL is the key. `tag` names the logical call the request belongs to, up to `TAG_LENGTH` characters: the row keeps it, for a dashboard.
 - `.note_data_time(url: str, data_time: datetime) -> DataTimeRecord`: Record the data time a read of `url` returned, for stuck-source detection (`politefetch.checks.check_advancing`).
 - `.unfreeze(host_or_url: str, *, by: str, note: str = '') -> Unfreeze | None`: Lift a host's freeze by hand, leaving a trace of who did it.
 
@@ -393,7 +394,7 @@ What every adapter shares: the fetch cycle, the result, the failure shapes.
 
 Fetch through the gate with an asynchronous transport. Same meaning as `Fetcher`; store work runs in a worker thread.
 
-- `.get(url: str, *, expect: Literal['json', 'text', 'bytes'] = 'json', data_time: Callable[[Any], datetime] | None = None, max_age: timedelta | str | None = None, max_ahead: timedelta | str = timedelta(seconds=900), stuck_after: int | timedelta | str | None = None, headers: Mapping[str, str] | None = None, allow_empty: bool = False, max_bytes: int | str | None = None, parse: Callable[[Any], Any] | None = None, conditional: bool = True, key: str | None = None, wait_up_to: timedelta | str | None = None) -> FetchResult`
+- `.get(url: str, *, expect: Literal['json', 'text', 'bytes'] = 'json', data_time: Callable[[Any], datetime] | None = None, max_age: timedelta | str | None = None, max_ahead: timedelta | str = timedelta(seconds=900), stuck_after: int | timedelta | str | None = None, headers: Mapping[str, str] | None = None, allow_empty: bool = False, max_bytes: int | str | None = None, parse: Callable[[Any], Any] | None = None, conditional: bool = True, key: str | None = None, wait_up_to: timedelta | str | None = None, tag: str | None = None) -> FetchResult`
 - `.aclose() -> None`
 
 ### `AsyncRawResponse`
@@ -453,7 +454,7 @@ A fetch that passed every check.
 
 Fetch through the gate with a synchronous transport.
 
-- `.get(url: str, *, expect: Literal['json', 'text', 'bytes'] = 'json', data_time: Callable[[Any], datetime] | None = None, max_age: timedelta | str | None = None, max_ahead: timedelta | str = timedelta(seconds=900), stuck_after: int | timedelta | str | None = None, headers: Mapping[str, str] | None = None, allow_empty: bool = False, max_bytes: int | str | None = None, parse: Callable[[Any], Any] | None = None, conditional: bool = True, key: str | None = None, wait_up_to: timedelta | str | None = None) -> FetchResult`: Fetch `url` once, if the gate allows it, and check what comes back.
+- `.get(url: str, *, expect: Literal['json', 'text', 'bytes'] = 'json', data_time: Callable[[Any], datetime] | None = None, max_age: timedelta | str | None = None, max_ahead: timedelta | str = timedelta(seconds=900), stuck_after: int | timedelta | str | None = None, headers: Mapping[str, str] | None = None, allow_empty: bool = False, max_bytes: int | str | None = None, parse: Callable[[Any], Any] | None = None, conditional: bool = True, key: str | None = None, wait_up_to: timedelta | str | None = None, tag: str | None = None) -> FetchResult`: Fetch `url` once, if the gate allows it, and check what comes back.
 - `.close() -> None`
 
 ### `IncompleteBody`
@@ -583,7 +584,7 @@ Adapter for requests, behind the `requests` extra (synchronous only).
 
 The persistent state behind the gate: promises, counts, open log rows, freezes.
 
-Re-exports: `DataTimeRecord` (politefetch.store.base), `Freeze` (politefetch.store.base), `HostState` (politefetch.store.base), `HostUpdate` (politefetch.store.base), `Limit` (politefetch.store.base), `MemoryData` (politefetch.store.memory), `MemoryStore` (politefetch.store.memory), `Outcome` (politefetch.store.base), `RequestRow` (politefetch.store.base), `RowState` (politefetch.store.base), `SqliteStore` (politefetch.store.sqlite), `Store` (politefetch.store.base), `Unfreeze` (politefetch.store.base), `UrlRecord` (politefetch.store.base), `Validators` (politefetch.store.base).
+Re-exports: `DataTimeRecord` (politefetch.store.base), `Freeze` (politefetch.store.base), `HostState` (politefetch.store.base), `HostUpdate` (politefetch.store.base), `Limit` (politefetch.store.base), `MemoryData` (politefetch.store.memory), `MemoryStore` (politefetch.store.memory), `Outcome` (politefetch.store.base), `Pruned` (politefetch.store.base), `RequestRow` (politefetch.store.base), `RowState` (politefetch.store.base), `SqliteStore` (politefetch.store.sqlite), `Store` (politefetch.store.base), `Unfreeze` (politefetch.store.base), `UrlRecord` (politefetch.store.base), `Validators` (politefetch.store.base).
 
 ## `politefetch.store.base`
 
@@ -697,9 +698,22 @@ How a request ended, as the caller records it.
 | `wire_bytes` | `int \| None` | The body as transferred (compressed, if it was); `None` when unknown. |
 | `decoded_bytes` | `int \| None` | The body after decoding; `None` when unknown. |
 
+### `Pruned`
+
+`Pruned(rows: int, urls: int, data_times: int, days: int)`
+
+What `prune` removed.
+
+| Field | Type | Meaning |
+|---|---|---|
+| `rows` | `int` | The closed log rows. |
+| `urls` | `int` | The URL records (validators, size, pause, last good answer). |
+| `data_times` | `int` | The data-time records. |
+| `days` | `int` | The daily counts, one per host and UTC day. |
+
 ### `RequestRow`
 
-`RequestRow(id: int, host: str, url: str, opened_at: datetime, state: RowState, closed_at: datetime | None = None, outcome: Outcome | None = None, reserved_bytes: int = 0, key: str | None = None)`
+`RequestRow(id: int, host: str, url: str, opened_at: datetime, state: RowState, closed_at: datetime | None = None, outcome: Outcome | None = None, reserved_bytes: int = 0, key: str | None = None, tag: str | None = None)`
 
 One request in the log.
 
@@ -714,6 +728,7 @@ One request in the log.
 | `outcome` | `Outcome \| None` | How the request ended; `None` while in flight. The JSON of `politefetch.status.to_json` puts its fields directly in the row. |
 | `reserved_bytes` | `int` | The bytes reserved against the byte budget when the row opened: the wire size of the URL's last full answer. |
 | `key` | `str \| None` | The key the per-key limits count the request under: the one given, or the URL. |
+| `tag` | `str \| None` | The caller's name for the logical call the request belongs to, if it gave one. |
 
 ### `RowState`
 
@@ -729,13 +744,14 @@ Protocol. Persistent state behind the gate.
 
 - `.host_state(host: str, now: datetime) -> HostState`: Return the state of `host`, with today's count for `now`'s UTC day.
 - `.requests_on(host: str, day: date) -> int`: Return how many requests to `host` were opened on the UTC `day`.
-- `.open_request(host: str, url: str, *, now: datetime, daily_cap: int, cautious: Callable[[HostState], datetime], byte_budget: int | None = None, abandon_before: datetime | None = None, limits: Sequence[Limit] = (), key: str | None = None) -> RequestRow`: Admit a request, or raise `Refused` having written nothing else.
+- `.open_request(host: str, url: str, *, now: datetime, daily_cap: int, cautious: Callable[[HostState], datetime], byte_budget: int | None = None, abandon_before: datetime | None = None, limits: Sequence[Limit] = (), key: str | None = None, tag: str | None = None) -> RequestRow`: Admit a request, or raise `Refused` having written nothing else.
 - `.limit_starts(host: str, limits: Sequence[Limit], *, key: str | None) -> list[datetime | None]`: For each limit, when the `count`-th latest request of its scope started (the host's, or the requests with `key` for a per-key limit), or `None` if there are fewer. A per-key limit has `None` when `key` is `None`.
 - `.close_request(row_id: int, *, now: datetime, outcome: Outcome, update: Callable[[HostState], HostUpdate], validators: Validators | None = None) -> RequestRow`: Close an in-flight row with its outcome and update the host.
 - `.url_record(url: str) -> UrlRecord | None`: Return what the store remembers about `url`, if anything.
 - `.note_data_time(url: str, data_time: datetime, *, now: datetime) -> DataTimeRecord`: Record the data time a read of `url` returned; see `apply_data_time`. Atomic.
 - `.data_time_record(url: str) -> DataTimeRecord | None`: Return the data-time history of `url`, if any.
 - `.reconcile(*, now: datetime, older_than: timedelta) -> list[RequestRow]`: Close as failed every row in flight since `now - older_than` or earlier, and return them. The cautious promise written when they opened stays.
+- `.prune(*, now: datetime, older_than: timedelta) -> Pruned`: Remove what the log no longer needs, in one transaction, and say how much.
 - `.unfreeze(host: str, *, now: datetime, by: str, note: str = '') -> Unfreeze | None`: Lift the freeze of `host`, active or expired, and leave a trace.
 - `.unfreezes(*, host: str | None = None) -> list[Unfreeze]`: Return the unfreeze traces, oldest first.
 - `.row(row_id: int) -> RequestRow`: Return one row; raise `KeyError` if it does not exist.
@@ -859,12 +875,13 @@ A `Store` kept in memory.
 - `.row(row_id: int) -> RequestRow`
 - `.rows(*, host: str | None = None, state: RowState | None = None, latest: int | None = None) -> list[RequestRow]`
 - `.limit_starts(host: str, limits: Sequence[Limit], *, key: str | None) -> list[datetime | None]`
-- `.open_request(host: str, url: str, *, now: datetime, daily_cap: int, cautious: Callable[[HostState], datetime], byte_budget: int | None = None, abandon_before: datetime | None = None, limits: Sequence[Limit] = (), key: str | None = None) -> RequestRow`
+- `.open_request(host: str, url: str, *, now: datetime, daily_cap: int, cautious: Callable[[HostState], datetime], byte_budget: int | None = None, abandon_before: datetime | None = None, limits: Sequence[Limit] = (), key: str | None = None, tag: str | None = None) -> RequestRow`
 - `.close_request(row_id: int, *, now: datetime, outcome: Outcome, update: Callable[[HostState], HostUpdate], validators: Validators | None = None) -> RequestRow`
 - `.url_record(url: str) -> UrlRecord | None`
 - `.note_data_time(url: str, data_time: datetime, *, now: datetime) -> DataTimeRecord`
 - `.data_time_record(url: str) -> DataTimeRecord | None`
 - `.reconcile(*, now: datetime, older_than: timedelta) -> list[RequestRow]`
+- `.prune(*, now: datetime, older_than: timedelta) -> Pruned`
 - `.unfreeze(host: str, *, now: datetime, by: str, note: str = '') -> Unfreeze | None`
 - `.unfreezes(*, host: str | None = None) -> list[Unfreeze]`
 - `.hosts() -> list[str]`
@@ -885,12 +902,13 @@ A `Store` in a SQLite file, shareable between processes.
 - `.row(row_id: int) -> RequestRow`
 - `.rows(*, host: str | None = None, state: RowState | None = None, latest: int | None = None) -> list[RequestRow]`
 - `.limit_starts(host: str, limits: Sequence[Limit], *, key: str | None) -> list[datetime | None]`
-- `.open_request(host: str, url: str, *, now: datetime, daily_cap: int, cautious: Callable[[HostState], datetime], byte_budget: int | None = None, abandon_before: datetime | None = None, limits: Sequence[Limit] = (), key: str | None = None) -> RequestRow`
+- `.open_request(host: str, url: str, *, now: datetime, daily_cap: int, cautious: Callable[[HostState], datetime], byte_budget: int | None = None, abandon_before: datetime | None = None, limits: Sequence[Limit] = (), key: str | None = None, tag: str | None = None) -> RequestRow`
 - `.close_request(row_id: int, *, now: datetime, outcome: Outcome, update: Callable[[HostState], HostUpdate], validators: Validators | None = None) -> RequestRow`
 - `.url_record(url: str) -> UrlRecord | None`
 - `.note_data_time(url: str, data_time: datetime, *, now: datetime) -> DataTimeRecord`
 - `.data_time_record(url: str) -> DataTimeRecord | None`
 - `.reconcile(*, now: datetime, older_than: timedelta) -> list[RequestRow]`
+- `.prune(*, now: datetime, older_than: timedelta) -> Pruned`
 - `.unfreeze(host: str, *, now: datetime, by: str, note: str = '') -> Unfreeze | None`
 - `.unfreezes(*, host: str | None = None) -> list[Unfreeze]`
 - `.hosts() -> list[str]`
@@ -915,9 +933,10 @@ A `Store` in a Postgres schema, shareable between processes.
 - `.data_time_record(url: str) -> DataTimeRecord | None`
 - `.unfreezes(*, host: str | None = None) -> list[Unfreeze]`
 - `.hosts() -> list[str]`
-- `.open_request(host: str, url: str, *, now: datetime, daily_cap: int, cautious: Callable[[HostState], datetime], byte_budget: int | None = None, abandon_before: datetime | None = None, limits: Sequence[Limit] = (), key: str | None = None) -> RequestRow`
+- `.open_request(host: str, url: str, *, now: datetime, daily_cap: int, cautious: Callable[[HostState], datetime], byte_budget: int | None = None, abandon_before: datetime | None = None, limits: Sequence[Limit] = (), key: str | None = None, tag: str | None = None) -> RequestRow`
 - `.close_request(row_id: int, *, now: datetime, outcome: Outcome, update: Callable[[HostState], HostUpdate], validators: Validators | None = None) -> RequestRow`
 - `.reconcile(*, now: datetime, older_than: timedelta) -> list[RequestRow]`
+- `.prune(*, now: datetime, older_than: timedelta) -> Pruned`
 - `.note_data_time(url: str, data_time: datetime, *, now: datetime) -> DataTimeRecord`
 - `.unfreeze(host: str, *, now: datetime, by: str, note: str = '') -> Unfreeze | None`
 - `.close() -> None`

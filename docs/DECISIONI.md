@@ -1729,3 +1729,48 @@ alla vecchia e la vecchia prende la riga "Superata da".
   Uno schema Postgres esistente va aperto di nuovo una volta con
   `migrate=True`. La potatura della #17 deve tenere le righe di `urls` e
   `hosts`, che ora portano la storia anche senza registro.
+
+## D-063 — Un tag sulle righe del registro, e la potatura
+
+- **Data e tappa**: 2026-10-30, issue #17
+- **Contesto**: una console vuole sapere a quale chiamata logica appartiene
+  una riga; il registro cresce a ogni richiesta, e con lui `urls` e
+  `data_times` per gli URL con la data nella query string. D-059 chiede di
+  non potare sotto il periodo più lungo dei limiti (un giorno); D-060 che la
+  potatura comprenda gli URL che rispondono 404; D-062 che tenga la storia
+  di `hosts` e `urls`.
+- **Decisione** (scelte del maintainer del 30/10: 1A, 2A, 3A, 4A):
+  - `tag=` su `gate.attempt` e sui `get` dei fetcher, da 1 a 200 caratteri,
+    salvato nella riga (`RequestRow.tag`, `"tag"` nel JSON). Niente nota
+    libera in chiusura: il perché di un fallimento sta già in `failure`
+    (4A);
+  - `gate.prune(older_than)` e `Store.prune(now=, older_than=)`, in una
+    transazione: le righe `CLOSED` aperte prima di `now - older_than`; poi i
+    record di `urls` e `data_times` a cui nessuna riga rimanda più, non
+    scritti dopo quel limite e, per `urls`, senza una pausa in corso; poi i
+    conteggi giornalieri dei giorni prima del limite in cui non resta
+    nessuna riga. Restituisce quanto ha tolto (`Pruned`);
+  - `older_than` sotto un giorno è `ValueError` (2A): i limiti contano le
+    righe dell'ultimo giorno;
+  - le righe riconciliate non si potano mai (3A): una chiusura in ritardo
+    le trova ancora, e un 429 tardivo frena ancora l'host. Sono poche, una
+    per crash;
+  - `hosts` e `unfreezes` non si toccano: lo stato dell'host e le tracce di
+    chi ha sbloccato restano;
+  - un URL dimenticato riparte da zero (1A): niente validatori, ultima
+    risposta buona e conteggio dei 404. Il prossimo 404 lo ferma come il
+    primo: al più una richiesta prima del dovuto, dopo almeno `older_than`
+    senza che nessuno lo chiedesse;
+  - versione 6 dello schema: `tag` su `requests` e un indice su
+    `requests(url)`, con cui la potatura cerca le righe di ogni URL.
+- **Alternative scartate**: tenere i record degli URL con 404 alle spalle
+  (1B: la tabella crescerebbe per sempre con gli URL datati); portare in
+  silenzio `older_than` a un giorno (2B: nasconde un errore d'uso); potare
+  anche le righe riconciliate (3B: un 429 tardivo andrebbe perso); una nota
+  libera in chiusura (4B: un campo che nessuno chiede).
+- **Conseguenze**: la potatura non cambia nessuna decisione finché
+  l'orologio non torna indietro più di `older_than` meno un giorno rispetto
+  all'ultima potatura (lo prova la macchina a proprietà con due store
+  gemelli). SQLite non restringe il file: serve un `VACUUM`. Uno schema
+  Postgres esistente va aperto di nuovo una volta con `migrate=True`. Uno
+  store scritto a mano implementa `prune` e prende `tag` in `open_request`.

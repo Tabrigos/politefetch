@@ -336,8 +336,14 @@ For each row of `"recent"`, `to_json` puts the fields of the outcome
 directly in the row (`ok`, `status`, `failure`, `wire_bytes`,
 `decoded_bytes`, null while in flight), while the dataclass keeps them in
 `RequestRow.outcome`. The meaning of every field is in `references/api.md`.
-The log rows are never deleted in this version: the table grows with every
-request.
+Each row keeps the `tag=` given to `get` or `gate.attempt`: the name of the
+logical call it belongs to. The log grows with every request: prune it from
+a daily job with `gate.prune("30d")` (a `Pruned` says what went). It takes
+the closed rows opened before `now - older_than` and the records no row
+refers to any more; it keeps the rows in flight or reconciled, a URL's
+pause still running, the hosts. Under a day is `ValueError`: the limits
+count the last day. A URL forgotten loses its validators, last good answer
+and 404 count: keep `older_than` longer than the gap between two reads.
 
 A frozen host stays frozen until a person decides: `gate.unfreeze(host,
 by="alice", note="they lifted the block")` lifts it and leaves a trace. Never

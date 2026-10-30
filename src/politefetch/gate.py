@@ -51,6 +51,7 @@ from politefetch.store.base import (
     HostState,
     HostUpdate,
     Outcome,
+    Pruned,
     RequestRow,
     RowState,
     Store,
@@ -79,6 +80,9 @@ _RECONCILE_WITHOUT_FETCHERS = timedelta(hours=1)
 
 _CAPS = (RefusalReason.DAILY_CAP, RefusalReason.BYTE_BUDGET, RefusalReason.RATE_LIMIT)
 """The refusals a lower cap or limit of another process can cause."""
+
+TAG_LENGTH = 200
+"""The longest tag a row keeps (#17)."""
 
 _WAITED = RefusalReason.MIN_INTERVAL
 """The one refusal `wait_up_to` waits out: the host's spacing, short and
@@ -205,6 +209,15 @@ class Gate:
         """Close as failed the rows in flight for longer than `reconcile_after`."""
         now = self.clock.now() if now is None else now
         return self.store.reconcile(now=now, older_than=self.reconcile_after)
+
+    def prune(self, older_than: timedelta | str) -> Pruned:
+        """Remove the closed log rows opened more than `older_than` ago (at
+        least a day: the limits count the rows of the last day), and what
+        no row refers to any more (`Store.prune`). Run it now and then, as
+        a daily job; the hosts' state stays."""
+        return self.store.prune(
+            now=self.clock.now(), older_than=parse_duration(older_than)
+        )
 
     def may_fetch(self, url: str, *, key: str | None = None) -> Verdict:
         """Tell whether a request to `url` (under `key`, the URL by default)
@@ -386,10 +399,13 @@ class Gate:
         *,
         key: str | None = None,
         wait_up_to: timedelta | str | None = None,
+        tag: str | None = None,
     ) -> "Attempt":
         """A context manager (sync or async) around one request to `url`.
         `key` names what the request reads for the policy's `key_limits`;
-        without it the URL is the key.
+        without it the URL is the key. `tag` names the logical call the
+        request belongs to, up to `TAG_LENGTH` characters: the row keeps
+        it, for a dashboard.
 
         With `wait_up_to`, a refusal for `min_interval` that ends within that
         bound, counted from the first refusal, is waited out through the
@@ -404,8 +420,10 @@ class Gate:
                 " sleep() and sleep_async() (SleepingClock), as SystemClock and"
                 " FakeClock have"
             )
+        if tag is not None and not 0 < len(tag) <= TAG_LENGTH:
+            raise ValueError(f"a tag has 1 to {TAG_LENGTH} characters, got {len(tag)}")
         host = host_of(url)
-        return Attempt(self, url, host, self.policy_for(host), key, wait)
+        return Attempt(self, url, host, self.policy_for(host), key, wait, tag)
 
     def note_data_time(self, url: str, data_time: datetime) -> DataTimeRecord:
         """Record the data time a read of `url` returned, for stuck-source
@@ -433,11 +451,14 @@ class Attempt:
         policy: HostPolicy,
         key: str | None = None,
         wait_up_to: timedelta | None = None,
+        tag: str | None = None,
     ) -> None:
         self.url = url
         self.host = host
         self.key = url if key is None else key
         """What the per-key limits count this request under."""
+        self.tag = tag
+        """The caller's name for the logical call, kept in the row."""
         self._gate = gate
         self._policy = policy
         self._wait_up_to = wait_up_to
@@ -627,6 +648,7 @@ class Attempt:
                 abandon_before=now - gate.reconcile_after,
                 limits=policy.limits + policy.key_limits,
                 key=self.key,
+                tag=self.tag,
             )
         except Refused as refusal:
             if refusal.reason in _CAPS:
