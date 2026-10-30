@@ -18,10 +18,11 @@ from typing import Any
 import psycopg
 import pytest
 from psycopg import sql
+from psycopg.conninfo import make_conninfo
 
 from politefetch import FakeClock, Gate, HostPolicy
 from politefetch.errors import RefusalReason
-from politefetch.store import RowState, SqliteStore
+from politefetch.store import HostUpdate, Outcome, RowState, SqliteStore
 from politefetch.store.postgres import _MIGRATIONS as PG_MIGRATIONS
 from politefetch.store.postgres import PostgresStore
 
@@ -387,9 +388,10 @@ def test_a_new_postgres_schema_records_its_version(schema: str) -> None:
 def test_a_postgres_schema_written_by_0_1_opens_with_its_state(schema: str) -> None:
     written_by_0_1(schema)
     assert pg_version(schema) is None
-    with pytest.raises(ValueError, match="migrate=True"):
+    with pytest.raises(ValueError, match=r"PostgresStore\.setup"):
         PostgresStore(POSTGRES_DSN, schema=schema)
-    with PostgresStore(POSTGRES_DSN, schema=schema, migrate=True) as store:
+    PostgresStore.setup(POSTGRES_DSN, schema=schema)
+    with PostgresStore(POSTGRES_DSN, schema=schema, create=False) as store:
         freeze = store.host_state("frozen.example", LATER).freeze
         assert freeze is not None
         assert freeze.status == 429
@@ -413,10 +415,10 @@ def test_postgres_migrates_only_when_asked(
     monkeypatch.setattr(
         "politefetch.store.postgres._MIGRATIONS", PG_MIGRATIONS + COLUMN_THEN_INDEX
     )
-    with pytest.raises(ValueError, match="migrate=True"):
+    with pytest.raises(ValueError, match=r"PostgresStore\.setup"):
         PostgresStore(POSTGRES_DSN, schema=schema)
     assert "extra" not in pg_columns(schema, "hosts")
-    PostgresStore(POSTGRES_DSN, schema=schema, migrate=True).close()
+    PostgresStore.setup(POSTGRES_DSN, schema=schema)
     assert pg_version(schema) == LATEST + 2
     assert "extra" in pg_columns(schema, "hosts")
     with PostgresStore(POSTGRES_DSN, schema=schema) as store:  # now current
@@ -441,7 +443,7 @@ def test_a_failed_postgres_migration_changes_nothing(
     broken = (COLUMN_THEN_INDEX[0], ("CREATE INDEX broken ON nowhere (x)",))
     monkeypatch.setattr("politefetch.store.postgres._MIGRATIONS", broken)
     with pytest.raises(psycopg.errors.UndefinedTable):
-        PostgresStore(POSTGRES_DSN, schema=schema, migrate=True)
+        PostgresStore.setup(POSTGRES_DSN, schema=schema)
     assert pg_version(schema) is None
     assert "extra" not in pg_columns(schema, "hosts")
 
@@ -451,8 +453,109 @@ def test_a_postgres_schema_from_a_newer_version_is_refused(schema: str) -> None:
     PostgresStore(POSTGRES_DSN, schema=schema).close()
     pg(schema, "UPDATE schema_version SET version = 99")
     with pytest.raises(ValueError, match="version 99"):
-        PostgresStore(POSTGRES_DSN, schema=schema, migrate=True)
+        PostgresStore.setup(POSTGRES_DSN, schema=schema)
+    with pytest.raises(ValueError, match="version 99"):
+        PostgresStore(POSTGRES_DSN, schema=schema, create=False)
     assert pg_version(schema) == 99
+
+
+@needs_postgres
+def test_setup_creates_a_postgres_schema_and_changes_nothing_when_run_again(
+    schema: str,
+) -> None:
+    PostgresStore.setup(POSTGRES_DSN, schema=schema)
+    assert pg_version(schema) == LATEST
+    created = pg_shape(schema)
+    PostgresStore.setup(POSTGRES_DSN, schema=schema)
+    assert pg_version(schema) == LATEST
+    assert pg_shape(schema) == created
+
+
+def pg_schema_exists(schema: str) -> bool:
+    with psycopg.connect(POSTGRES_DSN, autocommit=True) as conn:
+        found = conn.execute(
+            "SELECT 1 FROM pg_namespace WHERE nspname = %s", (schema,)
+        ).fetchone()
+    return found is not None
+
+
+@needs_postgres
+def test_without_create_a_missing_postgres_schema_is_refused(schema: str) -> None:
+    with pytest.raises(
+        ValueError, match=r"no politefetch tables.*PostgresStore\.setup"
+    ):
+        PostgresStore(POSTGRES_DSN, schema=schema, create=False)
+    assert not pg_schema_exists(schema)
+
+
+@needs_postgres
+def test_without_create_a_postgres_schema_with_migrations_pending_is_refused(
+    schema: str,
+) -> None:
+    written_by_0_1(schema)
+    with pytest.raises(ValueError, match=r"version 1,.*PostgresStore\.setup"):
+        PostgresStore(POSTGRES_DSN, schema=schema, create=False)
+    assert pg_version(schema) is None
+    assert "tag" not in pg_columns(schema, "requests")
+
+
+@pytest.fixture
+def limited(schema: str) -> Iterator[str]:
+    """The conninfo of a role that may read and write the tables of a schema
+    set up for it, and create nothing."""
+    PostgresStore.setup(POSTGRES_DSN, schema=schema)
+    role = sql.Identifier(f"{schema}_rw")
+    with psycopg.connect(POSTGRES_DSN, autocommit=True) as admin:
+        found = admin.execute(
+            "SELECT rolsuper OR rolcreaterole FROM pg_roles"
+            " WHERE rolname = current_user"
+        ).fetchone()
+        if not (found and found[0]):
+            pytest.skip("the test role may not create roles")
+        on = sql.Identifier(schema)
+        for statement in (
+            "CREATE ROLE {role} LOGIN PASSWORD 'limited'",
+            "GRANT USAGE ON SCHEMA {on} TO {role}",
+            "GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA {on}"
+            " TO {role}",
+            "GRANT USAGE ON ALL SEQUENCES IN SCHEMA {on} TO {role}",
+        ):
+            admin.execute(sql.SQL(statement).format(role=role, on=on))
+    try:
+        yield make_conninfo(POSTGRES_DSN, user=f"{schema}_rw", password="limited")
+    finally:
+        with psycopg.connect(POSTGRES_DSN, autocommit=True) as admin:
+            admin.execute(sql.SQL("DROP OWNED BY {}").format(role))
+            admin.execute(sql.SQL("DROP ROLE {}").format(role))
+
+
+@needs_postgres
+def test_without_create_the_store_needs_no_create_privilege(
+    schema: str, limited: str
+) -> None:
+    # Opened as it was in 0.1, it asks for the privilege even on a schema
+    # that is there.
+    with pytest.raises(psycopg.errors.InsufficientPrivilege):
+        PostgresStore(limited, schema=schema)
+    with PostgresStore(limited, schema=schema, create=False) as store:
+        row = store.open_request(
+            "ok.example",
+            "https://ok.example/data.json",
+            now=T0,
+            daily_cap=10,
+            cautious=lambda _s: T0 + timedelta(minutes=5),
+        )
+        store.close_request(
+            row.id,
+            now=T0,
+            outcome=Outcome(ok=True, status=200),
+            update=lambda _s: HostUpdate(
+                T0 + timedelta(minutes=10), RefusalReason.MIN_INTERVAL
+            ),
+        )
+        store.reconcile(now=LATER, older_than=timedelta(minutes=30))
+        store.prune(now=LATER + timedelta(days=2), older_than=timedelta(days=1))
+        assert store.rows() == []
 
 
 def pg_shape(schema: str) -> dict[str, Any]:
@@ -491,7 +594,7 @@ def test_a_new_postgres_schema_has_the_schema_of_a_migrated_one(
     for statement in ddl.splitlines():
         if statement and not statement.startswith("--"):
             pg(schema, statement)
-    PostgresStore(POSTGRES_DSN, schema=schema, migrate=True).close()
+    PostgresStore.setup(POSTGRES_DSN, schema=schema)
     new = fresh_schema()
     try:
         PostgresStore(POSTGRES_DSN, schema=new).close()

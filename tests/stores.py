@@ -17,6 +17,7 @@ from pathlib import Path
 import psycopg
 import pytest
 from psycopg import sql
+from psycopg_pool import ConnectionPool
 
 from politefetch.store import MemoryStore, SqliteStore, Store
 from politefetch.store.postgres import PostgresStore
@@ -33,6 +34,10 @@ needs_postgres = pytest.mark.skipif(
 )
 
 KINDS = ["memory", "sqlite", pytest.param("postgres", marks=needs_postgres)]
+
+# The contract suite also runs on a Postgres store that borrows its
+# connections from a pool (more connections than one, so threads interleave).
+CONTRACT_KINDS = [*KINDS, pytest.param("postgres-pool", marks=needs_postgres)]
 
 
 def fresh_schema() -> str:
@@ -55,6 +60,7 @@ class Harness:
             directory = Path(self._tmp.name)
         self.path = directory / "store.db"
         self.schema = fresh_schema()
+        self.pool: ConnectionPool | None = None
         self.store: Store = self._open(None)
 
     def _open(self, previous: Store | None) -> Store:
@@ -65,6 +71,12 @@ class Harness:
             return SqliteStore(self.path)
         if self.kind == "postgres":
             return PostgresStore(POSTGRES_DSN, schema=self.schema)
+        if self.kind == "postgres-pool":
+            if self.pool is None:
+                self.pool = ConnectionPool(
+                    POSTGRES_DSN, min_size=1, max_size=4, open=True
+                )
+            return PostgresStore(pool=self.pool, schema=self.schema)
         raise ValueError(f"unknown store kind {self.kind!r}")
 
     def restart(self) -> Store:
@@ -83,7 +95,9 @@ class Harness:
 
     def close(self) -> None:
         self.store.close()
-        if self.kind == "postgres":
+        if self.pool is not None:
+            self.pool.close()
+        if self.kind.startswith("postgres"):
             drop_schema(self.schema)
         if self._tmp is not None:
             self._tmp.cleanup()

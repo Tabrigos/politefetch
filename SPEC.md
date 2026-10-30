@@ -118,9 +118,12 @@ promised must outlive the process**.
   store remembers for a day the caps and limits a host was asked for, and
   the lowest applies). The SQLite and Postgres stores record a schema
   version; a later version is a migration that only adds, applied in one
-  transaction (SQLite when it opens, an existing Postgres schema only when
-  opened with `migrate=True`), and a database newer than the code is
-  refused. Pruning (`prune`) removes the closed rows older than a bound of
+  transaction (SQLite when it opens, an existing Postgres schema only by
+  `PostgresStore.setup`), and a database newer than the code is refused. A
+  Postgres store opened with `create=False` runs no DDL. Its writers lock
+  the schema shared and their host exclusively, so the writers of different
+  hosts do not wait for each other; the operations across hosts lock the
+  schema exclusively. Pruning (`prune`) removes the closed rows older than a bound of
   at least a day, the one the limits count, and the records no row refers
   to any more; never a row in flight or reconciled, a URL's pause still
   running, or a host's state.

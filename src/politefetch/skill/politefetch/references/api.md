@@ -920,10 +920,11 @@ Postgres store, behind the `postgres` extra (psycopg 3).
 
 ### `PostgresStore`
 
-`PostgresStore(conninfo: str, *, schema: str = 'politefetch', lock_timeout: float = 30.0, clock: Clock | None = None, max_clock_skew: timedelta | str | None = '1m', migrate: bool = False)`
+`PostgresStore(conninfo: str | None = None, *, pool: Pool | None = None, schema: str = 'politefetch', lock_timeout: float = 30.0, clock: Clock | None = None, max_clock_skew: timedelta | str | None = '1m', create: bool = True)`
 
 A `Store` in a Postgres schema, shareable between processes.
 
+- `.setup(conninfo: str | None = None, *, pool: Pool | None = None, schema: str = 'politefetch', lock_timeout: float = 30.0) -> None`: Create the schema, or bring an existing one to the latest version, in one transaction. Run it as a role that may create schemas and tables, before the processes that open the store with `create=False` start; with migrations pending, stop the processes that use the schema first. On a schema already at the latest version it changes nothing.
 - `.host_state(host: str, now: datetime) -> HostState`
 - `.requests_on(host: str, day: date) -> int`
 - `.row(row_id: int) -> RequestRow`
@@ -939,7 +940,7 @@ A `Store` in a Postgres schema, shareable between processes.
 - `.prune(*, now: datetime, older_than: timedelta) -> Pruned`
 - `.note_data_time(url: str, data_time: datetime, *, now: datetime) -> DataTimeRecord`
 - `.unfreeze(host: str, *, now: datetime, by: str, note: str = '') -> Unfreeze | None`
-- `.close() -> None`
+- `.close() -> None`: Close the store's connection; a pool stays open.
 
 ## `politefetch.testing`
 

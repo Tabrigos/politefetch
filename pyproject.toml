@@ -44,6 +44,7 @@ postgres = ["psycopg>=3.2,<4"]
 dev = [
     "hypothesis>=6.170",
     "mypy>=2.4",
+    "psycopg-pool>=3.2",
     "psycopg[binary]>=3.2",
     "pytest>=9.1",
     "ruff>=0.17",

@@ -40,6 +40,7 @@ EXTRAS = {
     "adapters/httpx.py": {"httpx"},
     "adapters/requests.py": {"requests", "urllib3"},
     "store/postgres.py": {"psycopg"},
+    "store/_postgres_connections.py": {"psycopg"},
     "testing/plugin.py": {"pytest"},
 }
 

@@ -125,6 +125,28 @@ projects (`pip install "politefetch[postgres]" "psycopg[binary]"`), or
 `psycopg[c]` or the system's libpq. politefetch leaves the choice to the
 application, as psycopg asks of libraries.
 
+`PostgresStore` keeps its tables in a schema of its own, shared by every
+machine that polls. Opened with a conninfo it creates the schema if missing,
+which needs a role that may create schemas and tables. To run the
+application with a role that may only read and write, create the schema, or
+migrate it after an upgrade, in a deploy step, and open the store with
+`create=False`, which runs no DDL:
+
+```python
+from politefetch.store.postgres import PostgresStore
+
+PostgresStore.setup("host=db dbname=ingest user=owner")  # the deploy step
+store = PostgresStore("host=db dbname=ingest user=ingest", create=False)
+```
+
+A schema with migrations pending is refused until `setup` has run, with the
+processes that use it stopped. The store also takes a
+`psycopg_pool.ConnectionPool` in place of the conninfo
+(`PostgresStore(pool=pool, create=False)`): each transaction borrows a
+connection, so the threads of a process write at once, and closing the store
+leaves the pool open. The writers of one host wait for each other; the
+writers of different hosts do not.
+
 ## Status per host
 
 `gate.status(host_or_url)` says what the gate would decide now and why, with

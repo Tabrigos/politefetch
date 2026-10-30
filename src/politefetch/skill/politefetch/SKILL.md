@@ -129,9 +129,9 @@ datetime is a bug of the extractor and raises `ValueError`.
 | Need | Use |
 |---|---|
 | One machine, one or more processes | `SqliteStore("ingest.db")`: the default; share the same file |
-| Several machines | `PostgresStore(conninfo, schema="politefetch")` (extra `postgres`) |
+| Several machines | `PostgresStore(conninfo, schema="politefetch")` (extra `postgres`); with a role that may not create tables, `PostgresStore.setup(...)` in a deploy step and `create=False` in the application; `pool=` takes a psycopg_pool connection pool in place of the conninfo |
 | Processes on one store with different caps for a host | The lowest daily cap, byte budget and count of each limit asked for in the last day apply to all of them, and a process with a higher one logs a warning: lowering a cap holds at once, raising it a day after the old cap was last used. A test with `daily_cap=0` on a shared store stops the host for everyone for a day |
-| Upgrading politefetch over an existing store | SQLite migrates when it opens. Postgres refuses a schema with migrations pending: stop the processes that use it, open it once with `PostgresStore(..., migrate=True)`. A store newer than the code is refused; do not go back to an older version on a migrated store |
+| Upgrading politefetch over an existing store | SQLite migrates when it opens. Postgres refuses a schema with migrations pending: stop the processes that use it, run `PostgresStore.setup(...)` once. A store newer than the code is refused; do not go back to an older version on a migrated store |
 | Tests only | `MemoryStore()`: forgets everything when the process ends |
 | No extra dependency | `politefetch.adapters.urllib.UrllibFetcher` |
 | httpx, sync or async | `HttpxFetcher`, `AsyncHttpxFetcher` in `politefetch.adapters.httpx` |

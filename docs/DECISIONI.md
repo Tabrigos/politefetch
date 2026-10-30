@@ -1774,3 +1774,64 @@ alla vecchia e la vecchia prende la riga "Superata da".
   gemelli). SQLite non restringe il file: serve un `VACUUM`. Uno schema
   Postgres esistente va aperto di nuovo una volta con `migrate=True`. Uno
   store scritto a mano implementa `prune` e prende `tag` in `open_request`.
+
+## D-064 — Postgres: schema creato a parte, pool di connessioni, lock per host
+
+- **Data e tappa**: 2026-10-30, issue #18
+- **Contesto**: lo store Postgres esegue DDL quando si apre, quindi il ruolo
+  dell'applicazione deve poter creare schemi e tabelle; apre una connessione
+  sua, su cui i thread di un processo fanno la fila; ogni scrittura prende
+  un solo advisory lock per tutto lo schema, così chi scrive su host diversi
+  aspetta comunque. D-052 aveva messo le migrazioni dietro `migrate=True`,
+  mai pubblicato.
+- **Decisione** (scelte del maintainer del 30/10: A, A, A):
+  - `PostgresStore.setup(conninfo, schema=)` crea lo schema o lo migra, in
+    una transazione, da lanciare con un ruolo che può creare; prende il
+    posto di `migrate=True`, che si toglie (un solo modo di migrare). Il
+    costruttore prende `create=True`: di default crea uno schema mancante
+    come in 0.1; con `create=False` non esegue DDL e rifiuta uno schema
+    mancante o indietro, nominando `setup`. Uno schema con migrazioni in
+    sospeso è rifiutato in tutti e due i casi;
+  - `PostgresStore(pool=...)` al posto della conninfo: ogni transazione
+    prende in prestito una connessione da un oggetto con `connection()`
+    (`psycopg_pool.ConnectionPool`, senza dipenderne). Mentre la tiene, lo
+    store spegne le istruzioni preparate e chiede righe a tupla, poi le
+    rimette come le ha trovate; chiudere lo store lascia aperto il pool.
+    `psycopg-pool` entra solo fra le dipendenze di sviluppo;
+  - lock a due livelli: chi scrive su un host prende il lock dello schema
+    condiviso e quello del suo host esclusivo (`note_data_time` quello del
+    suo URL); `reconcile`, `prune`, `setup` e l'apertura che può creare
+    prendono il lock dello schema esclusivo. Ogni scrittore prende al più un
+    lock fine, dopo quello dello schema, quindi due scrittori non possono
+    aspettarsi a vicenda. La chiave del lock dello schema resta quella della
+    0.1: un processo 0.1 lo prende esclusivo a ogni scrittura, e continua a
+    escludere tutti;
+  - `lock_timeout` vale per ciascun lock: l'attesa più lunga è due volte
+    quella data.
+  - una transazione comincia in due round trip invece di cinque: `BEGIN`,
+    poi in un solo invio le impostazioni (`SET LOCAL`) e i lock, che non
+    hanno parametri. Senza, il lock per host costava a un processo solo
+    l'8-11%, oltre la soglia del piano.
+- **Misura** (soglia del piano: almeno 1,5 volte con 4 processi su host
+  diversi, e non peggio sullo stesso host). Postgres 16 in un container
+  Podman sulla macchina di sviluppo, round trip di mezzo millisecondo;
+  richieste aperte e chiuse al secondo, mediana di 5 giri da 5 secondi, il
+  primo scartato, `main` e il ramo alternati giro per giro:
+  - commit senza attesa del disco: 4 processi su 4 host da 52,7 a 127,7
+    (2,42 volte), 8 processi 2,75 volte, 1 processo +6-9%, stesso host con
+    2-8 processi da 1,08 a 1,15 volte;
+  - commit che aspetta il disco (il default): 4 processi su 4 host da 46,4
+    a 116,5 (2,51 volte), 8 processi 3,05 volte, 1 processo +7-9%, stesso
+    host con 2-8 processi da 0,94 a 1,05 volte, con gli intervalli
+    sovrapposti a quelli di `main`.
+  La prima misura, senza il giro unico, aveva dato 2,03 volte con 4 host e
+  -8/-11% con un processo.
+- **Alternative scartate**: tenere `migrate=True` accanto a `setup` (B: due
+  modi di fare la stessa cosa); una funzione che crea la connessione invece
+  del pool (B: una connessione per store, i thread restano in fila).
+- **Conseguenze**: le righe di un host e quelle dei suoi URL si scrivono
+  solo sotto il lock di quell'host, il che vale finché l'host di una
+  richiesta si ricava dal suo URL, come fa il gate; chi chiama lo store
+  direttamente con lo stesso URL sotto due host perde questa garanzia. Un'applicazione che apriva
+  uno schema esistente con un ruolo senza privilegi di creazione ora può,
+  con `create=False`; il default resta quello della 0.1.

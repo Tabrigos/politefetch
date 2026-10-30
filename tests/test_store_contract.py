@@ -26,7 +26,7 @@ from politefetch.store import (
 )
 from politefetch.store.base import ABANDONED
 
-from .stores import KINDS, Harness
+from .stores import CONTRACT_KINDS, Harness
 
 T = datetime(2026, 10, 16, 12, 0, tzinfo=UTC)
 HOST = "example.org"
@@ -36,7 +36,7 @@ OK = Outcome(ok=True, status=200)
 FAIL = Outcome(ok=False, failure="connect_timeout")
 
 
-@pytest.fixture(params=KINDS)
+@pytest.fixture(params=CONTRACT_KINDS)
 def harness(request: pytest.FixtureRequest, tmp_path: Path) -> Iterator[Harness]:
     h = Harness(request.param, tmp_path)
     yield h

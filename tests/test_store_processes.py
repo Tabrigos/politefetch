@@ -18,17 +18,23 @@ HOST = "example.org"
 T = datetime(2026, 10, 16, 12, tzinfo=UTC)
 
 
-@pytest.fixture(params=["sqlite", pytest.param("postgres", marks=needs_postgres)])
+@pytest.fixture(
+    params=[
+        "sqlite",
+        pytest.param("postgres", marks=needs_postgres),
+        pytest.param("postgres-pool", marks=needs_postgres),
+    ]
+)
 def spec(
     request: pytest.FixtureRequest, tmp_path: Path
 ) -> Iterator[children.StoreSpec]:
     if request.param == "sqlite":
         found: children.StoreSpec = ("sqlite", str(tmp_path / "shared.db"), "")
     else:
-        found = ("postgres", POSTGRES_DSN, fresh_schema())
+        found = (request.param, POSTGRES_DSN, fresh_schema())
     children.open_store(found).close()  # create the schema once
     yield found
-    if found[0] == "postgres":
+    if found[0] != "sqlite":
         drop_schema(found[2])
 
 
