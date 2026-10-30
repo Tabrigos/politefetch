@@ -4,7 +4,10 @@ All notable changes to politefetch. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions follow
 [Semantic Versioning](https://semver.org/).
 
-## Unreleased
+## 0.2.0rc1 — 2026-10-30
+
+A release candidate of 0.2, to try before the final release. pip installs it
+only when asked: `pip install politefetch==0.2.0rc1`.
 
 ### Added
 
