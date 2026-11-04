@@ -39,6 +39,7 @@ those fenced ```` ```python nocheck ```` (a fragment, a call that needs a networ
 NOT_API: set[str] = {
     "metadata.version",
     "timedelta",  # the standard library's
+    "urlsplit(url).netloc",  # the standard library's
 }
 """Spans in backticks that look like names but are not the library's API."""
 

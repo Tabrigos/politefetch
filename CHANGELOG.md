@@ -4,6 +4,18 @@ All notable changes to politefetch. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions follow
 [Semantic Versioning](https://semver.org/).
 
+## Unreleased
+
+### Fixed
+
+- The skill's usual shape imports `SqliteStore` from `politefetch.store` and
+  runs the job on it, and the skill says that the keys of the policies are
+  host names without the port, built from a URL with
+  `politefetch.gate.host_of`: a key taken from `urlsplit(url).netloc` keeps
+  the port and its host is refused with `NoPolicy`. Fresh agents given the
+  skill had opened the installed sources to find both. `host_of` is in the
+  API reference.
+
 ## 0.2.0rc1 — 2026-10-30
 
 A release candidate of 0.2, to try before the final release. pip installs it

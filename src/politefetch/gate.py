@@ -62,7 +62,7 @@ from politefetch.store.base import (
     limits_in_force,
 )
 
-__all__ = ["Attempt", "Gate", "Verdict", "normalize_host"]
+__all__ = ["Attempt", "Gate", "Verdict", "host_of", "normalize_host"]
 
 _log = logging.getLogger("politefetch")
 

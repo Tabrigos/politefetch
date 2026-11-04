@@ -68,6 +68,7 @@ from typing import Any
 
 from politefetch import ContentError, FetchFailed, Gate, HostPolicy, Refused
 from politefetch.adapters.urllib import UrllibFetcher
+from politefetch.store import SqliteStore
 
 URL = "https://services.swpc.noaa.gov/products/noaa-planetary-k-index.json"
 POLICIES = {
@@ -102,7 +103,9 @@ def poll(gate: Gate, url: str = URL) -> list[dict[str, Any]] | None:
     return rows
 
 
-# In the job:  with SqliteStore("ingest.db") as store: poll(Gate(store, POLICIES))
+def run_job(db: str = "ingest.db", url: str = URL) -> list[dict[str, Any]] | None:
+    with SqliteStore(db) as store:  # one run, a new process: the file keeps the rest
+        return poll(Gate(store, POLICIES), url)
 ```
 
 `fetch.get(url, *, expect="json", data_time=None, max_age=None,
@@ -128,7 +131,8 @@ datetime is a bug of the extractor and raises `ValueError`.
 
 | Need | Use |
 |---|---|
-| One machine, one or more processes | `SqliteStore("ingest.db")`: the default; share the same file |
+| The keys of the policies | Host names, lowercase and without the port, as the gate counts a request's URL: from a URL, `politefetch.gate.host_of(url)`. `urlsplit(url).netloc` keeps the port, and a host with no policy is refused with `NoPolicy` before anything is sent |
+| One machine, one or more processes | `SqliteStore("ingest.db")` in `politefetch.store`: the default; share the same file |
 | Several machines | `PostgresStore(conninfo, schema="politefetch")` (extra `postgres`); with a role that may not create tables, `PostgresStore.setup(...)` in a deploy step and `create=False` in the application; `pool=` takes a psycopg_pool connection pool in place of the conninfo |
 | Processes on one store with different caps for a host | The lowest daily cap, byte budget and count of each limit asked for in the last day apply to all of them, and a process with a higher one logs a warning: lowering a cap holds at once, raising it a day after the old cap was last used. A test with `daily_cap=0` on a shared store stops the host for everyone for a day |
 | Upgrading politefetch over an existing store | SQLite migrates when it opens. Postgres refuses a schema with migrations pending: stop the processes that use it, run `PostgresStore.setup(...)` once. A store newer than the code is refused; do not go back to an older version on a migrated store |

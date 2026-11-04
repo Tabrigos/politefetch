@@ -63,6 +63,10 @@ The answer of `Gate.may_fetch`: true if a request may start now.
 |---|---|---|
 | `refusal` | `Refused \| None` | Why a request may not start now, and until when: the `Refused` the gate's decision would raise. `None` when it may. |
 
+### `host_of(url: str) -> str`
+
+The host a URL points at, normalized (`normalize_host`), without port.
+
 ### `normalize_host(host: str) -> str`
 
 The one spelling of a host name that caps and promises are kept under: lowercase, without the final dot, international names in their ASCII (IDNA) form. `example.org.`, `EXAMPLE.org` and `example.org` are one host; `localhost` and `127.0.0.1` stay two, as nothing short of a DNS lookup could tell they are the same.
