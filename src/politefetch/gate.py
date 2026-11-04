@@ -564,7 +564,9 @@ class Attempt:
     def accept(self) -> None:
         """Record that you took the body of the good answer recorded with
         `response`: its validators are saved, so the next request can be
-        conditional, and the host's failures start again from zero."""
+        conditional, and its time becomes the host's and the URL's
+        `last_good`. Without a verdict a good answer keeps neither, though
+        the host's failures start again from zero all the same."""
         outcome = self._outcome
         if outcome is None or not outcome.ok:
             raise RuntimeError(

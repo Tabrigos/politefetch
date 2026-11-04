@@ -181,6 +181,33 @@ def test_a_policy_key_is_built_from_a_url_as_the_skill_says() -> None:
     assert gate.status(url).requests_today == 1
 
 
+def test_an_answer_without_a_verdict_does_what_the_skill_says() -> None:
+    said = re.search(
+        r"Without a verdict the failures\s+start again from zero.*?"
+        r"no validators.*?no `last_good`",
+        PROSE,
+        re.DOTALL,
+    )
+    assert said, "the skill no longer says what a good answer without a verdict does"
+    url = "https://example.org/data.json"
+    clock = FakeClock(T)
+    gate = Gate(MemoryStore(), {"example.org": HostPolicy(5, "1m")}, clock=clock)
+    with gate.attempt(url) as attempt:
+        attempt.failure("read_timeout")
+    clock.advance(timedelta(hours=1))
+    with gate.attempt(url) as attempt:
+        attempt.response(200, headers={"ETag": '"v1"'})
+    status = gate.status(url)
+    assert status.failures == 0
+    assert status.last_good is None
+    assert status.url is not None
+    assert status.url.last_good is None
+    clock.advance(timedelta(hours=1))
+    with gate.attempt(url) as attempt:
+        assert attempt.conditional_headers == {}
+        attempt.response(304)
+
+
 def test_the_attempt_example_runs(
     examples: dict[str, Any], source_simulator: SourceSimulator
 ) -> None:

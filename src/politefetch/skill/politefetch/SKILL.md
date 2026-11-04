@@ -272,20 +272,20 @@ def fetch_with_my_client(gate: Gate, url: str) -> bytes | None:
 ```
 
 Record exactly one outcome per attempt: `attempt.response(status, ...)` for
-any HTTP answer (the policy decides what a status means), or
-`attempt.failure(shape, ...)` when none came. Then, for a good answer, the
-verdict on its body: `attempt.accept()` when you take it (only then are its
-validators saved, and the next request is conditional), or
+any HTTP answer, or `attempt.failure(shape, ...)` when none came. Then, for a
+good answer, the verdict on its body: `attempt.accept()` when you take it
+(only then are its validators saved and its time kept as `last_good`), or
 `attempt.reject(reason)` when you do not: `"not_ready"` for a complete body
 that is not ready (empty, half a JSON: `check_body` raises `SourceNotReady`),
 `"unusable"` when your parser refuses it. A rejected answer is still an
 answer: `min_interval` holds, the failures stay as they were, and the
-validators of the last accepted answer stay. Without a verdict nothing is
-vouched for, and the next request asks for the whole body. A page where data
-was expected (HTML) is a failure, as in the fetchers: check the body before
-`response` and record `attempt.failure("unexpected_content", status=...,
-headers=...)`. `attempt.reject("not_sent")` closes an attempt that sent
-nothing.
+validators of the last accepted answer stay. Without a verdict the failures
+start again from zero, but nothing is vouched for: no validators, so the next
+request asks for the whole body, and no `last_good`, so its alert fires. A
+page where data was expected (HTML) is a failure, as in the fetchers: check
+the body before `response` and record `attempt.failure("unexpected_content",
+status=..., headers=...)`. `attempt.reject("not_sent")` closes an attempt
+that sent nothing.
 Never `accept` a body you then throw away: a 304 would follow, and you would
 have nothing. Each adapter module has a
 `failure_shape(error)` that names its client's exceptions with the shapes
