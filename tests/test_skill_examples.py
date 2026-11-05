@@ -13,16 +13,18 @@ import inspect
 import json
 import re
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 from typing import Any
+from urllib.parse import urlsplit
 
 import pytest
 
 import politefetch
-from politefetch import errors
+from politefetch import HostPolicy, NoPolicy, errors
 from politefetch.adapters import FailureShape
-from politefetch.clock import FakeClock
+from politefetch.clock import FakeClock, SystemClock
 from politefetch.errors import RefusalReason
-from politefetch.gate import Gate
+from politefetch.gate import Gate, host_of
 from politefetch.skill import read_skill
 from politefetch.status import to_json
 from politefetch.store import MemoryStore
@@ -145,6 +147,65 @@ def test_the_polling_example_runs(
     assert rows[-1]["Kp"] == 2.33
     assert examples["poll"](gate, url) is None  # too early: refused, not sent
     assert source_simulator.counter.count == 1
+
+
+def test_the_job_example_remembers_its_promise_in_the_file(
+    examples: dict[str, Any], source_simulator: SourceSimulator, tmp_path: Path
+) -> None:
+    newest = SystemClock().now() - timedelta(hours=1)
+    source_simulator.scenario = Respond(body=kp_rows(newest))
+    url = source_simulator.url("/kp.json")
+    policy = next(iter(examples["POLICIES"].values()))
+    examples["POLICIES"] = {host_of(url): policy}
+    db = str(tmp_path / "ingest.db")
+    rows = examples["run_job"](db, url)
+    assert rows[-1]["Kp"] == 2.33
+    assert examples["run_job"](db, url) is None  # the next run: too early, not sent
+    assert source_simulator.counter.count == 1
+
+
+def test_a_policy_key_is_built_from_a_url_as_the_skill_says() -> None:
+    said = re.search(
+        r"keys of the policies \| Host names.*?`politefetch\.gate\.host_of\(url\)`",
+        PROSE,
+        re.DOTALL,
+    )
+    assert said, "the skill no longer says how to build a policy key from a URL"
+    url = "https://Example.org:8443/data.json"
+    by_netloc = Gate(MemoryStore(), {urlsplit(url).netloc: HostPolicy(5, "1m")})
+    with pytest.raises(NoPolicy), by_netloc.attempt(url):
+        pass
+    gate = Gate(MemoryStore(), {host_of(url): HostPolicy(5, "1m")}, clock=FakeClock(T))
+    with gate.attempt(url) as attempt:
+        attempt.failure("read_timeout")
+    assert gate.status(url).requests_today == 1
+
+
+def test_an_answer_without_a_verdict_does_what_the_skill_says() -> None:
+    said = re.search(
+        r"Without a verdict the failures\s+start again from zero.*?"
+        r"no validators.*?no `last_good`",
+        PROSE,
+        re.DOTALL,
+    )
+    assert said, "the skill no longer says what a good answer without a verdict does"
+    url = "https://example.org/data.json"
+    clock = FakeClock(T)
+    gate = Gate(MemoryStore(), {"example.org": HostPolicy(5, "1m")}, clock=clock)
+    with gate.attempt(url) as attempt:
+        attempt.failure("read_timeout")
+    clock.advance(timedelta(hours=1))
+    with gate.attempt(url) as attempt:
+        attempt.response(200, headers={"ETag": '"v1"'})
+    status = gate.status(url)
+    assert status.failures == 0
+    assert status.last_good is None
+    assert status.url is not None
+    assert status.url.last_good is None
+    clock.advance(timedelta(hours=1))
+    with gate.attempt(url) as attempt:
+        assert attempt.conditional_headers == {}
+        attempt.response(304)
 
 
 def test_the_attempt_example_runs(

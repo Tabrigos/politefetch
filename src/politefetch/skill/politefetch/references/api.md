@@ -32,7 +32,7 @@ One request through the gate. Record what the source did with `response` or `fai
 - `.conditional_headers` (property): `If-None-Match` and `If-Modified-Since` for this URL, from the validators of its last answer; send them with the request.
 - `.response(status: int, *, headers: Mapping[str, str] | Message | None = None, retry_after: str | None = None, wire_bytes: int | None = None, decoded_bytes: int | None = None) -> None`: Record that the source answered with HTTP `status`.
 - `.failure(shape: str, *, status: int | None = None, headers: Mapping[str, str] | Message | None = None, wire_bytes: int | None = None, decoded_bytes: int | None = None) -> None`: Record that no usable answer came, and how it failed (connect timeout, reset, refusal, TLS, truncated body, stale data...).
-- `.accept() -> None`: Record that you took the body of the good answer recorded with `response`: its validators are saved, so the next request can be conditional, and the host's failures start again from zero.
+- `.accept() -> None`: Record that you took the body of the good answer recorded with `response`: its validators are saved, so the next request can be conditional, and its time becomes the host's and the URL's `last_good`. Without a verdict a good answer keeps neither, though the host's failures start again from zero all the same.
 - `.reject(reason: str) -> None`: Record why you did not take a good answer: `"not_ready"` (complete but not ready, such as half a JSON), `"unusable"` (your parser refused it), or `"not_sent"` for an attempt that sent nothing.
 
 ### `Gate`
@@ -62,6 +62,10 @@ The answer of `Gate.may_fetch`: true if a request may start now.
 | Field | Type | Meaning |
 |---|---|---|
 | `refusal` | `Refused \| None` | Why a request may not start now, and until when: the `Refused` the gate's decision would raise. `None` when it may. |
+
+### `host_of(url: str) -> str`
+
+The host a URL points at, normalized (`normalize_host`), without port.
 
 ### `normalize_host(host: str) -> str`
 
