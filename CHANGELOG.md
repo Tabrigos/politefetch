@@ -4,26 +4,11 @@ All notable changes to politefetch. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions follow
 [Semantic Versioning](https://semver.org/).
 
-## Unreleased
+## 0.2.0 — 2026-11-05
 
-### Fixed
-
-- The skill's usual shape imports `SqliteStore` from `politefetch.store` and
-  runs the job on it, and the skill says that the keys of the policies are
-  host names without the port, built from a URL with
-  `politefetch.gate.host_of`: a key taken from `urlsplit(url).netloc` keeps
-  the port and its host is refused with `NoPolicy`. Fresh agents given the
-  skill had opened the installed sources to find both. `host_of` is in the
-  API reference.
-- `attempt.accept()` was said to reset the host's failures; any good answer
-  does, with a verdict or without (D-057). What only `accept()` does besides
-  saving the validators is keep the answer's time as `last_good`: the skill,
-  the reference and the entry of 0.2.0rc1 now say so.
-
-## 0.2.0rc1 — 2026-10-30
-
-A release candidate of 0.2, to try before the final release. pip installs it
-only when asked: `pip install politefetch==0.2.0rc1`.
+The changes since 0.1.1. The code is the same as in 0.2.0rc1, except that
+`host_of` joins `politefetch.gate.__all__`; the texts that changed since
+then are the last two entries under Fixed.
 
 ### Added
 
@@ -31,6 +16,12 @@ only when asked: `pip install politefetch==0.2.0rc1`.
   a task needs the library, mostly without naming it, and stays quiet on
   near misses. On 0.1.1 with Sonnet 5.5 (Claude Code 2.1.312, three runs
   each, 2026-10-27): 10 of 10 positives and 10 of 10 near misses passed.
+  On 0.2.0, whose description is the same (Claude Code 2.1.316,
+  2026-11-05): 10 of 10 positives and 8 of 10 near misses. The two that
+  failed, a systemd timer for `ingest.py` and a disk cache for an httpx
+  client, loaded the skill two times in three after reading that the
+  project depends on politefetch; on the bench of 2026-10-27 they stayed
+  quiet three times in three.
 - The SQLite and Postgres stores record a schema version, and later versions
   come as migrations that only add, each in one transaction with the version
   update (#11). SQLite migrates when it opens; an existing Postgres schema
@@ -213,6 +204,17 @@ only when asked: `pip install politefetch==0.2.0rc1`.
   the adapter's `failure_shape` instead of by hand, and the skill says that
   `to_json` puts the fields of a row's outcome directly in the row, while
   `RequestRow` keeps them in `outcome` (#23).
+- The skill's usual shape imports `SqliteStore` from `politefetch.store` and
+  runs the job on it, and the skill says that the keys of the policies are
+  host names without the port, built from a URL with
+  `politefetch.gate.host_of`: a key taken from `urlsplit(url).netloc` keeps
+  the port and its host is refused with `NoPolicy`. Fresh agents given the
+  skill had opened the installed sources to find both. `host_of` is in the
+  API reference.
+- 0.2.0rc1 said that `attempt.accept()` resets the host's failures; any good
+  answer does, with a verdict or without (D-057). What only `accept()` does
+  besides saving the validators is keep the answer's time as `last_good`:
+  the skill, the reference and the entry under Changed now say so.
 
 ## 0.1.1 — 2026-10-26
 
